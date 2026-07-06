@@ -12,7 +12,7 @@
 1. 将本目录内容复制到目标项目根目录。
 2. 让发现 Agent（Discovery）先扫描项目，生成 `tasks/{task_id}/discovery.md`，并根据真实项目结构更新 `.agents/ownership.yaml`。
 3. 让产品 Agent（Product）生成 `tasks/{task_id}/prd.md`，明确产品范围、业务规则和验收口径。
-4. 按 `AGENTS.md` 和 `.agents/workflows/feature-development.yaml` 执行任务，由 Planner 将实现工作分流到前端、后端或显式指定的其它角色。
+4. 按 `AGENTS.md` 和 `.agents/workflows/feature-development.yaml` 执行任务；进入执行流程后默认开启子 Agent，由 Planner 将实现工作分流到前端、后端或显式指定的其它角色。
 
 ## 目录结构
 
@@ -58,6 +58,7 @@
 - 先定义产品需求，再拆解工程任务；PRD 说明做什么和怎么验收，ADR 说明技术方案为什么这样选。
 - Product 负责 PRD，Planner 负责拆任务，Architect 负责技术方案和 ADR，三者不能互相替代。
 - 固定流程，不固定目录名。
+- 进入执行流程后默认开启子 Agent；主 Agent 负责显式说明分派的角色、边界、允许修改路径、输入文档和预期输出。
 - 子 Agent 只能修改任务授权范围内的文件。
 - 每个任务必须在 `plan.md` 里写清楚允许修改路径、禁止越界路径和对应 owner。
 - 实现阶段按 ownership 分为前端实现线、后端实现线或 Planner 显式指定的其它实现线。

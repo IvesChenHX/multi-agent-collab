@@ -14,6 +14,23 @@ paths:
 # 默认工作流。这里使用机器可读的工作流 id。
 default_workflow: feature-development
 
+# 子 Agent 编排策略。默认由主 Agent 开启并分派匹配阶段的子 Agent 执行。
+orchestration:
+  default_use_subagents: true
+  require_user_confirmation_for_default_subagents: false
+  require_explicit_dispatch_notice: true
+  dispatch_notice_fields:
+    - agent
+    - task_boundary
+    - allowed_paths
+    - input_documents
+    - expected_outputs
+  allow_main_agent_direct_execution_when:
+    - 用户明确要求不启用子 Agent
+    - 只做问答或解释
+    - 只读分析且不进入执行流程
+    - 极小型任务且不涉及文件修改或验证流程
+
 # 产品需求阶段。Product 负责在计划前明确产品范围和验收口径。
 product:
   agent: product

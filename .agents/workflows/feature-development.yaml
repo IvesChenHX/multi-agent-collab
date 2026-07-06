@@ -3,6 +3,17 @@
 name: feature-development
 version: 1
 
+# 执行策略。进入执行流程后，主 Agent 默认开启并分派各阶段子 Agent。
+execution_policy:
+  default_use_subagents: true
+  require_user_confirmation_for_default_subagents: false
+  require_explicit_dispatch_notice: true
+  main_agent_role: coordinate_record_integrate
+  direct_main_agent_allowed_when:
+    - 用户明确要求不启用子 Agent
+    - 只做问答、解释或只读分析
+    - 极小型任务且不涉及文件修改或验证流程
+
 # 工作流状态枚举。
 states:
   - new
