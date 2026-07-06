@@ -1,0 +1,87 @@
+# 这个文件由发现阶段（Discovery）根据真实项目结构维护。
+# 不要机械套用目录名；如果项目没有这些目录，请删除或替换为实际路径。
+
+owners:
+  web:
+    description: 前端、桌面端 UI、移动端 UI、设计系统和浏览器侧代码。
+    implementation_agent: frontend-implementer
+    paths:
+      - frontend/**
+      - web/**
+      - app/**
+      - apps/web/**
+      - packages/ui/**
+      - src/**/*.vue
+      - src/**/*.tsx
+      - src/**/*.jsx
+      - src/**/*.css
+      - src/**/*.scss
+    file_types:
+      - "*.vue"
+      - "*.tsx"
+      - "*.jsx"
+      - "*.css"
+      - "*.scss"
+
+  backend:
+    description: 服务端 API、业务服务、权限、任务调度和服务端数据访问。
+    implementation_agent: backend-implementer
+    paths:
+      - backend/**
+      - server/**
+      - api/**
+      - services/**
+      - apps/api/**
+      - src/main/**
+    file_types:
+      - "*.java"
+      - "*.kt"
+      - "*.go"
+      - "*.rs"
+      - "*.py"
+      - "*.cs"
+
+  data:
+    description: 数据库迁移、ETL、数据模型、分析脚本和数据质量规则。
+    paths:
+      - db/**
+      - database/**
+      - migrations/**
+      - sql/**
+      - dags/**
+      - pipelines/**
+      - notebooks/**
+    file_types:
+      - "*.sql"
+      - "*.ipynb"
+
+  infra:
+    description: 部署、容器、CI/CD、环境变量模板和运行时配置。
+    paths:
+      - Dockerfile
+      - docker-compose.yml
+      - docker/**
+      - deploy/**
+      - k8s/**
+      - helm/**
+      - .github/**
+      - .gitlab-ci.yml
+      - Makefile
+
+  docs:
+    description: 文档、任务记录、ADR 和协作规范。
+    paths:
+      - README.md
+      - AGENTS.md
+      - docs/**
+      - tasks/**
+      - .agents/**
+
+shared_rules:
+  - Planner 必须把命中的 owner 映射到实现线：web 默认交给 Frontend Implementer，backend 默认交给 Backend Implementer。
+  - data、infra、docs 或其它 owner 的实现工作必须由 Planner 显式指定执行角色；必要时新增专用实现 Agent。
+  - 修改 shared、common、packages、libs 等公共模块时，Architect 必须先确认影响面。
+  - 同一文件命中多个 owner 时，主 Agent 负责指定本任务 owner，并写入 plan.md。
+  - 未命中任何 owner 的文件默认为 unassigned，需要主 Agent 决策后才能修改。
+  - 任何 Agent 不得修改未写入 plan.md 允许修改路径的文件；发现必须修改时，先停止并回到 Planner 重新授权。
+  - 未授权跨 owner 修改业务代码视为 P1；授权缺失但未造成业务代码变更时按影响标记 P2 或 P3。

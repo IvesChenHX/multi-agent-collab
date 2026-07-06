@@ -1,0 +1,72 @@
+# 多 Agent 协作配置。
+# project 是协作体系标识，保持稳定便于工具识别。
+project: generic-multi-agent-collaboration
+version: 1
+
+# 关键目录位置。迁移到真实项目后，发现阶段（Discovery）应按实际结构调整。
+paths:
+  agents: .agents/agents
+  workflows: .agents/workflows
+  ownership: .agents/ownership.yaml
+  tasks: tasks
+  adr: docs/adr
+
+# 默认工作流。这里使用机器可读的工作流 id。
+default_workflow: feature-development
+
+# 产品需求阶段。Product 负责在计划前明确产品范围和验收口径。
+product:
+  agent: product
+  record: tasks/{task_id}/prd.md
+  allow_not_applicable_for:
+    - 小型缺陷修复
+    - 纯技术维护
+    - 基础设施或构建脚本调整
+  require_reason_when_not_applicable: true
+  require_prd_for_cross_role_feature: true
+
+# 流程门禁。为 true 表示完成任务前必须经过对应阶段或记录阻塞原因。
+gates:
+  require_discovery_before_first_task: true
+  require_prd_before_planning: true
+  require_architecture_for_cross_module_changes: true
+  require_tests_before_review: true
+  require_review_before_integration: true
+  require_integration_before_done: true
+
+# 实现阶段分流。Planner 根据 ownership 和影响范围选择一个或多个 lane。
+implementation:
+  lanes:
+    frontend:
+      agent: frontend-implementer
+      primary_owner: web
+      record: tasks/{task_id}/frontend-implementation.md
+    backend:
+      agent: backend-implementer
+      primary_owner: backend
+      record: tasks/{task_id}/backend-implementation.md
+  summary_record: tasks/{task_id}/implementation.md
+  run_lanes_in_parallel_when_contract_is_stable: true
+  require_architecture_contract_for_cross_lane_changes: true
+
+# 职责边界。所有 Agent 只能在 plan 授权范围内修改文件。
+boundaries:
+  require_allowed_paths_in_plan: true
+  require_forbidden_paths_in_plan: true
+  unassigned_paths_require_main_agent_decision: true
+  cross_owner_business_code_change_severity: P1
+  missing_owner_or_boundary_record_severity: P2
+
+# 质量标准。P1 必须清零，P2 不超过阈值才允许进入完成态。
+quality:
+  max_repair_loops_per_module: 3
+  pass_condition:
+    p1: 0
+    p2_max: 2
+  p3_blocks_release: false
+
+# 编码要求。可读文本必须使用 UTF-8 实际字符，不写成 Unicode 转义。
+encoding:
+  charset: UTF-8
+  allow_bom: false
+  forbid_unicode_escape_for_readable_text: true

@@ -1,0 +1,197 @@
+# 功能开发工作流配置。
+# name、state、id、agent 等字段作为流程标识保持英文，说明性文本使用中文。
+name: feature-development
+version: 1
+
+# 工作流状态枚举。
+states:
+  - new
+  - discovered
+  - product_defined
+  - planned
+  - designed
+  - implementing
+  - implemented
+  - testing
+  - reviewing
+  - integrating
+  - ready
+  - blocked
+
+# 各阶段的输入输出契约。
+steps:
+  - id: discover
+    agent: discovery
+    from: new
+    to: discovered
+    inputs:
+      - 仓库文件
+      - README / 现有文档
+      - 包管理和构建文件
+    outputs:
+      - tasks/{task_id}/discovery.md
+      - .agents/ownership.yaml
+
+  - id: define_product
+    agent: product
+    from: discovered
+    to: product_defined
+    inputs:
+      - tasks/{task_id}/brief.md
+      - tasks/{task_id}/discovery.md
+      - tasks/{task_id}/acceptance.md
+      - 用户补充说明和已有产品文档
+    outputs:
+      - tasks/{task_id}/prd.md
+      - 产品范围、业务规则、验收口径和开放问题
+
+  - id: plan
+    agent: planner
+    from: product_defined
+    to: planned
+    inputs:
+      - tasks/{task_id}/brief.md
+      - tasks/{task_id}/acceptance.md
+      - tasks/{task_id}/discovery.md
+      - tasks/{task_id}/prd.md
+      - .agents/ownership.yaml
+    outputs:
+      - tasks/{task_id}/plan.md
+      - 每个 owner 的允许修改路径和禁止越界路径
+
+  - id: design
+    agent: architect
+    from: planned
+    to: designed
+    inputs:
+      - tasks/{task_id}/brief.md
+      - tasks/{task_id}/prd.md
+      - tasks/{task_id}/acceptance.md
+      - tasks/{task_id}/plan.md
+      - 相关代码
+    outputs:
+      - tasks/{task_id}/architecture.md
+      - docs/adr/{adr_id}-{short-title}.md
+      - 前后端共享契约、数据结构和回滚方案
+      - 跨 owner 影响和职责边界说明
+
+  - id: implement_frontend
+    agent: frontend-implementer
+    from: designed
+    to: implementing
+    parallel_group: implementation
+    required_when:
+      - plan 命中 web owner
+      - 任务包含前端、客户端 UI、样式、路由、浏览器状态或 API 调用变更
+    inputs:
+      - tasks/{task_id}/plan.md
+      - tasks/{task_id}/prd.md
+      - tasks/{task_id}/architecture.md
+      - tasks/{task_id}/acceptance.md
+      - .agents/ownership.yaml
+      - 后端接口契约
+      - 前端允许修改路径和禁止越界路径
+    outputs:
+      - 前端代码变更
+      - 前端测试
+      - tasks/{task_id}/frontend-implementation.md
+
+  - id: implement_backend
+    agent: backend-implementer
+    from: designed
+    to: implementing
+    parallel_group: implementation
+    required_when:
+      - plan 命中 backend owner
+      - Planner 将相关 data owner 显式映射到后端实现线
+      - 任务包含服务端 API、业务服务、权限、任务调度、服务端数据访问或数据库迁移变更
+    inputs:
+      - tasks/{task_id}/plan.md
+      - tasks/{task_id}/prd.md
+      - tasks/{task_id}/architecture.md
+      - tasks/{task_id}/acceptance.md
+      - .agents/ownership.yaml
+      - 前端调用约定
+      - 后端允许修改路径和禁止越界路径
+    outputs:
+      - 后端代码变更
+      - 后端测试
+      - tasks/{task_id}/backend-implementation.md
+
+  - id: implementation_sync
+    agent: main-agent
+    from: implementing
+    to: implemented
+    inputs:
+      - tasks/{task_id}/prd.md
+      - tasks/{task_id}/frontend-implementation.md
+      - tasks/{task_id}/backend-implementation.md
+      - Planner 显式指定的其它实现记录
+    outputs:
+      - tasks/{task_id}/implementation.md
+      - 实现线完成状态和未解决契约问题清单
+      - 越界风险确认结果
+
+  - id: test
+    agent: qa
+    from: implemented
+    to: testing
+    inputs:
+      - tasks/{task_id}/acceptance.md
+      - tasks/{task_id}/prd.md
+      - tasks/{task_id}/implementation.md
+      - tasks/{task_id}/frontend-implementation.md
+      - tasks/{task_id}/backend-implementation.md
+      - 项目测试命令
+      - 允许补充的测试路径
+    outputs:
+      - tasks/{task_id}/test-report.md
+
+  - id: review
+    agent: reviewer
+    from: testing
+    to: reviewing
+    inputs:
+      - 代码差异
+      - tasks/{task_id}/brief.md
+      - tasks/{task_id}/prd.md
+      - tasks/{task_id}/acceptance.md
+      - tasks/{task_id}/implementation.md
+      - tasks/{task_id}/frontend-implementation.md
+      - tasks/{task_id}/backend-implementation.md
+      - tasks/{task_id}/test-report.md
+      - .agents/ownership.yaml
+    outputs:
+      - tasks/{task_id}/review.md
+
+  - id: integrate
+    agent: integrator
+    from: reviewing
+    to: integrating
+    inputs:
+      - 已通过审查的代码
+      - tasks/{task_id}/prd.md
+      - tasks/{task_id}/implementation.md
+      - tasks/{task_id}/frontend-implementation.md
+      - tasks/{task_id}/backend-implementation.md
+      - tasks/{task_id}/test-report.md
+      - tasks/{task_id}/review.md
+      - 运行时配置
+    outputs:
+      - 写入 tasks/{task_id}/test-report.md 的集成验证记录
+      - 集成失败时的 owner 回退建议
+
+# 就绪门禁。
+gates:
+  ready:
+    requires:
+      - P1 数量为 0
+      - P2 数量小于或等于 2
+      - PRD 已完成，或已明确记录为不适用及原因
+      - Reviewer 确认不存在未授权跨 owner 修改
+      - 每个 Agent 的输出均未超出 plan 授权范围
+      - 影响范围内的前端/后端实现线均已完成或记录为不适用
+      - 前后端共享契约无未解决冲突
+      - 必要测试已有结果
+      - 审查已通过
+      - 集成验证已通过，或已记录为外部阻塞
