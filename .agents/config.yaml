@@ -30,6 +30,33 @@ orchestration:
     - 只做问答或解释
     - 只读分析且不进入执行流程
     - 极小型任务且不涉及文件修改或验证流程
+  runtime_policy:
+    tool_rules_override_project_defaults: true
+    when_subagents_unavailable_or_not_authorized:
+      delegation_status: blocked_by_runtime_policy
+      must_not_claim_subagents_started: true
+      must_record_reason_in_plan: true
+      must_execute_documented_stage_passes: true
+      must_create_task_records_for_execution: true
+      docs_workflow_files_may_be_changed_by_main_agent: true
+      business_code_requires_user_authorization_for_main_agent_direct_execution: true
+
+# 轻量任务判定。任何 disqualifiers 命中时，必须回到 Planner / Architect 明确边界。
+small_task:
+  all_required:
+    - single_owner_only
+    - no_api_contract_change
+    - no_database_sql_or_migration_change
+    - no_permission_security_scheduler_or_deployment_change
+    - no_shared_contract_or_public_module_change
+    - no_frontend_backend_combined_change
+    - verification_is_clear_and_local
+  disqualifiers:
+    - frontend_change_expands_to_backend_api_permissions_sql_or_data_access
+    - multiple_owners_affected
+    - ownership_yaml_does_not_cover_impact_scope
+    - public_contract_fields_error_codes_auth_compatibility_or_rollback_change_required
+    - cross_service_integration_or_third_party_dependency_required
 
 # 产品需求阶段。Product 负责在计划前明确产品范围和验收口径。
 product:
@@ -45,6 +72,7 @@ product:
 # 流程门禁。为 true 表示完成任务前必须经过对应阶段或记录阻塞原因。
 gates:
   require_discovery_before_first_task: true
+  require_task_record_for_execution: true
   require_prd_before_planning: true
   require_architecture_for_cross_module_changes: true
   require_tests_before_review: true
@@ -87,3 +115,17 @@ encoding:
   charset: UTF-8
   allow_bom: false
   forbid_unicode_escape_for_readable_text: true
+
+# 任务记录语言要求。正文必须中文，机器标识和必要原文可保留。
+task_records:
+  language: zh-CN
+  prose_must_be_chinese: true
+  allow_original_text_for:
+    - file_names
+    - config_keys
+    - commands
+    - code_identifiers
+    - error_logs
+    - api_fields
+    - third_party_terms
+  require_chinese_explanation_for_original_text: true

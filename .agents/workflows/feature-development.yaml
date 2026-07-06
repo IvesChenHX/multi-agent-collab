@@ -13,6 +13,33 @@ execution_policy:
     - 用户明确要求不启用子 Agent
     - 只做问答、解释或只读分析
     - 极小型任务且不涉及文件修改或验证流程
+  runtime_fallback:
+    active_when:
+      - 子 Agent 工具不可用
+      - 工具策略要求用户明确请求 subagent 或多 Agent 后才允许 spawn
+      - 平台安全规则拒绝自动分派
+    required_actions:
+      - 在 tasks/{task_id}/plan.md 记录 delegation_status 和原因
+      - 继续按阶段产出 discovery / prd / plan / architecture / implementation / test-report / review
+      - 明确哪些阶段是实际子 Agent 执行，哪些阶段是主 Agent 阶段化记录
+      - 对业务代码变更，在缺少用户明确授权时停在计划或架构阶段
+    forbidden_actions:
+      - 声称已经启动实际子 Agent
+      - 因无法启动子 Agent 而跳过任务文档
+      - 把跨 owner 或跨前后端变更降级为极小型修补
+
+# 轻量任务判定。命中 disqualifiers 时不能跳过 Planner / Architect。
+small_task:
+  allowed_only_when:
+    - 单一 owner
+    - 无 API、数据库、SQL、权限、安全、部署、调度或公共契约变更
+    - 不同时影响前端和后端
+    - 验收路径清楚且本地可执行
+  disqualifiers:
+    - 前端变更扩展到后端 API、权限、SQL 或数据访问层
+    - 同时命中两个及以上 owner
+    - ownership 覆盖不足或 owner 冲突
+    - 需要修改共享契约、字段语义、错误码、鉴权、兼容性或回滚方案
 
 # 工作流状态枚举。
 states:
@@ -206,3 +233,4 @@ gates:
       - 必要测试已有结果
       - 审查已通过
       - 集成验证已通过，或已记录为外部阻塞
+      - 任务记录正文使用中文；命令、日志、代码标识、配置键和必要原文已有中文解释
