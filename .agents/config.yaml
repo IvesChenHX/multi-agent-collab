@@ -8,15 +8,17 @@ paths:
   agents: .agents/agents
   workflows: .agents/workflows
   ownership: .agents/ownership.yaml
+  project_context: .agents/project-context.md
   tasks: tasks
   adr: docs/adr
 
 # 默认工作流。这里使用机器可读的工作流 id。
 default_workflow: feature-development
 
-# 子 Agent 编排策略。默认由主 Agent 开启并分派匹配阶段的子 Agent 执行。
+# 子 Agent 编排策略。默认按风险选择是否启用子 Agent，避免低风险任务消耗完整流程 token。
 orchestration:
-  default_use_subagents: true
+  default_strategy: risk_based
+  default_use_subagents: risk_based
   require_user_confirmation_for_default_subagents: false
   require_explicit_dispatch_notice: true
   dispatch_notice_fields:
@@ -25,21 +27,91 @@ orchestration:
     - allowed_paths
     - input_documents
     - expected_outputs
+  use_subagents_when:
+    - task_mode_is_high_risk
+    - multiple_owners_affected
+    - frontend_and_backend_both_affected
+    - public_contract_or_api_database_permission_security_deployment_changed
+    - user_explicitly_requests_subagents_or_full_workflow
   allow_main_agent_direct_execution_when:
     - 用户明确要求不启用子 Agent
     - 只做问答或解释
     - 只读分析且不进入执行流程
-    - 极小型任务且不涉及文件修改或验证流程
+    - 轻量任务且命中单一 owner
+    - 协作规范、任务文档、工作流配置、ownership 配置和集成记录等协调性文件
   runtime_policy:
     tool_rules_override_project_defaults: true
     when_subagents_unavailable_or_not_authorized:
       delegation_status: blocked_by_runtime_policy
       must_not_claim_subagents_started: true
       must_record_reason_in_plan: true
-      must_execute_documented_stage_passes: true
-      must_create_task_records_for_execution: true
+      must_execute_documented_stage_passes_for_selected_task_mode: true
+      must_create_task_records_required_by_selected_task_mode: true
+      must_not_downgrade_task_mode_due_to_runtime_policy: true
       docs_workflow_files_may_be_changed_by_main_agent: true
       business_code_requires_user_authorization_for_main_agent_direct_execution: true
+
+# 任务模式。先判定模式，再决定文档、子 Agent 和门禁。
+task_modes:
+  ask:
+    create_task_directory: false
+    use_subagents: false
+    records: []
+    applies_when:
+      - 纯问答、解释、建议或只读分析
+      - 用户未要求进入执行流程
+  light:
+    create_task_directory: true
+    use_subagents: false_by_default
+    records:
+      - tasks/{task_id}/task.md
+    required_sections:
+      - task_mode
+      - delegation_status
+      - brief
+      - acceptance
+      - plan
+      - implementation
+      - verification
+      - review
+    applies_when:
+      - single_owner_only
+      - low_risk
+      - verification_is_clear_and_local
+  standard:
+    create_task_directory: true
+    use_subagents: risk_based
+    records:
+      - tasks/{task_id}/brief.md
+      - tasks/{task_id}/acceptance.md
+      - tasks/{task_id}/discovery.md
+      - tasks/{task_id}/prd.md
+      - tasks/{task_id}/plan.md
+      - tasks/{task_id}/architecture.md
+      - tasks/{task_id}/implementation.md
+      - tasks/{task_id}/test-report.md
+      - tasks/{task_id}/review.md
+  high_risk:
+    create_task_directory: true
+    use_subagents: true_by_default
+    records: standard_plus_relevant_implementation_lane_records_and_adr_when_needed
+    applies_when_any:
+      - multiple_owners_affected
+      - frontend_and_backend_both_affected
+      - api_contract_database_sql_permission_security_scheduler_deployment_changed
+      - public_module_shared_model_compatibility_or_rollback_changed
+      - cross_service_or_third_party_integration_required
+
+# 上下文复用。稳定项目事实写入基线，任务内只记录增量发现。
+context_reuse:
+  baseline: .agents/project-context.md
+  discovery_records_increment_only: true
+  refresh_baseline_when:
+    - first_task_in_project
+    - project_structure_changed
+    - ownership_changed
+    - build_or_test_commands_changed
+    - baseline_missing_or_stale
 
 # 轻量任务判定。任何 disqualifiers 命中时，必须回到 Planner / Architect 明确边界。
 small_task:
@@ -61,7 +133,9 @@ small_task:
 # 产品需求阶段。Product 负责在计划前明确产品范围和验收口径。
 product:
   agent: product
-  record: tasks/{task_id}/prd.md
+  records:
+    standard_or_high_risk: tasks/{task_id}/prd.md
+    light: tasks/{task_id}/task.md
   allow_not_applicable_for:
     - 小型缺陷修复
     - 纯技术维护
@@ -73,7 +147,7 @@ product:
 gates:
   require_discovery_before_first_task: true
   require_task_record_for_execution: true
-  require_prd_before_planning: true
+  require_prd_before_planning: standard_or_high_risk
   require_architecture_for_cross_module_changes: true
   require_tests_before_review: true
   require_review_before_integration: true
@@ -120,6 +194,15 @@ encoding:
 task_records:
   language: zh-CN
   prose_must_be_chinese: true
+  compact_stage_format: true
+  forbid_repeating_upstream_full_text: true
+  prefer_references_over_copying_context: true
+  log_policy:
+    keep_command_result_and_key_errors_only: true
+    store_full_log_path_when_available: true
+  reviewer_policy:
+    findings_first: true
+    do_not_restate_implementation_when_no_issue: true
   allow_original_text_for:
     - file_names
     - config_keys

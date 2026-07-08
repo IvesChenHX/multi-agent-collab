@@ -3,16 +3,24 @@
 name: feature-development
 version: 1
 
-# 执行策略。进入执行流程后，主 Agent 默认开启并分派各阶段子 Agent。
+# 执行策略。进入执行流程后，先判定任务模式，再按风险开启子 Agent。
 execution_policy:
-  default_use_subagents: true
+  default_strategy: risk_based
+  default_use_subagents: risk_based
   require_user_confirmation_for_default_subagents: false
   require_explicit_dispatch_notice: true
   main_agent_role: coordinate_record_integrate
+  task_mode_must_be_selected_first: true
+  use_subagents_when:
+    - 高风险任务
+    - 多 owner 或前后端同时受影响
+    - 涉及 API、数据库、SQL、权限、安全、调度、部署、公共契约或第三方集成
+    - 用户明确要求 subagent、多 Agent、完整流程或审计记录
   direct_main_agent_allowed_when:
     - 用户明确要求不启用子 Agent
     - 只做问答、解释或只读分析
-    - 极小型任务且不涉及文件修改或验证流程
+    - 轻量任务且只命中单一 owner
+    - 任务文档、协作规范、工作流配置、ownership 配置和集成记录等协调性文件
   runtime_fallback:
     active_when:
       - 子 Agent 工具不可用
@@ -20,13 +28,75 @@ execution_policy:
       - 平台安全规则拒绝自动分派
     required_actions:
       - 在 tasks/{task_id}/plan.md 记录 delegation_status 和原因
-      - 继续按阶段产出 discovery / prd / plan / architecture / implementation / test-report / review
+      - 按已选择任务模式产出必要任务记录
       - 明确哪些阶段是实际子 Agent 执行，哪些阶段是主 Agent 阶段化记录
+      - 不得因为无法启动子 Agent 而降低任务模式
       - 对业务代码变更，在缺少用户明确授权时停在计划或架构阶段
     forbidden_actions:
       - 声称已经启动实际子 Agent
-      - 因无法启动子 Agent 而跳过任务文档
+      - 因无法启动子 Agent 而跳过所选任务模式要求的任务文档
       - 把跨 owner 或跨前后端变更降级为极小型修补
+
+# 任务模式。低风险任务使用较少记录，高风险任务保留完整门禁。
+task_modes:
+  ask:
+    description: 纯问答、解释、建议或只读分析。
+    create_task_directory: false
+    records: []
+    use_subagents: false
+  light:
+    description: 单 owner、低风险、验收清楚的任务。
+    create_task_directory: true
+    records:
+      - tasks/{task_id}/task.md
+    merged_sections:
+      - brief
+      - acceptance
+      - plan
+      - implementation
+      - verification
+      - review
+    use_subagents: false_by_default
+  standard:
+    description: 有文件修改或验证流程，但未命中高风险条件。
+    create_task_directory: true
+    records:
+      - tasks/{task_id}/brief.md
+      - tasks/{task_id}/acceptance.md
+      - tasks/{task_id}/discovery.md
+      - tasks/{task_id}/prd.md
+      - tasks/{task_id}/plan.md
+      - tasks/{task_id}/architecture.md
+      - tasks/{task_id}/implementation.md
+      - tasks/{task_id}/test-report.md
+      - tasks/{task_id}/review.md
+    optional_records:
+      - tasks/{task_id}/frontend-implementation.md
+      - tasks/{task_id}/backend-implementation.md
+    use_subagents: risk_based
+  high_risk:
+    description: 跨 owner、跨前后端或涉及契约、数据、安全、部署、兼容性等高风险变更。
+    create_task_directory: true
+    records: standard_plus_relevant_lane_records_and_adr_when_needed
+    use_subagents: true_by_default
+
+# 上下文复用。Discovery 优先引用项目基线，只记录本次增量。
+context_reuse:
+  baseline: .agents/project-context.md
+  discovery_records_increment_only: true
+  downstream_steps_reference_upstream_documents: true
+  forbid_copying_full_upstream_context: true
+
+# 阶段记录预算。除非用户要求详细报告，各阶段只写新增结论。
+record_budget:
+  compact_stage_format:
+    - 输入
+    - 本阶段结论
+    - 授权边界
+    - 输出给下一阶段
+    - 阻塞项
+  test_logs: command_result_key_errors_and_full_log_path_only
+  reviewer_output: findings_first_no_implementation_rewrite
 
 # 轻量任务判定。命中 disqualifiers 时不能跳过 Planner / Architect。
 small_task:
@@ -69,6 +139,7 @@ steps:
     outputs:
       - tasks/{task_id}/discovery.md
       - .agents/ownership.yaml
+      - .agents/project-context.md（首次、结构变化或基线过期时更新）
 
   - id: define_product
     agent: product
@@ -80,7 +151,8 @@ steps:
       - tasks/{task_id}/acceptance.md
       - 用户补充说明和已有产品文档
     outputs:
-      - tasks/{task_id}/prd.md
+      - 标准或高风险任务：tasks/{task_id}/prd.md
+      - 轻量任务：tasks/{task_id}/task.md 中的 PRD 不适用原因和验收口径
       - 产品范围、业务规则、验收口径和开放问题
 
   - id: plan
@@ -95,6 +167,7 @@ steps:
       - .agents/ownership.yaml
     outputs:
       - tasks/{task_id}/plan.md
+      - 任务模式和选择理由
       - 每个 owner 的允许修改路径和禁止越界路径
 
   - id: design
@@ -184,6 +257,7 @@ steps:
       - 允许补充的测试路径
     outputs:
       - tasks/{task_id}/test-report.md
+      - 命令、结果、关键错误摘要和完整日志路径
 
   - id: review
     agent: reviewer
@@ -201,6 +275,7 @@ steps:
       - .agents/ownership.yaml
     outputs:
       - tasks/{task_id}/review.md
+      - findings 优先的审查结论，不重复复述实现记录
 
   - id: integrate
     agent: integrator
@@ -225,6 +300,7 @@ gates:
     requires:
       - P1 数量为 0
       - P2 数量小于或等于 2
+      - 任务模式已记录，且与 owner、影响范围和风险条件匹配
       - PRD 已完成，或已明确记录为不适用及原因
       - Reviewer 确认不存在未授权跨 owner 修改
       - 每个 Agent 的输出均未超出 plan 授权范围
