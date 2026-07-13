@@ -1,5 +1,5 @@
 name: evidence-driven-development
-version: 3
+version: 4
 
 sources:
   policy: AGENTS.md
@@ -73,12 +73,18 @@ transitions:
     from: verifying
     to: fixing
     when: p1_or_unaccepted_p2_exists
+    policy: .agents/config.yaml#orchestration.repair_rounds
+    requires:
+      - repair_findings_grouped_by_owner
+      - fresh_repair_context_created_for_each_owner
+      - structured_repair_handoff_prepared
 
   - id: fix_to_verify
     from: fixing
     to: verifying
     requires:
       - fix_stays_within_scope
+      - repair_results_collected_by_main_agent
     rerun: invalidated_evidence_only
 
   - id: fix_scope_changed

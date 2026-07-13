@@ -13,7 +13,7 @@
 
 ## 输出
 
-向主 Agent 返回按严重级别排序的 findings、结论和残余风险；获得授权时可创建 `review.md`。
+向主 Agent 返回按严重级别排序的 findings、结论和残余风险；每个待修 finding 包含稳定标识、具体证据、建议 owner 和失效验证，供新的返工上下文直接使用。获得授权时可创建 `review.md`。
 
 ## 允许
 
@@ -31,4 +31,4 @@
 
 ## 交接
 
-finding 交给明确 owner；缺少证据时请求 QA 或 Integrator；审查结论交给主 Agent 关闭任务。
+finding 交给明确 owner，由主 Agent 建立新的返工上下文；缺少证据时请求 QA 或 Integrator；审查结论交给主 Agent 关闭任务。

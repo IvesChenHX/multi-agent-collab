@@ -9,6 +9,7 @@
 - `tasks/{task_id}/task.md`
 - 授权的后端代码和测试
 - 条件触发时存在的产品或架构结论
+- 返工时由主 Agent 提供的结构化返工包：finding 证据、允许路径、适用决策/契约和失效验证
 
 ## 输出
 
@@ -29,4 +30,4 @@
 
 ## 交接
 
-跨 owner 需求返回 Triage；兼容、数据或权限风险返回 Architect；完成后把结构化结果交给主 Agent。
+跨 owner 需求返回 Triage；兼容、数据或权限风险返回 Architect；完成后把结构化结果交给主 Agent。返工轮次交接后结束当前上下文，后续 findings 由新的返工上下文处理。

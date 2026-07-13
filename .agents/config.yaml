@@ -1,8 +1,8 @@
 # 多 Agent 协作机器配置。人类可读规则以 AGENTS.md 为准。
 # 同一规则只在一个位置维护；本文件不重复角色内部说明和状态转换细节。
-schema_version: 3
+schema_version: 4
 project: generic-multi-agent-collaboration
-version: 3
+version: 4
 
 authority:
   human_policy: AGENTS.md
@@ -43,6 +43,30 @@ orchestration:
     must_not_claim_unstarted_subagents: true
     standard_or_above_business_code_requires_user_authorization_when_expected_implementer_cannot_be_dispatched: true
     coordination_files_may_be_changed_by_main_agent: true
+  repair_rounds:
+    trigger: verification_returns_p1_or_unaccepted_p2
+    record_in: tasks/{task_id}/task.md#delegation
+    fresh_execution_context_required: true
+    accepted_context_forms:
+      - new_agent_instance
+      - new_independent_conversation_for_assigned_role
+    forbidden_context_reuse:
+      - original_implementation_conversation
+      - previous_repair_conversation
+    grouping:
+      same_owner_findings: one_context_per_round
+      independent_owners: may_run_in_parallel
+    handoff:
+      context_inheritance: structured_only
+      required_fields:
+        - task_record_path
+        - finding_ids_and_evidence
+        - allowed_paths
+        - applicable_decisions_and_contracts
+        - invalidated_verification
+      full_conversation_replay: forbidden
+    next_findings: open_new_repair_round
+    fresh_context_unavailable: blocked
 
 # 高风险与完整审计分离；普通任务不再默认生成九份阶段文档。
 task_modes:
