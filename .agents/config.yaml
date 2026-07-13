@@ -1,7 +1,16 @@
-# 多 Agent 协作配置。
-# project 是协作体系标识，保持稳定便于工具识别。
+# 多 Agent 协作机器配置。人类可读规则以 AGENTS.md 为准。
+# 同一规则只在一个位置维护；本文件不重复角色内部说明和状态转换细节。
+schema_version: 3
 project: generic-multi-agent-collaboration
-version: 1
+version: 3
+
+authority:
+  human_policy: AGENTS.md
+  machine_policy: .agents/config.yaml
+  state_transitions: .agents/workflows/evidence-driven-development.yaml
+  path_ownership: .agents/ownership.yaml
+  role_contracts: .agents/agents
+  project_facts: .agents/project-context.md
 
 # 关键目录位置。迁移到真实项目后，发现阶段（Discovery）应按实际结构调整。
 paths:
@@ -13,176 +22,105 @@ paths:
   adr: docs/adr
 
 # 默认工作流。这里使用机器可读的工作流 id。
-default_workflow: feature-development
+default_workflow: evidence-driven-development
 
-# 子 Agent 编排策略。默认按风险选择是否启用子 Agent，避免低风险任务消耗完整流程 token。
+# 以收益决定编排，不为映射角色表启动 Agent。
 orchestration:
-  default_strategy: risk_based
-  default_use_subagents: risk_based
-  require_user_confirmation_for_default_subagents: false
-  require_explicit_dispatch_notice: true
-  dispatch_notice_fields:
-    - agent
-    - task_boundary
-    - allowed_paths
-    - input_documents
-    - expected_outputs
+  default_strategy: value_based
+  do_not_spawn_to_mirror_role_list: true
   use_subagents_when:
-    - task_mode_is_high_risk
-    - multiple_owners_affected
-    - frontend_and_backend_both_affected
-    - public_contract_or_api_database_permission_security_deployment_changed
-    - user_explicitly_requests_subagents_or_full_workflow
+    - independent_work_units_can_run_in_parallel
+    - standard_or_above_has_assigned_business_implementation_role
+    - ownership_requires_isolated_implementers
+    - high_risk_requires_independent_review_or_qa
+    - user_explicitly_requests_multi_agent_parallel_or_audit
   allow_main_agent_direct_execution_when:
-    - 用户明确要求不启用子 Agent
-    - 只做问答或解释
-    - 只读分析且不进入执行流程
-    - 轻量任务且命中单一 owner
-    - 协作规范、任务文档、工作流配置、ownership 配置和集成记录等协调性文件
+    - ask_or_quick_mode
+    - coordination_files_only
   runtime_policy:
     tool_rules_override_project_defaults: true
-    when_subagents_unavailable_or_not_authorized:
-      delegation_status: blocked_by_runtime_policy
-      must_not_claim_subagents_started: true
-      must_record_reason_in_plan: true
-      must_execute_documented_stage_passes_for_selected_task_mode: true
-      must_create_task_records_required_by_selected_task_mode: true
-      must_not_downgrade_task_mode_due_to_runtime_policy: true
-      docs_workflow_files_may_be_changed_by_main_agent: true
-      business_code_requires_user_authorization_for_main_agent_direct_execution: true
+    record_delegation_status_only_if_dispatch_was_planned_or_attempted: true
+    must_not_claim_unstarted_subagents: true
+    standard_or_above_business_code_requires_user_authorization_when_expected_implementer_cannot_be_dispatched: true
+    coordination_files_may_be_changed_by_main_agent: true
 
-# 任务模式。先判定模式，再决定文档、子 Agent 和门禁。
+# 高风险与完整审计分离；普通任务不再默认生成九份阶段文档。
 task_modes:
   ask:
     create_task_directory: false
     use_subagents: false
-    records: []
-    applies_when:
-      - 纯问答、解释、建议或只读分析
-      - 用户未要求进入执行流程
-  light:
-    create_task_directory: true
-    use_subagents: false_by_default
-    records:
-      - tasks/{task_id}/task.md
-    required_sections:
-      - task_mode
-      - delegation_status
-      - brief
-      - acceptance
-      - plan
-      - implementation
-      - verification
-      - review
-    applies_when:
-      - single_owner_only
+  quick:
+    create_task_directory: false
+    use_subagents: false
+    requires_all:
+      - single_owner
+      - localized_reversible_change
       - low_risk
-      - verification_is_clear_and_local
+      - clear_local_verification
   standard:
     create_task_directory: true
-    use_subagents: risk_based
-    records:
-      - tasks/{task_id}/brief.md
-      - tasks/{task_id}/acceptance.md
-      - tasks/{task_id}/discovery.md
-      - tasks/{task_id}/prd.md
-      - tasks/{task_id}/plan.md
-      - tasks/{task_id}/architecture.md
-      - tasks/{task_id}/implementation.md
-      - tasks/{task_id}/test-report.md
-      - tasks/{task_id}/review.md
+    primary_record: tasks/{task_id}/task.md
+    use_subagents: only_when_parallel_or_independent_value_exists
   high_risk:
     create_task_directory: true
-    use_subagents: true_by_default
-    records: standard_plus_relevant_implementation_lane_records_and_adr_when_needed
+    primary_record: tasks/{task_id}/task.md
+    required_gates:
+      - independent_review
+      - targeted_tests
+      - rollback_plan
     applies_when_any:
-      - multiple_owners_affected
-      - frontend_and_backend_both_affected
-      - api_contract_database_sql_permission_security_scheduler_deployment_changed
-      - public_module_shared_model_compatibility_or_rollback_changed
-      - cross_service_or_third_party_integration_required
+      - destructive_or_irreversible_data_change
+      - permission_auth_privacy_security_or_money_change
+      - public_contract_compatibility_risk
+      - cross_service_consistency_or_concurrency_risk
+      - scheduler_production_deployment_or_rollback_risk
+      - unresolved_ownership_conflict
+  audit:
+    create_task_directory: true
+    full_stage_records: true
+    applies_when_any:
+      - user_requests_full_workflow_or_audit_package
+      - external_governance_requires_full_trace
+
+conditional_records:
+  prd: complex_product_rules_or_multiple_user_scenarios
+  architecture: public_contract_data_security_cross_service_or_major_design_decision
+  test_report: large_test_matrix_or_independent_qa_evidence
+  review: independent_reviewer_or_actionable_findings
+  lane_records: implementation_lanes_need_independent_handoff
+  adr: long_lived_cross_task_hard_to_reverse_decision
 
 # 上下文复用。稳定项目事实写入基线，任务内只记录增量发现。
 context_reuse:
   baseline: .agents/project-context.md
-  discovery_records_increment_only: true
-  refresh_baseline_when:
-    - first_task_in_project
-    - project_structure_changed
-    - ownership_changed
-    - build_or_test_commands_changed
-    - baseline_missing_or_stale
+  refresh_only_when_facts_changed_or_stale: true
+  ordinary_tasks_reference_baseline_without_discovery_record: true
 
-# 轻量任务判定。任何 disqualifiers 命中时，必须回到 Planner / Architect 明确边界。
-small_task:
-  all_required:
-    - single_owner_only
-    - no_api_contract_change
-    - no_database_sql_or_migration_change
-    - no_permission_security_scheduler_or_deployment_change
-    - no_shared_contract_or_public_module_change
-    - no_frontend_backend_combined_change
-    - verification_is_clear_and_local
-  disqualifiers:
-    - frontend_change_expands_to_backend_api_permissions_sql_or_data_access
-    - multiple_owners_affected
-    - ownership_yaml_does_not_cover_impact_scope
-    - public_contract_fields_error_codes_auth_compatibility_or_rollback_change_required
-    - cross_service_integration_or_third_party_dependency_required
-
-# 产品需求阶段。Product 负责在计划前明确产品范围和验收口径。
-product:
-  agent: product
-  records:
-    standard_or_high_risk: tasks/{task_id}/prd.md
-    light: tasks/{task_id}/task.md
-  allow_not_applicable_for:
-    - 小型缺陷修复
-    - 纯技术维护
-    - 基础设施或构建脚本调整
-  require_reason_when_not_applicable: true
-  require_prd_for_cross_role_feature: true
-
-# 流程门禁。为 true 表示完成任务前必须经过对应阶段或记录阻塞原因。
-gates:
-  require_discovery_before_first_task: true
-  require_task_record_for_execution: true
-  require_prd_before_planning: standard_or_high_risk
-  require_architecture_for_cross_module_changes: true
-  require_tests_before_review: true
-  require_review_before_integration: true
-  require_integration_before_done: true
-
-# 实现阶段分流。Planner 根据 ownership 和影响范围选择一个或多个 lane。
-implementation:
-  lanes:
-    frontend:
-      agent: frontend-implementer
-      primary_owner: web
-      record: tasks/{task_id}/frontend-implementation.md
-    backend:
-      agent: backend-implementer
-      primary_owner: backend
-      record: tasks/{task_id}/backend-implementation.md
-  summary_record: tasks/{task_id}/implementation.md
-  run_lanes_in_parallel_when_contract_is_stable: true
-  require_architecture_contract_for_cross_lane_changes: true
-
-# 职责边界。所有 Agent 只能在 plan 授权范围内修改文件。
 boundaries:
-  require_allowed_paths_in_plan: true
-  require_forbidden_paths_in_plan: true
-  unassigned_paths_require_main_agent_decision: true
+  standard_and_above_require_owner_and_allowed_paths: true
+  forbidden_paths_only_when_non_obvious_or_high_risk: true
   cross_owner_business_code_change_severity: P1
-  missing_owner_or_boundary_record_severity: P2
 
-# 质量标准。P1 必须清零，P2 不超过阈值才允许进入完成态。
+verification:
+  default_order:
+    - targeted_checks
+    - affected_module_checks
+    - full_integration_only_when_shared_surface_changed
+  never_repeat_same_command_for_role_ceremony: true
+  rerun_only_impacted_checks_after_fix: true
+  return_to_architecture_only_when_risk_surface_changed: true
+
 quality:
-  max_repair_loops_per_module: 3
+  max_same_root_cause_repair_loops: 2
   pass_condition:
     p1: 0
-    p2_max: 2
+    p2: fixed_or_explicitly_accepted
   p3_blocks_release: false
+  close_states:
+    complete: all_required_gates_pass
+    blocked: required_gate_cannot_run
+    accepted_risk: no_p1_and_authorized_acceptance
+  high_risk_missing_independent_review: blocked_only
 
 # 编码要求。可读文本必须使用 UTF-8 实际字符，不写成 Unicode 转义。
 encoding:
@@ -190,13 +128,28 @@ encoding:
   allow_bom: false
   forbid_unicode_escape_for_readable_text: true
 
-# 任务记录语言要求。正文必须中文，机器标识和必要原文可保留。
+# 任务记录默认是单一事实源，不适用小节直接省略。
 task_records:
   language: zh-CN
   prose_must_be_chinese: true
-  compact_stage_format: true
+  primary_record: tasks/{task_id}/task.md
+  steward: main-agent
+  concurrent_agent_writes: forbidden
+  agent_result_delivery:
+    - structured_return
+    - authorized_independent_handoff_record
+  primary_sections:
+    - mode
+    - scope
+    - decisions_if_any
+    - changes
+    - verification
+    - findings
+    - residual_risks_if_any
+    - delegation_if_used_or_blocked
+  omit_not_applicable_sections: true
   forbid_repeating_upstream_full_text: true
-  prefer_references_over_copying_context: true
+  forbid_full_diff_and_long_logs: true
   log_policy:
     keep_command_result_and_key_errors_only: true
     store_full_log_path_when_available: true

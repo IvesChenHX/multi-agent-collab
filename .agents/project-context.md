@@ -1,27 +1,29 @@
 # 项目上下文基线
 
-本文件由 Discovery 维护，用于记录稳定项目事实。普通任务的 `discovery.md` 应引用本文件，只补充本次增量发现，避免重复扫描和重复复述。
+本文件只记录稳定项目事实，由 Discovery 按需维护；流程规则由 `AGENTS.md` 和 `.agents/config.yaml` 定义。
 
 ## 项目类型
 
-- 待 Discovery 首次确认。
+- 通用多 Agent 协作协议模板，不包含具体业务实现。
 
-## 主要目录和 owner
+## 主要目录
 
-- `AGENTS.md`、`.agents/**`、`tasks/**`、`docs/**`：协作规范、任务记录和文档，默认命中 `docs` owner。
-- 其它业务目录：待真实项目 Discovery 按实际结构补充。
+- `AGENTS.md`：跨角色协作规则。
+- `.agents/agents/**`：角色执行契约。
+- `.agents/workflows/**`：状态转换定义。
+- `.agents/ownership.yaml`：路径 ownership 候选映射。
+- `tasks/**`：任务证据记录。
+- `docs/adr/**`：长期架构决策。
 
-## 常用命令
+## 当前配置事实
 
-- 待 Discovery 按实际项目补充构建、测试、lint、typecheck 和启动命令。
+- 默认工作流：`evidence-driven-development`。
+- `feature-development`：只读 legacy 入口，不用于新任务。
+- 当前仓库没有业务构建或运行命令。
+- 协议修改主要验证 YAML 可解析、引用一致、UTF-8 可读和 diff 无空白错误。
 
-## 长期约定
+## 待目标项目补充
 
-- 任务记录正文使用中文。
-- 可读中文和本地化文本保存为 UTF-8 实际字符，不写成 `\uXXXX`。
-- 低风险任务优先使用轻量记录；高风险任务保留完整质量门禁。
-
-## 待确认项
-
-- 真实业务模块目录边界。
-- 各 owner 的实际测试命令和集成验证方式。
+- 真实业务模块、owner 和路径提示。
+- 构建、测试、lint、typecheck 和启动命令。
+- 环境依赖、集成环境和外部系统限制。

@@ -1,0 +1,125 @@
+name: evidence-driven-development
+version: 3
+
+sources:
+  policy: AGENTS.md
+  modes_and_gates: .agents/config.yaml
+  ownership: .agents/ownership.yaml
+  role_contracts: .agents/agents
+
+execution:
+  mode_source: .agents/config.yaml#task_modes
+  primary_record_source: .agents/config.yaml#task_records
+  roles_are_optional_capabilities: true
+  do_not_spawn_to_replay_role_list: true
+
+states:
+  - triage
+  - executing
+  - verifying
+  - fixing
+  - complete
+  - blocked
+  - accepted_risk
+
+capability_dispatch:
+  discovery:
+    agent: discovery
+    when: baseline_or_ownership_unknown_or_stale
+  product:
+    agent: product
+    when: product_scope_business_rules_or_acceptance_ambiguous
+  planner:
+    agent: planner
+    when: multiple_owners_dependencies_or_parallel_split
+  architect:
+    agent: architect
+    when: contract_data_security_cross_service_or_major_design_change
+  qa:
+    agent: qa
+    when: complex_acceptance_boundary_matrix_or_independent_test_evidence
+  review:
+    agent: reviewer
+    when: high_risk_complex_diff_test_gap_or_user_request
+  integrate:
+    agent: integrator
+    when: cross_module_service_configuration_environment_or_deployment_linkage
+
+transitions:
+  - id: triage_to_execute
+    from: triage
+    to: executing
+    requires:
+      - mode_selected
+      - acceptance_defined
+      - impacted_owners_resolved
+      - allowed_paths_and_executors_defined
+      - required_gates_selected
+      - verification_owners_defined
+
+  - id: execute_to_verify
+    from: executing
+    to: verifying
+    requires:
+      - changes_stay_within_scope
+      - implementation_results_collected_by_main_agent
+
+  - id: execute_scope_changed
+    from: executing
+    to: triage
+    when: required_change_exceeds_scope_or_changes_risk_surface
+
+  - id: verify_to_fix
+    from: verifying
+    to: fixing
+    when: p1_or_unaccepted_p2_exists
+
+  - id: fix_to_verify
+    from: fixing
+    to: verifying
+    requires:
+      - fix_stays_within_scope
+    rerun: invalidated_evidence_only
+
+  - id: fix_scope_changed
+    from: fixing
+    to: triage
+    when: fix_expands_scope_or_risk_surface
+
+  - id: verify_to_complete
+    from: verifying
+    to: complete
+    requires:
+      - acceptance_evidence_present
+      - all_mode_required_gates_pass
+      - p1_is_zero
+      - p2_is_fixed_or_explicitly_accepted
+      - no_unresolved_contract_conflict
+
+  - id: verify_to_accepted_risk
+    from: verifying
+    to: accepted_risk
+    requires:
+      - p1_is_zero
+      - authorized_risk_acceptance_recorded
+      - missing_gate_is_eligible_for_acceptance
+
+  - id: any_to_blocked
+    from: any_non_terminal
+    to: blocked
+    when: required_gate_cannot_run_or_external_dependency_prevents_progress
+
+terminal_rules:
+  high_risk_missing_independent_review: blocked
+  accepted_risk_cannot_override:
+    - p1
+    - high_risk_independent_review
+  same_root_cause_failed_twice: stop_automatic_fix_and_retriage
+
+record_handoff:
+  task_record_steward: main-agent
+  parallel_agents_must_not_edit_task_record: true
+  agent_outputs:
+    - structured_result
+    - authorized_independent_handoff_record
+  main_agent_merges_current_evidence_only: true
