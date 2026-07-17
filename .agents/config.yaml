@@ -1,8 +1,8 @@
 # 多 Agent 协作机器配置。人类可读规则以 AGENTS.md 为准。
 # 同一规则只在一个位置维护；本文件不重复角色内部说明和状态转换细节。
-schema_version: 4
+schema_version: 5
 project: generic-multi-agent-collaboration
-version: 4
+version: 5
 
 authority:
   human_policy: AGENTS.md
@@ -11,6 +11,7 @@ authority:
   path_ownership: .agents/ownership.yaml
   role_contracts: .agents/agents
   project_facts: .agents/project-context.md
+  task_registry: tasks/index.yaml
 
 # 关键目录位置。迁移到真实项目后，发现阶段（Discovery）应按实际结构调整。
 paths:
@@ -19,6 +20,7 @@ paths:
   ownership: .agents/ownership.yaml
   project_context: .agents/project-context.md
   tasks: tasks
+  task_registry: tasks/index.yaml
   adr: docs/adr
 
 # 默认工作流。这里使用机器可读的工作流 id。
@@ -189,3 +191,34 @@ task_records:
     - api_fields
     - third_party_terms
   require_chinese_explanation_for_original_text: true
+
+# 项目级台账只保存任务实例元数据；状态定义仍由 workflow 负责。
+task_registry:
+  path: tasks/index.yaml
+  steward: main-agent
+  registered_modes:
+    - standard
+    - high_risk
+    - audit
+  id_allocation_source: next_task_number
+  task_entry_fields:
+    - id
+    - title
+    - kind
+    - status
+    - summary
+    - archived_at
+  entry_kinds:
+    task:
+      status_source: .agents/workflows/evidence-driven-development.yaml#states
+    legacy_reference:
+      allowed_status:
+        - archived
+  terminal_archive:
+    status_source: .agents/workflows/evidence-driven-development.yaml#state_persistence.terminal_archive.states
+    method: mark_terminal_in_registry
+    set_archived_at: required
+    move_task_directory: false
+  active_entry_archived_at: null
+  unique_fields:
+    - id

@@ -26,6 +26,7 @@
 | `.agents/ownership.yaml` | 路径到 owner、默认实现角色和授权规则的映射 |
 | `.agents/agents/*.md` | 单个角色的输入、允许动作、禁止动作和交接输出 |
 | `.agents/project-context.md` | 项目稳定事实，不保存流程规则 |
+| `tasks/index.yaml` | 任务编号、实例状态、归档摘要和统一归档时间 |
 
 发生冲突时，依次遵守平台/用户指令、`AGENTS.md` 硬门禁、任务 `scope`、ownership 映射和角色内部规则。机器配置与 `AGENTS.md` 不一致时停止执行并修复配置，不自行选择更宽松规则。
 
@@ -97,7 +98,7 @@ Triage -> Execute -> Verify -> Close
 
 - 优先复用 `.agents/project-context.md` 和 `.agents/ownership.yaml`；结构与基线未变化时不重复扫描仓库。
 - 确定模式、验收标准、owner、允许修改路径、依赖关系、验证责任和可选门禁。
-- `standard` 及以上把结论写入 `task.md`；`quick` 在最终回复中说明实际修改路径。
+- `standard` 及以上从 `tasks/index.yaml` 分配任务编号，先以 `triage` 状态登记标题和任务摘要，再把结论写入 `task.md`；`quick` 在最终回复中说明实际修改路径。
 
 ### Execute
 
@@ -128,6 +129,8 @@ Triage -> Execute -> Verify -> Close
 
 高风险任务缺少独立 Reviewer 时只能是 `blocked`，不能通过 `accepted_risk` 绕过。
 
+`standard` 及以上的状态转换必须同步更新 `tasks/index.yaml`。进入 `complete`、`blocked` 或 `accepted_risk` 后，以终态和 `archived_at` 完成统一归档；任务目录保持原路径，不因归档移动，确保历史引用和结构化交接仍然有效。台账未成功写入时状态转换不算完成。
+
 ## 3. Ownership 与分派
 
 - 每个执行任务都要确认 `.agents/ownership.yaml` 是否覆盖影响范围；基线未变化时直接引用，不重复列出全部目录。
@@ -149,7 +152,9 @@ Triage -> Execute -> Verify -> Close
 
 ## 4. 单一事实源与文档预算
 
-`standard` 和 `high_risk` 默认只维护 `tasks/{task_id}/task.md`。主 Agent 负责合并各角色结果，按需包含：
+`tasks/index.yaml` 是项目级任务台账，由主 Agent 维护并纳入版本管理。每个 `standard` 及以上任务只登记一条实例记录，包含任务编号、标题、类型、当前状态、摘要和归档时间；状态规则仍由 workflow 定义，不在台账重复。`next_task_number` 是新编号的唯一分配依据。各任务目录可以作为本地详细工作证据，不作为统一归档的存在前提。
+
+`standard` 和 `high_risk` 的任务内证据默认只维护 `tasks/{task_id}/task.md`。主 Agent 负责合并各角色结果，按需包含：
 
 | 小节 | 记录内容 |
 | --- | --- |
@@ -162,7 +167,7 @@ Triage -> Execute -> Verify -> Close
 | `residual_risks` | 尚未消除或已接受的风险 |
 | `delegation` | 实际分派、返工轮次及其新上下文形式，或原计划分派被运行时阻止的情况 |
 
-不适用的小节省略，不写占位说明。同一事实只保留一个当前有效版本：下游引用已有结论；重复执行同一验证时更新原记录，不追加流水账。
+不适用的小节省略，不写占位说明。同一事实只保留一个当前有效版本：任务实例状态、摘要和归档时间只写在 `tasks/index.yaml`，范围、决策、变更和验证证据只写在任务记录；下游引用已有结论，重复执行同一验证时更新原记录，不追加流水账。
 
 只有命中触发条件才创建额外文档：
 

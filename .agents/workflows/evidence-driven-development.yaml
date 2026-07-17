@@ -1,17 +1,33 @@
 name: evidence-driven-development
-version: 4
+version: 5
 
 sources:
   policy: AGENTS.md
   modes_and_gates: .agents/config.yaml
   ownership: .agents/ownership.yaml
   role_contracts: .agents/agents
+  task_registry: tasks/index.yaml
 
 execution:
   mode_source: .agents/config.yaml#task_modes
   primary_record_source: .agents/config.yaml#task_records
   roles_are_optional_capabilities: true
   do_not_spawn_to_replay_role_list: true
+
+state_persistence:
+  registry_policy: .agents/config.yaml#task_registry
+  applies_to_modes_source: .agents/config.yaml#task_registry.registered_modes
+  initial_registration:
+    state: triage
+  on_every_transition:
+    - update_registry_status
+  transition_commit_requires_registry_write: true
+  terminal_archive:
+    states:
+      - complete
+      - blocked
+      - accepted_risk
+    archive_policy: .agents/config.yaml#task_registry.terminal_archive
 
 states:
   - triage
@@ -56,6 +72,7 @@ transitions:
       - allowed_paths_and_executors_defined
       - required_gates_selected
       - verification_owners_defined
+      - task_registry_entry_exists
 
   - id: execute_to_verify
     from: executing
@@ -121,6 +138,7 @@ terminal_rules:
     - p1
     - high_risk_independent_review
   same_root_cause_failed_twice: stop_automatic_fix_and_retriage
+  terminal_state_requires_registry_archive: true
 
 record_handoff:
   task_record_steward: main-agent

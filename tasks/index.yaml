@@ -1,0 +1,39 @@
+# 项目级任务实例台账。任务模式和状态转换规则不在此重复定义。
+schema_version: 1
+next_task_number: 6
+
+tasks:
+  - id: TASK-0001-example
+    title: 示例任务记录模板
+    kind: legacy_reference
+    status: archived
+    summary: 旧版固定阶段文档的示例模板，仅作历史参考。
+    archived_at: 2026-07-06T08:09:35+08:00
+
+  - id: TASK-0002-token-optimization
+    title: 协作流程 Token 优化
+    kind: task
+    status: complete
+    summary: 引入风险分级、增量上下文和按需文档，降低普通任务的协作开销。
+    archived_at: 2026-07-08T18:13:17+08:00
+
+  - id: TASK-0003-flow-performance
+    title: 流程性能与角色边界优化
+    kind: task
+    status: complete
+    summary: 统一规则权威来源、角色边界和证据驱动状态机，移除固定阶段链。
+    archived_at: 2026-07-13T12:02:34+08:00
+
+  - id: TASK-0004-fresh-repair-context
+    title: 返工轮次使用全新 Agent 上下文
+    kind: task
+    status: complete
+    summary: P1/P2 返工改用全新执行上下文和结构化交接，禁止续写原实现对话。
+    archived_at: 2026-07-13T12:18:45+08:00
+
+  - id: TASK-0005-unified-task-archive
+    title: 统一任务归档
+    kind: task
+    status: complete
+    summary: 建立项目级任务台账，并把终态、摘要和归档时间纳入 Close 门禁。
+    archived_at: 2026-07-16T16:00:06+08:00

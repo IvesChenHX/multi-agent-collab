@@ -12,13 +12,15 @@
 - `.agents/agents/**`：角色执行契约。
 - `.agents/workflows/**`：状态转换定义。
 - `.agents/ownership.yaml`：路径 ownership 候选映射。
-- `tasks/**`：任务证据记录。
+- `tasks/index.yaml`：纳入版本管理的项目级任务台账和统一归档入口。
+- `tasks/{task_id}/**`：本地单任务详细证据，归档后保持路径不变。
 - `docs/adr/**`：长期架构决策。
 
 ## 当前配置事实
 
 - 默认工作流：`evidence-driven-development`。
 - `feature-development`：只读 legacy 入口，不用于新任务。
+- `standard` 及以上任务在 `tasks/index.yaml` 登记，终态通过台账归档，不移动任务目录。
 - 当前仓库没有业务构建或运行命令。
 - 协议修改主要验证 YAML 可解析、引用一致、UTF-8 可读和 diff 无空白错误。
 
