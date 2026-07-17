@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "event_id": "EVT-01K0W4Z36K3W5C2R0A3M8N9P81",
+  "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+  "event_type": "task_created",
+  "occurred_at": "2026-07-17T10:00:00Z",
+  "actor": {
+    "id": "agent-main",
+    "kind": "agent",
+    "display_name": "Main Controller"
+  },
+  "run_id": null,
+  "expected_revision": -1,
+  "new_revision": 0,
+  "idempotency_key": "example-0",
+  "payload": {
+    "state": "triage"
+  }
+}

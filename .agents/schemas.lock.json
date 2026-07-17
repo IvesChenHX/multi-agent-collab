@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "generated_from": "schemas",
+  "files": [
+    {"path": "schemas/approval.schema.json", "sha256": "sha256:0fe66262b41e642e4d8664d863d4d86ec61aa78e9a46912e0982ae178ef55f90"},
+    {"path": "schemas/common.schema.json", "sha256": "sha256:3071571a53630bf884dd866a097960cb9aea66690c15d44b88145412f0976f0a"},
+    {"path": "schemas/config.schema.json", "sha256": "sha256:980d05414a83797791dd94df75754113f3f994c7e043e02d6e9e32e4210abe7a"},
+    {"path": "schemas/event.schema.json", "sha256": "sha256:03b99625035a369b20b97f167fe1b207869d2593fac8b1d58d44e15404262fa8"},
+    {"path": "schemas/evidence.schema.json", "sha256": "sha256:e358bd5229c0a15d214a6848af9e4c6eb3af4367291a3f3d0847f1b73d40d913"},
+    {"path": "schemas/finding.schema.json", "sha256": "sha256:27746b7521fe853a1e635d2a700b2f23d6a4c26e4e919f56d53fce0f41dc17f8"},
+    {"path": "schemas/ownership.schema.json", "sha256": "sha256:b27c5d91b307e3ddecfefcdf663de33bf54bd01b0e55d1caaf0345f06ab02a00"},
+    {"path": "schemas/result.schema.json", "sha256": "sha256:83eccc290566190a52e071a8e6e802cb2d2c5d09b7271dd96c395fc6cea616f0"},
+    {"path": "schemas/risk-acceptance.schema.json", "sha256": "sha256:114dd0c90c8f6aa7fc8757b2f42b0b69523cef19ec18c6c3f64aa366dbb022bc"},
+    {"path": "schemas/run.schema.json", "sha256": "sha256:a04fce08d3a66e27e7997948985a6be0fd3f7711f9edc821e4fa69949b5b910e"},
+    {"path": "schemas/runtime-profile.schema.json", "sha256": "sha256:98f023a0a315fefef7391ecb8d1e9c9fb8776109f20cdc444e18867d914fa6a4"},
+    {"path": "schemas/scope-contract.schema.json", "sha256": "sha256:f77ac642f84580214b54caed1182da085769914f6570bbbeda9c7a401f55592b"},
+    {"path": "schemas/task.schema.json", "sha256": "sha256:f4bff368d9afafba85c6bf7f8e0d90a5a4f565459a29410468e6bab00b01ed34"},
+    {"path": "schemas/workflow.schema.json", "sha256": "sha256:8af6d6076aab508bb2d39748d216ab433cff2b5c84395e350a841865a2e957c2"},
+    {"path": "schemas/work-unit.schema.json", "sha256": "sha256:99bc92f5906480ad151c2952943a48dcce1061c62fccc5e0e268266009b3586e"}
+  ]
+}

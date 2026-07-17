@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/multi-agent-collab/schemas/common.schema.json",
+  "title": "multi-agent-collab common definitions",
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Z]+-[0-9A-HJKMNP-TV-Z]{10,26}(?:-[a-z0-9][a-z0-9-]{0,63})?$"
+    },
+    "simple_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:@/-]+$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "repo_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "^/"
+          },
+          {
+            "pattern": "^[A-Za-z]:[\\\\/]"
+          },
+          {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          {
+            "pattern": "\\u0000"
+          }
+        ]
+      }
+    },
+    "glob_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "^/"
+          },
+          {
+            "pattern": "^[A-Za-z]:[\\\\/]"
+          },
+          {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          {
+            "pattern": "\\u0000"
+          }
+        ]
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/simple_id"
+        },
+        "kind": {
+          "enum": [
+            "human",
+            "agent",
+            "automation"
+          ]
+        },
+        "display_name": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "organization": {
+          "type": "string",
+          "maxLength": 200
+        }
+      }
+    },
+    "policy_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "combined_digest"
+      ],
+      "properties": {
+        "source_commit": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "combined_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "digest"
+            ],
+            "properties": {
+              "path": {
+                "$ref": "#/$defs/repo_path"
+              },
+              "digest": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "severity": {
+      "enum": [
+        "blocker",
+        "major",
+        "minor",
+        "advisory"
+      ]
+    },
+    "finding_category": {
+      "enum": [
+        "correctness",
+        "security",
+        "data",
+        "compatibility",
+        "policy",
+        "test_gap",
+        "maintainability",
+        "operations"
+      ]
+    },
+    "task_mode": {
+      "enum": [
+        "standard",
+        "high_risk",
+        "audit"
+      ]
+    },
+    "task_state": {
+      "enum": [
+        "triage",
+        "ready",
+        "executing",
+        "verifying",
+        "reviewing",
+        "repairing",
+        "waiting_input",
+        "waiting_external",
+        "completed",
+        "completed_with_risk",
+        "failed",
+        "cancelled",
+        "superseded"
+      ]
+    },
+    "independence_level": {
+      "enum": [
+        "L0",
+        "L1",
+        "L2",
+        "L3"
+      ]
+    },
+    "string_list": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    }
+  }
+}

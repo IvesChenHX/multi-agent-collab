@@ -1,31 +1,13 @@
 # 项目上下文基线
 
-本文件只记录稳定项目事实，由 Discovery 按需维护；流程规则由 `AGENTS.md` 和 `.agents/config.yaml` 定义。
-
-## 项目类型
-
-- 通用多 Agent 协作协议模板，不包含具体业务实现。
-
-## 主要目录
-
-- `AGENTS.md`：跨角色协作规则。
-- `.agents/agents/**`：角色执行契约。
-- `.agents/workflows/**`：状态转换定义。
-- `.agents/ownership.yaml`：路径 ownership 候选映射。
-- `tasks/index.yaml`：纳入版本管理的项目级任务台账和统一归档入口。
-- `tasks/{task_id}/**`：本地单任务详细证据，归档后保持路径不变。
-- `docs/adr/**`：长期架构决策。
-
-## 当前配置事实
-
-- 默认工作流：`evidence-driven-development`。
-- `feature-development`：只读 legacy 入口，不用于新任务。
-- `standard` 及以上任务在 `tasks/index.yaml` 登记，终态通过台账归档，不移动任务目录。
-- 当前仓库没有业务构建或运行命令。
-- 协议修改主要验证 YAML 可解析、引用一致、UTF-8 可读和 diff 无空白错误。
-
-## 待目标项目补充
-
-- 真实业务模块、owner 和路径提示。
-- 构建、测试、lint、typecheck 和启动命令。
-- 环境依赖、集成环境和外部系统限制。
+- 项目：`multi-agent-collab` v6，供应商中立的 local-first、Git-native 开发治理内核。
+- 实现语言：Python 3.11+；正式支持目标为 Python 3.11–3.13、Linux/macOS/Windows。
+- 产品边界：规则、Task/Scope/Event/Run/Result/Evidence/Finding/Approval、Scope Guard、Close、Runtime Handoff、迁移、报告和 CI；不托管模型循环、DAG、凭据、沙箱、自动合并或部署。
+- 存储：每个 Event 独立文件，Event 是恢复来源，`task.yaml` 是投影；ULID 去中心化创建，不维护可写中心编号器。
+- 规则：`AGENTS.md` 是人类策略；`.agents/config.yaml`、workflow、ownership、runtime profiles 和 `schemas/**` 是机器契约；活动 Task 冻结 policy/ownership digest。
+- 默认采用等级：`advisory`。真实 Gate 2 前不得切换 `enforced`。
+- 默认 quick 阈值：5 个文件、200 行、单 owner、目标验证；治理、安全、数据、公共契约、生产和跨服务变化必须升级。
+- 默认 high-risk 独立性：L2；audit：L3。
+- 原始日志默认不提交，保留 30 天；Telemetry 默认关闭；secret 禁止写入治理元数据。
+- v5 历史位于 `.agents/legacy/**` 与 `tasks/index.yaml`，迁移期双读、只写 v6；缺少详细证据的任务只能标记 `metadata_only/unverifiable`。
+- v1 仍需外部完成：三项目/30 任务 Pilot、托管跨平台 CI、至少一个项目 Enforced 两周、正式 Security Review、PyPI/GitHub Release、SBOM/Sigstore/OIDC provenance。

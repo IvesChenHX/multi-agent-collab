@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/multi-agent-collab/schemas/task.schema.json",
+  "title": "Task projection",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "title",
+    "mode",
+    "state",
+    "revision",
+    "created_at",
+    "updated_at",
+    "objective",
+    "acceptance_criteria",
+    "policy_ref",
+    "ownership_ref",
+    "scope_contract_ref",
+    "required_gates"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 6
+    },
+    "id": {
+      "$ref": "common.schema.json#/$defs/identifier"
+    },
+    "legacy_id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "mode": {
+      "$ref": "common.schema.json#/$defs/task_mode"
+    },
+    "state": {
+      "$ref": "common.schema.json#/$defs/task_state"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "created_at": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "updated_at": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "text",
+          "required"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^AC-[0-9]{3,}$"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "required": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "policy_ref": {
+      "$ref": "common.schema.json#/$defs/policy_ref"
+    },
+    "ownership_ref": {
+      "$ref": "common.schema.json#/$defs/policy_ref"
+    },
+    "scope_contract_ref": {
+      "$ref": "common.schema.json#/$defs/repo_path"
+    },
+    "runtime_profile": {
+      "type": "string"
+    },
+    "required_gates": {
+      "$ref": "common.schema.json#/$defs/string_list"
+    },
+    "active_controller": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "actor_id",
+        "lease_id",
+        "expires_at"
+      ],
+      "properties": {
+        "actor_id": {
+          "$ref": "common.schema.json#/$defs/simple_id"
+        },
+        "lease_id": {
+          "$ref": "common.schema.json#/$defs/simple_id"
+        },
+        "expires_at": {
+          "$ref": "common.schema.json#/$defs/timestamp"
+        }
+      }
+    },
+    "relationships": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "parent_task": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "supersedes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "superseded_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "legacy_integrity": {
+      "enum": [
+        "full",
+        "partial",
+        "metadata_only"
+      ]
+    },
+    "terminal": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "closed_at": {
+          "$ref": "common.schema.json#/$defs/timestamp"
+        },
+        "closed_by": {
+          "$ref": "common.schema.json#/$defs/simple_id"
+        },
+        "summary": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

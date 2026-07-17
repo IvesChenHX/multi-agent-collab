@@ -1,3 +1,20 @@
-.idea
-tasks/*
-!tasks/index.yaml
+.venv/
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.idea/
+.hypothesis/
+.coverage
+htmlcov/
+.mac-cache/
+tasks/TASK-*/private/
+tasks/TASK-*/report.md
+tasks/INDEX.generated.json
+*.tmp
+
+# Local design inputs are not part of the distributable project.
+multi-agent-collab-v6-design-package/
+multi-agent-collab-deep-feasibility-plan-v3.md

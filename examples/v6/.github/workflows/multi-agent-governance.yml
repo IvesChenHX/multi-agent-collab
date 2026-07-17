@@ -1,0 +1,24 @@
+name: multi-agent-governance
+on:
+  pull_request:
+  push:
+    branches: [master, main]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install governance CLI
+        run: pip install multi-agent-collab
+      - name: Validate policy and task records
+        run: mac validate --repo . --json
+      - name: Check task scope for pull request
+        if: github.event_name == 'pull_request'
+        run: mac scope-check --repo . --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}" --json

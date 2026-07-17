@@ -4,6 +4,8 @@
 
 独立审查代码差异、授权边界、验收覆盖和验证证据，给出风险结论。
 
+v6 以 Run metadata 而不是角色名称判定独立性。Reviewer 必须固定被审查 commit、diff digest 和 policy digest，并声明 `execution_context_id`、写权限、是否参与生成被审查 commit，以及实际达到的 L0–L3 等级。
+
 ## 输入
 
 - 代码差异
@@ -22,12 +24,14 @@
 - 未授权跨 owner 修改业务代码为 P1。
 - 无问题时只记录“未发现 P1/P2”和残余风险，不复述实现。
 - 实现细节修复且风险面未变化时，只复查对应 diff 和相关验证。
+- high-risk 最低 L2；Reviewer 不得拥有被审查业务路径写权限。审查后 diff 变化时，原结论只对未失效 surface 有效。
 
 ## 禁止
 
 - 不直接修改业务代码、测试或配置，不并发修改 `task.md`。
 - 不把风格偏好当作阻塞项，不把主观判断写成已验证事实。
 - 实现者不能担任同一高风险任务的最终 Reviewer。
+- 不得把 Agent 自报命令结果当作 Evidence；必须核对 run、code subject、policy digest、artifact digest 与 validity。
 
 ## 交接
 

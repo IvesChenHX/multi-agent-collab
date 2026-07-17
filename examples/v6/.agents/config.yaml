@@ -1,0 +1,70 @@
+schema_version: 6
+project: example-payment-service
+governance_level: advisory
+default_workflow: evidence-driven-development
+default_runtime_profile: local-single
+paths:
+  tasks: tasks
+  ownership: .agents/ownership.yaml
+  workflows: .agents/workflows
+  runtime_profiles: .agents/runtime-profiles
+  private_artifacts: tasks/private
+modes:
+  ask:
+    persistent: false
+    allow_write: false
+  quick:
+    persistent: false
+    max_changed_files: 5
+    max_changed_lines: 200
+    require_single_owner: true
+    require_targeted_verification: true
+    forbidden_risk_tags:
+      - public_contract
+      - data_migration
+      - auth_security
+      - production_deploy
+      - cross_service_consistency
+      - policy_change
+  standard:
+    persistent: true
+    required_gates:
+      - targeted_tests
+    minimum_review_independence: L1
+  high_risk:
+    persistent: true
+    required_gates:
+      - targeted_tests
+      - independent_review
+      - rollback_plan
+    minimum_review_independence: L2
+  audit:
+    persistent: true
+    required_gates:
+      - targeted_tests
+      - independent_review
+      - rollback_plan
+      - audit_bundle
+    minimum_review_independence: L3
+    require_export_bundle: true
+close_policy:
+  require_commit_bound_evidence: true
+  non_waivable_gates:
+    - approved_scope
+    - evidence_matches_current_commit
+    - independent_review
+  risk_acceptance_default_ttl_days: 30
+repair_policy:
+  max_automatic_rounds_per_root_cause: 2
+  fresh_context_categories:
+    - security
+    - data
+    - compatibility
+security:
+  governance_sensitive_paths:
+    - AGENTS.md
+    - .agents/**
+    - .github/workflows/*governance*
+    - schemas/**
+  forbid_shell_by_default: true
+  raw_logs_committed: false

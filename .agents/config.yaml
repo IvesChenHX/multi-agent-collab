@@ -1,224 +1,97 @@
 # 多 Agent 协作机器配置。人类可读规则以 AGENTS.md 为准。
 # 同一规则只在一个位置维护；本文件不重复角色内部说明和状态转换细节。
-schema_version: 5
-project: generic-multi-agent-collaboration
-version: 5
+schema_version: 6
+project: multi-agent-collab
+governance_level: advisory
 
-authority:
-  human_policy: AGENTS.md
-  machine_policy: .agents/config.yaml
-  state_transitions: .agents/workflows/evidence-driven-development.yaml
-  path_ownership: .agents/ownership.yaml
-  role_contracts: .agents/agents
-  project_facts: .agents/project-context.md
-  task_registry: tasks/index.yaml
-
-# 关键目录位置。迁移到真实项目后，发现阶段（Discovery）应按实际结构调整。
+# 关键目录位置。
 paths:
-  agents: .agents/agents
   workflows: .agents/workflows
   ownership: .agents/ownership.yaml
-  project_context: .agents/project-context.md
   tasks: tasks
-  task_registry: tasks/index.yaml
-  adr: docs/adr
+  runtime_profiles: .agents/runtime-profiles
+  private_artifacts: tasks/private
 
 # 默认工作流。这里使用机器可读的工作流 id。
 default_workflow: evidence-driven-development
+default_runtime_profile: local-single
 
-# 以收益决定编排，不为映射角色表启动 Agent。
-orchestration:
-  default_strategy: value_based
-  do_not_spawn_to_mirror_role_list: true
-  use_subagents_when:
-    - independent_work_units_can_run_in_parallel
-    - standard_or_above_has_assigned_business_implementation_role
-    - ownership_requires_isolated_implementers
-    - high_risk_requires_independent_review_or_qa
-    - user_explicitly_requests_multi_agent_parallel_or_audit
-  allow_main_agent_direct_execution_when:
-    - ask_or_quick_mode
-    - coordination_files_only
-  runtime_policy:
-    tool_rules_override_project_defaults: true
-    record_delegation_status_only_if_dispatch_was_planned_or_attempted: true
-    must_not_claim_unstarted_subagents: true
-    standard_or_above_business_code_requires_user_authorization_when_expected_implementer_cannot_be_dispatched: true
-    coordination_files_may_be_changed_by_main_agent: true
-  repair_rounds:
-    trigger: verification_returns_p1_or_unaccepted_p2
-    record_in: tasks/{task_id}/task.md#delegation
-    fresh_execution_context_required: true
-    accepted_context_forms:
-      - new_agent_instance
-      - new_independent_conversation_for_assigned_role
-    forbidden_context_reuse:
-      - original_implementation_conversation
-      - previous_repair_conversation
-    grouping:
-      same_owner_findings: one_context_per_round
-      independent_owners: may_run_in_parallel
-    handoff:
-      context_inheritance: structured_only
-      required_fields:
-        - task_record_path
-        - finding_ids_and_evidence
-        - allowed_paths
-        - applicable_decisions_and_contracts
-        - invalidated_verification
-      full_conversation_replay: forbidden
-    next_findings: open_new_repair_round
-    fresh_context_unavailable: blocked
-
-# 高风险与完整审计分离；普通任务不再默认生成九份阶段文档。
-task_modes:
+# 五种任务模式；ask/quick 旁路持久状态机。
+modes:
   ask:
-    create_task_directory: false
-    use_subagents: false
+    persistent: false
+    allow_write: false
   quick:
-    create_task_directory: false
-    use_subagents: false
-    requires_all:
-      - single_owner
-      - localized_reversible_change
-      - low_risk
-      - clear_local_verification
+    persistent: false
+    max_changed_files: 5
+    max_changed_lines: 200
+    require_single_owner: true
+    require_targeted_verification: true
+    forbidden_risk_tags:
+      - public_contract
+      - data_migration
+      - auth_security
+      - production_deploy
+      - cross_service_consistency
+      - policy_change
   standard:
-    create_task_directory: true
-    primary_record: tasks/{task_id}/task.md
-    use_subagents: only_when_parallel_or_independent_value_exists
-  high_risk:
-    create_task_directory: true
-    primary_record: tasks/{task_id}/task.md
+    persistent: true
     required_gates:
-      - independent_review
+      - approved_scope
       - targeted_tests
+      - evidence_matches_current_commit
+    minimum_review_independence: L1
+  high_risk:
+    persistent: true
+    required_gates:
+      - approved_scope
+      - targeted_tests
+      - negative_security_tests
+      - secret_scan
+      - scope_guard
+      - independent_review
       - rollback_plan
-    applies_when_any:
-      - destructive_or_irreversible_data_change
-      - permission_auth_privacy_security_or_money_change
-      - public_contract_compatibility_risk
-      - cross_service_consistency_or_concurrency_risk
-      - scheduler_production_deployment_or_rollback_risk
-      - unresolved_ownership_conflict
+      - rollback_verification
+      - evidence_matches_current_commit
+    minimum_review_independence: L2
   audit:
-    create_task_directory: true
-    full_stage_records: true
-    applies_when_any:
-      - user_requests_full_workflow_or_audit_package
-      - external_governance_requires_full_trace
+    persistent: true
+    required_gates:
+      - approved_scope
+      - targeted_tests
+      - negative_security_tests
+      - secret_scan
+      - scope_guard
+      - independent_review
+      - rollback_plan
+      - rollback_verification
+      - evidence_matches_current_commit
+      - audit_bundle
+    minimum_review_independence: L3
+    require_export_bundle: true
 
-conditional_records:
-  prd: complex_product_rules_or_multiple_user_scenarios
-  architecture: public_contract_data_security_cross_service_or_major_design_decision
-  test_report: large_test_matrix_or_independent_qa_evidence
-  review: independent_reviewer_or_actionable_findings
-  lane_records: implementation_lanes_need_independent_handoff
-  adr: long_lived_cross_task_hard_to_reverse_decision
+# Close、返工和治理敏感路径门禁。
+close_policy:
+  require_commit_bound_evidence: true
+  non_waivable_gates:
+    - approved_scope
+    - evidence_matches_current_commit
+    - independent_review
+    - data_integrity
+  risk_acceptance_default_ttl_days: 30
 
-# 上下文复用。稳定项目事实写入基线，任务内只记录增量发现。
-context_reuse:
-  baseline: .agents/project-context.md
-  refresh_only_when_facts_changed_or_stale: true
-  ordinary_tasks_reference_baseline_without_discovery_record: true
+repair_policy:
+  max_automatic_rounds_per_root_cause: 2
+  fresh_context_categories:
+    - security
+    - data
+    - compatibility
 
-boundaries:
-  standard_and_above_require_owner_and_allowed_paths: true
-  forbidden_paths_only_when_non_obvious_or_high_risk: true
-  cross_owner_business_code_change_severity: P1
-
-verification:
-  default_order:
-    - targeted_checks
-    - affected_module_checks
-    - full_integration_only_when_shared_surface_changed
-  never_repeat_same_command_for_role_ceremony: true
-  rerun_only_impacted_checks_after_fix: true
-  return_to_architecture_only_when_risk_surface_changed: true
-
-quality:
-  max_same_root_cause_repair_loops: 2
-  pass_condition:
-    p1: 0
-    p2: fixed_or_explicitly_accepted
-  p3_blocks_release: false
-  close_states:
-    complete: all_required_gates_pass
-    blocked: required_gate_cannot_run
-    accepted_risk: no_p1_and_authorized_acceptance
-  high_risk_missing_independent_review: blocked_only
-
-# 编码要求。可读文本必须使用 UTF-8 实际字符，不写成 Unicode 转义。
-encoding:
-  charset: UTF-8
-  allow_bom: false
-  forbid_unicode_escape_for_readable_text: true
-
-# 任务记录默认是单一事实源，不适用小节直接省略。
-task_records:
-  language: zh-CN
-  prose_must_be_chinese: true
-  primary_record: tasks/{task_id}/task.md
-  steward: main-agent
-  concurrent_agent_writes: forbidden
-  agent_result_delivery:
-    - structured_return
-    - authorized_independent_handoff_record
-  primary_sections:
-    - mode
-    - scope
-    - decisions_if_any
-    - changes
-    - verification
-    - findings
-    - residual_risks_if_any
-    - delegation_if_used_or_blocked
-  omit_not_applicable_sections: true
-  forbid_repeating_upstream_full_text: true
-  forbid_full_diff_and_long_logs: true
-  log_policy:
-    keep_command_result_and_key_errors_only: true
-    store_full_log_path_when_available: true
-  reviewer_policy:
-    findings_first: true
-    do_not_restate_implementation_when_no_issue: true
-  allow_original_text_for:
-    - file_names
-    - config_keys
-    - commands
-    - code_identifiers
-    - error_logs
-    - api_fields
-    - third_party_terms
-  require_chinese_explanation_for_original_text: true
-
-# 项目级台账只保存任务实例元数据；状态定义仍由 workflow 负责。
-task_registry:
-  path: tasks/index.yaml
-  steward: main-agent
-  registered_modes:
-    - standard
-    - high_risk
-    - audit
-  id_allocation_source: next_task_number
-  task_entry_fields:
-    - id
-    - title
-    - kind
-    - status
-    - summary
-    - archived_at
-  entry_kinds:
-    task:
-      status_source: .agents/workflows/evidence-driven-development.yaml#states
-    legacy_reference:
-      allowed_status:
-        - archived
-  terminal_archive:
-    status_source: .agents/workflows/evidence-driven-development.yaml#state_persistence.terminal_archive.states
-    method: mark_terminal_in_registry
-    set_archived_at: required
-    move_task_directory: false
-  active_entry_archived_at: null
-  unique_fields:
-    - id
+security:
+  governance_sensitive_paths:
+    - AGENTS.md
+    - .agents/**
+    - .github/workflows/*governance*
+    - schemas/**
+  forbid_shell_by_default: true
+  raw_logs_committed: false

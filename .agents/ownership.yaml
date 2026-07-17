@@ -1,112 +1,138 @@
-# 本文件由 Discovery 根据真实项目结构维护，只提供 owner 候选映射。
-# `tasks/{task_id}/task.md` 的 scope 是最终授权；命中路径不等于自动获得修改权限。
-schema_version: 2
-
-authorization:
-  final_scope_record: tasks/{task_id}/task.md#scope
-  paths_outside_scope: deny
-  unresolved_owner: stop_and_return_to_triage
-  standard_or_above_assigned_role_unavailable: require_explicit_user_authorization_for_main_agent
+# 本文件只提供 owner 候选映射；deny/exclude、specificity 和 priority 由 compiler 求值。
+# 已批准的 `tasks/TASK-*/scope-contract.yaml` 是最终授权；命中 owner 不等于获得写权限。
+schema_version: 6
 
 matching:
-  path_and_file_type_entries_are_hints: true
-  multiple_matches: resolve_one_task_owner_in_triage
-  no_match: unassigned
-  refresh_when_project_structure_changes: true
+  semantics: gitwildmatch
+  ambiguous: require_triage
+  unassigned: require_triage
+  case_sensitive: auto
 
 owners:
-  web:
-    description: 前端、桌面端 UI、移动端 UI、设计系统和浏览器侧代码。
-    implementation_role: frontend-implementer
-    paths:
-      - frontend/**
-      - web/**
-      - app/**
-      - apps/web/**
-      - packages/ui/**
-      - src/**/*.vue
-      - src/**/*.tsx
-      - src/**/*.jsx
-      - src/**/*.css
-      - src/**/*.scss
-    file_types:
-      - "*.vue"
-      - "*.tsx"
-      - "*.jsx"
-      - "*.css"
-      - "*.scss"
+  governance:
+    description: 人类策略、机器策略、workflow、ownership、角色契约、Schema 与治理 CI
+    priority: 1000
+    implementation_role: governance-maintainer
+    include:
+      - AGENTS.md
+      - .agents/**
+      - schemas/**
+      - .github/workflows/*governance*
+    approvers:
+      - governance-owner
 
-  backend:
-    description: 服务端 API、业务服务、权限、任务调度和服务端数据访问。
+  platform:
+    description: Python 治理内核、CLI、领域服务、文件系统与 Git adapter
+    priority: 500
     implementation_role: backend-implementer
-    paths:
-      - backend/**
-      - server/**
-      - api/**
-      - services/**
-      - apps/api/**
-      - src/main/**
-    file_types:
-      - "*.java"
-      - "*.kt"
-      - "*.go"
-      - "*.rs"
-      - "*.py"
-      - "*.cs"
-
-  data:
-    description: 数据库迁移、ETL、数据模型、分析脚本和数据质量规则。
-    implementation_role: assign_in_triage
-    paths:
-      - db/**
-      - database/**
-      - migrations/**
-      - sql/**
-      - dags/**
-      - pipelines/**
-      - notebooks/**
-    file_types:
-      - "*.sql"
-      - "*.ipynb"
-
-  infra:
-    description: 部署、容器、CI/CD、环境变量模板和运行时配置。
-    implementation_role: assign_in_triage
-    paths:
-      - Dockerfile
-      - docker-compose.yml
-      - docker/**
-      - deploy/**
-      - k8s/**
-      - helm/**
-      - .github/**
-      - .gitlab-ci.yml
+    include:
+      - src/**
+      - pyproject.toml
       - Makefile
+    exclude:
+      - src/mac/adapters/runtime/**
+    approvers:
+      - platform-owner
 
-  shared:
-    description: 跨模块公共代码和共享模型。
-    implementation_role: assign_in_triage
-    paths:
-      - shared/**
-      - common/**
-      - packages/**
-      - libs/**
+  security:
+    description: 安全、独立性、风险接受、审计与威胁测试
+    priority: 700
+    implementation_role: security-implementer
+    include:
+      - tests/security/**
+      - tests/review/**
+      - tests/risk/**
+      - tests/fixtures/security/**
+    approvers:
+      - security-owner
+    coowners:
+      - platform
+
+  devex:
+    description: Runtime adapter、CI、发布工程与运维支持
+    priority: 600
+    implementation_role: devex-implementer
+    include:
+      - src/mac/adapters/runtime/**
+      - tests/adapters/**
+      - tests/operations/**
+      - .github/**
+      - scripts/ci/**
+      - scripts/release/**
+      - docs/release/**
+      - uv.lock
+    exclude:
+      - .github/workflows/*governance*
+    approvers:
+      - devex-owner
+
+  tests:
+    description: 非安全专项的自动化测试、fixture 与性能基准
+    priority: 300
+    implementation_role: qa
+    include:
+      - tests/**
+    exclude:
+      - tests/security/**
+      - tests/review/**
+      - tests/risk/**
+      - tests/fixtures/security/**
+      - tests/adapters/**
+      - tests/operations/**
+    coowners:
+      - platform
+
+  migration:
+    description: v5 扫描、v6 转换、基线与回滚工具
+    priority: 550
+    implementation_role: backend-implementer
+    include:
+      - migration/**
+      - scripts/capture_v5_baseline.py
+    approvers:
+      - platform-owner
 
   docs:
-    description: 文档、任务记录、ADR 和协作规范。
+    description: 项目说明、ADR、试点与支持文档
+    priority: 200
     implementation_role: main-agent
-    paths:
+    include:
       - README.md
-      - AGENTS.md
       - docs/**
       - tasks/**
-      - .agents/**
+    exclude:
+      - docs/release/**
+    approvers:
+      - repo-owner
 
-shared_rules:
-  - Triage 必须把命中的 owner 映射到执行者：web 默认交给 Frontend Implementer，backend 默认交给 Backend Implementer。
-  - data、infra 或其它 owner 的实现工作必须显式指定角色；协调性 docs 工作可由主 Agent 执行。
-  - shared owner 必须先确认调用方影响；触及公共契约时开启 Architect 门禁。
-  - 同一文件命中多个 owner 时，Triage 必须指定本任务 owner，并写入 task.md 的 scope。
-  - 未命中任何 owner 的文件默认为 unassigned，需要主 Agent 决策后才能修改。
-  - 任何执行者不得修改未写入 task.md scope 允许路径的业务文件；发现必须修改时，先停止并返回 Triage 重新授权。
-  - 未授权跨 owner 修改业务代码视为 P1；授权缺失但未造成业务代码变更时按影响标记 P2 或 P3。
+  examples:
+    description: 可执行示例和外部 adapter fixtures
+    priority: 250
+    implementation_role: backend-implementer
+    include:
+      - examples/**
+    approvers:
+      - platform-owner
+
+sensitive_paths:
+  - pattern: AGENTS.md
+    risk_tags: [policy_change]
+    required_gates: [approved_scope, independent_review]
+  - pattern: .agents/**
+    risk_tags: [policy_change]
+    required_gates: [approved_scope, independent_review]
+  - pattern: schemas/**
+    risk_tags: [public_contract, policy_change]
+    required_gates: [approved_scope, compatibility_review, independent_review]
+  - pattern: .github/workflows/*governance*
+    risk_tags: [policy_change, production_deploy]
+    required_gates: [approved_scope, independent_review, rollback_verification]
+  - pattern: src/mac/application/close.py
+    risk_tags: [auth_security, policy_change]
+    required_gates: [negative_security_tests, independent_review]
+  - pattern: src/mac/application/governance.py
+    risk_tags: [auth_security, policy_change]
+    required_gates: [negative_security_tests, independent_review]
+  - pattern: src/mac/security.py
+    risk_tags: [auth_security, policy_change]
+    required_gates: [negative_security_tests, independent_review]

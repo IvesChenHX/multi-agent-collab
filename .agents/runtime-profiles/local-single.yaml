@@ -1,0 +1,25 @@
+schema_version: 1
+id: local-single
+description: 单一终端或单一 Agent 会话，外部人工建立新上下文
+capabilities:
+  spawn_agent: false
+  parallel_runs: false
+  fresh_context: manual
+  read_only_run: policy_only
+  worktree: external
+  human_gate: interactive
+  command_execution: true
+  network_control: unavailable
+  secret_broker: unavailable
+  artifact_store: filesystem
+  tracing: basic
+  cancellation: manual
+fallback:
+  fresh_context: build_handoff_and_wait
+  independent_review: wait_for_manual
+  worktree: serialize_and_lock
+  artifact_store: digest_only
+limits:
+  max_parallel_runs: 1
+  default_timeout_seconds: 3600
+  max_output_bytes: 10485760

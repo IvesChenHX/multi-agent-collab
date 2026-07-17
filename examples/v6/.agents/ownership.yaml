@@ -1,0 +1,63 @@
+schema_version: 6
+matching:
+  semantics: gitwildmatch
+  ambiguous: require_triage
+  unassigned: require_triage
+  case_sensitive: auto
+owners:
+  web:
+    description: 前端和浏览器侧代码
+    priority: 100
+    implementation_role: frontend-implementer
+    include:
+      - frontend/**
+      - packages/ui/**
+    exclude:
+      - frontend/server/**
+    approvers:
+      - frontend-lead
+  backend:
+    description: 服务端 API、业务逻辑和权限
+    priority: 100
+    implementation_role: backend-implementer
+    include:
+      - backend/**
+      - frontend/server/**
+    exclude:
+      - backend/migrations/**
+    approvers:
+      - backend-lead
+  data:
+    description: 数据库与迁移
+    priority: 120
+    implementation_role: data-implementer
+    include:
+      - backend/migrations/**
+      - database/**
+    approvers:
+      - data-owner
+  tests:
+    description: 自动化测试
+    priority: 80
+    implementation_role: qa
+    include:
+      - tests/**
+    coowners:
+      - backend
+  governance:
+    description: Agent 治理规则
+    priority: 1000
+    implementation_role: governance-maintainer
+    include:
+      - AGENTS.md
+      - .agents/**
+      - .github/workflows/*governance*
+    approvers:
+      - governance-owner
+sensitive_paths:
+  - pattern: backend/payments/**
+    risk_tags: [money, auth_security]
+    required_gates: [independent_review, negative_security_tests]
+  - pattern: deploy/production/**
+    risk_tags: [production_deploy]
+    required_gates: [deployment_review, rollback_verification]

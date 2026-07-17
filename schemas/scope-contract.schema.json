@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/multi-agent-collab/schemas/scope-contract.schema.json",
+  "title": "Scope contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "task_id",
+    "version",
+    "status",
+    "proposed_by",
+    "allowed_paths",
+    "denied_paths",
+    "allowed_operations",
+    "owners",
+    "risk_tags",
+    "required_gates",
+    "amendment_policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "$ref": "common.schema.json#/$defs/identifier"
+    },
+    "task_id": {
+      "$ref": "common.schema.json#/$defs/identifier"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "enum": [
+        "proposed",
+        "approved",
+        "rejected",
+        "superseded"
+      ]
+    },
+    "proposed_by": {
+      "$ref": "common.schema.json#/$defs/simple_id"
+    },
+    "approved_by": {
+      "type": "array",
+      "items": {
+        "$ref": "common.schema.json#/$defs/simple_id"
+      },
+      "uniqueItems": true
+    },
+    "base_commit": {
+      "$ref": "common.schema.json#/$defs/git_sha"
+    },
+    "allowed_paths": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "common.schema.json#/$defs/glob_path"
+      },
+      "uniqueItems": true
+    },
+    "denied_paths": {
+      "type": "array",
+      "items": {
+        "$ref": "common.schema.json#/$defs/glob_path"
+      },
+      "uniqueItems": true
+    },
+    "allowed_operations": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "read",
+          "write",
+          "delete",
+          "execute_tests",
+          "generate_artifacts",
+          "network",
+          "use_secrets"
+        ]
+      }
+    },
+    "owners": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "risk_tags": {
+      "$ref": "common.schema.json#/$defs/string_list"
+    },
+    "required_gates": {
+      "$ref": "common.schema.json#/$defs/string_list"
+    },
+    "network_access": {
+      "enum": [
+        "none",
+        "allowlisted",
+        "unrestricted"
+      ]
+    },
+    "secret_access": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "purpose",
+          "exposure"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "exposure": {
+            "enum": [
+              "environment_only",
+              "broker_handle"
+            ]
+          }
+        }
+      }
+    },
+    "amendment_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_amendments",
+        "max_paths_per_amendment",
+        "require_independent_approval_for"
+      ],
+      "properties": {
+        "max_amendments": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_paths_per_amendment": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "require_independent_approval_for": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        }
+      }
+    }
+  }
+}

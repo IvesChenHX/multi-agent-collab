@@ -1,109 +1,79 @@
-# 多 Agent 协作开发体系
+# Multi-Agent Collaboration Governance Core
 
-这套体系以“风险证据”决定协作强度，默认减少角色交接、任务文档和重复验证。它适用于普通单体项目、前后端项目和 monorepo，也保留高风险与完整审计能力。
+本仓库正在按 `multi-agent-collab-v6-design-package/` 落地 v6：一个 local-first、Git-friendly、供应商中立的多 Agent **治理内核**。它负责 task/event、scope、ownership、evidence、review、risk、runtime handoff 和可重复验证，不负责托管模型、TUI、通用 CI/CD、完整工作流调度或安全沙箱。
 
-## 默认工作方式
+当前默认治理等级是 `advisory`。真实三项目试点、跨平台托管 CI、PyPI/GitHub Release、Sigstore/OIDC 发布和 enforced 两周均是外部门禁；仓库中存在实现或 workflow 配置不代表这些门禁已经通过。
 
-新任务使用 `.agents/workflows/evidence-driven-development.yaml`：
+## 运行边界
 
-```text
-Triage -> Execute -> Verify -> Close
+- Python 3.11–3.13，Git 2.39+；
+- Linux、macOS、Windows 11 PowerShell 为 v1 目标平台；
+- 每次 CLI 调用完成一个事务，无 daemon；
+- standard/high-risk/audit 元数据进入 Git，raw log 默认进入 `private/` 或外部 artifact store；
+- high-risk 缺少最低独立 Review 时 fail closed；
+- Agent 或外部 runtime 的“成功”不是 evidence，也不是 Task Close。
+
+## 开发检出
+
+项目尚未发布到 PyPI。开发环境使用锁文件：
+
+```bash
+uv sync --locked --extra test
+uv run --frozen mac --help
+uv run --frozen mac doctor --json
+uv run --frozen mac validate --json
+uv run --frozen pytest
 ```
 
-Discovery、Product、Planner、Architect、QA、Reviewer 和 Integrator 是按需能力，不是每个任务都必须经过的固定流水线。
+发布后安装、升级和回滚分别见 [install](docs/release/install.md)、[upgrade](docs/release/upgrade.md) 与 [rollback](docs/release/rollback.md)。
 
-## 规则分层
-
-- `AGENTS.md`：跨角色边界和硬门禁。
-- `.agents/config.yaml`：模式、门禁和记录字段的机器配置。
-- `.agents/workflows/evidence-driven-development.yaml`：状态转换与能力触发。
-- `.agents/ownership.yaml`：路径 owner 候选和默认实现角色；任务 `scope` 才是最终授权。
-- `.agents/agents/*.md`：单个角色的允许动作、禁止动作和交接方式。
-- `.agents/project-context.md`：项目稳定事实，不保存流程规则。
-- `tasks/index.yaml`：任务编号、实例状态、归档摘要和统一归档时间。
-
-主 Agent 是 `task.md` 的唯一整合者。并行 Agent 返回结构化结果，或写入已授权的独立交接文件，不同时修改 `task.md`。
-
-## 五种任务模式
-
-- `ask`：问答和只读分析，不创建任务目录。
-- `quick`：单 owner、局部可逆、低风险修改，不创建任务目录，结果在最终回复留痕。
-- `standard`：普通开发任务，每个任务默认只维护 `tasks/{task_id}/task.md`，并登记到统一任务台账。
-- `high_risk`：数据、安全、公共兼容、跨服务一致性或生产回滚等高风险任务，要求独立 Review、针对性测试和回滚方案，但文档仍按需创建。
-- `audit`：用户或外部治理明确要求完整审计时，才使用完整阶段文档和角色链。
-
-跨 owner 或前后端同时修改不再自动等于高风险；如果契约稳定、边界清楚且验证路径明确，使用 `standard` 即可。
-
-## 文档策略
-
-项目级任务入口是：
+## v6 命令面
 
 ```text
-tasks/index.yaml
+mac init
+mac doctor
+mac validate
+mac policy compile
+mac classify
+mac task new|show|list|transition|cancel|supersede|rebuild
+mac scope propose|approve|amend|check
+mac work-unit new|ready|show
+mac run register|finish|inspect
+mac result submit|validate
+mac evidence record|promote|invalidate|list
+mac finding open|resolve|waive|list
+mac approval record|verify
+mac handoff build|collect
+mac report render|bundle
+mac index build
+mac migrate v5-to-v6
 ```
 
-`standard`、`high_risk` 和 `audit` 在 Triage 时从这里分配编号并登记；每次状态转换同步状态，进入 `complete`、`blocked` 或 `accepted_risk` 后写入结果摘要和 `archived_at`。该台账纳入版本管理，是不依赖本地任务目录的统一归档；详细任务目录不移动，因此当前工作区内的历史链接也不会失效。
+所有命令支持 `--json`；写命令支持 `--idempotency-key` 与 `--expected-revision`。CI 禁止交互式补参。稳定退出码为 0、2–11 和 20，具体含义以设计包 `docs/09-cli-api-and-exit-codes.md` 为准。
 
-每个 `standard` 和 `high_risk` 任务的范围、决策和证据仍以此文件为单一事实源：
+## Runtime adapters
 
-```text
-tasks/{task_id}/task.md
-```
+- `plain-terminal`（stable）：生成自包含 handoff、导入标准 Result；没有 launch/inspect/cancel。
+- `agtx`（experimental）：映射 work unit、worktree 与 artifact；agtx 管 session，MAC 管 gate。
+- `Conductor`（experimental）：把选定 work unit DAG 编译为 workflow；Conductor 管执行，MAC 仍判定 Close。
 
-其中按需记录模式、范围、决策、变更、验证、findings 和实际分派。不适用的小节直接省略。
+运行时能力不足时使用人工 handoff 和确定性等待状态，不能自审或静默降级 gate。
 
-以下文件仅在确有独立价值时创建：
+## CI 与发布
 
-- `prd.md`：复杂产品规则或多个用户场景。
-- `architecture.md`：契约、数据、安全、跨服务或重大设计决策。
-- `test-report.md`：大型测试矩阵或独立 QA 证据。
-- `review.md`：独立审查或可执行 findings。
-- 前后端实现记录：实现线真正并行并需要独立交接。
-- ADR：长期、跨任务且难回退的架构决策。
+- `Cross-platform CI`：Linux/macOS/Windows × Python 3.11–3.13 的 validate/test/build；
+- `Governance PR`：使用 PR base/head 执行 repository validate、scope check 与 commit-bound evidence 校验；
+- `Release`：矩阵重验、wheel/sdist、hash、CycloneDX SBOM、Sigstore provenance/SBOM attestation、GitHub Release 与 PyPI trusted publishing。
 
-旧的 `.agents/workflows/feature-development.yaml` 只保留迁移入口。恢复历史任务时保留旧记录只读，使用当前规则重新 Triage 后切换到新状态机。
+初始 `advisory` 只报告 governance finding；切为 `enforced/regulated` 后缺 task、scope 或 evidence 必须阻塞。外部配置和真实执行要求见 [release process](docs/release/release-process.md)。
 
-## 子 Agent 策略
+## 文档
 
-只在以下情况下分派：
+- [支持矩阵](docs/release/support.md)
+- [兼容策略](docs/release/compatibility.md)
+- [安全说明](docs/release/security.md)
+- [数据保留与隐私](docs/release/data-retention.md)
+- [发布流程](docs/release/release-process.md)
+- [人类硬门禁](AGENTS.md)
 
-- 独立工作单元能真正并行。
-- `standard` 及以上业务代码已指定专用实现角色。
-- ownership 需要隔离实现者。
-- 高风险任务需要独立 Reviewer 或 QA。
-- Review、QA 或集成验证发现 P1 或未接受的 P2，需要为对应 owner 新建返工 Agent 或同角色的新独立对话。
-- 用户明确要求多 Agent、并行或审计流程。
-
-不要为了对应角色列表依次启动多个 Agent。分派受运行时策略限制时必须如实记录，不得假装已启动。
-
-## 修复和验证
-
-- 先跑目标测试，再跑受影响模块检查。
-- 只有共享契约、构建或环境联动变化时才跑全量集成。
-- 每次从 Verify 进入 Fix 都新建返工上下文，不续写原实现或上一轮返工对话。
-- 新上下文只接收 `task.md`、finding 证据、允许路径、适用决策/契约和失效验证，不回放完整历史对话。
-- 同 owner findings 可在一轮合并，独立的前后端 findings 可分别新开 Agent 并行修复；下一轮 findings 再开新的上下文。
-- 修复实现细节后只重跑受影响检查。
-- 只有风险面发生变化才回到 Architect 并重新执行相关 Review / Integration。
-- 同一根因经过两个全新返工轮次仍未解决时停止机械循环，重新诊断或请求人工决策。
-
-## 目录
-
-```text
-.
-├── AGENTS.md
-├── .agents/
-│   ├── config.yaml
-│   ├── ownership.yaml
-│   ├── project-context.md
-│   ├── agents/
-│   └── workflows/
-│       ├── evidence-driven-development.yaml
-│       └── feature-development.yaml  # legacy
-├── tasks/
-│   ├── index.yaml                     # 受版本管理的统一任务台账
-│   └── TASK-*/task.md                 # 本地详细证据，归档后不移动
-└── docs/adr/
-```
-
-完整规则见 `AGENTS.md`，机器配置见 `.agents/config.yaml`。
+v5 → v6 迁移始终先只读扫描；历史缺证据时保留 `metadata_only/unverifiable`，不得生成伪造 evidence。任务具体 scope、验证、外部门禁和残余风险以对应 task 记录为准。

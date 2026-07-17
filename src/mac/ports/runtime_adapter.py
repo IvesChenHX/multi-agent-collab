@@ -1,0 +1,9 @@
+from __future__ import annotations
+
+from typing import Any, Protocol
+
+
+class RuntimeAdapter(Protocol):
+    def capabilities(self) -> dict[str, Any]: ...
+    def prepare(self, task: dict[str, Any], work_unit: dict[str, Any], scope: dict[str, Any]) -> dict[str, Any]: ...
+    def collect(self, handle_or_path: object) -> dict[str, Any]: ...

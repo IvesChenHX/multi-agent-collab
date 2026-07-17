@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/multi-agent-collab/schemas/runtime-profile.schema.json",
+  "title": "Runtime capability profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "capabilities",
+    "fallback"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "description": {
+      "type": "string"
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "spawn_agent",
+        "parallel_runs",
+        "fresh_context",
+        "read_only_run",
+        "worktree",
+        "human_gate",
+        "command_execution",
+        "artifact_store",
+        "tracing",
+        "cancellation"
+      ],
+      "properties": {
+        "spawn_agent": {
+          "type": "boolean"
+        },
+        "parallel_runs": {
+          "type": "boolean"
+        },
+        "fresh_context": {
+          "enum": [
+            "native",
+            "manual",
+            "unavailable"
+          ]
+        },
+        "read_only_run": {
+          "enum": [
+            "native",
+            "policy_only",
+            "unavailable"
+          ]
+        },
+        "worktree": {
+          "enum": [
+            "native",
+            "external",
+            "unavailable"
+          ]
+        },
+        "human_gate": {
+          "enum": [
+            "native",
+            "interactive",
+            "file_based",
+            "unavailable"
+          ]
+        },
+        "command_execution": {
+          "type": "boolean"
+        },
+        "network_control": {
+          "enum": [
+            "native",
+            "external",
+            "unavailable"
+          ]
+        },
+        "secret_broker": {
+          "enum": [
+            "native",
+            "external",
+            "unavailable"
+          ]
+        },
+        "artifact_store": {
+          "enum": [
+            "filesystem",
+            "external",
+            "unavailable"
+          ]
+        },
+        "tracing": {
+          "enum": [
+            "none",
+            "basic",
+            "native"
+          ]
+        },
+        "cancellation": {
+          "enum": [
+            "native",
+            "manual",
+            "unavailable"
+          ]
+        }
+      }
+    },
+    "fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fresh_context": {
+          "enum": [
+            "build_handoff_and_wait",
+            "block",
+            "allow_same_context"
+          ]
+        },
+        "independent_review": {
+          "enum": [
+            "wait_for_manual",
+            "block",
+            "allow_l1"
+          ]
+        },
+        "worktree": {
+          "enum": [
+            "serialize_and_lock",
+            "block"
+          ]
+        },
+        "artifact_store": {
+          "enum": [
+            "digest_only",
+            "block"
+          ]
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_parallel_runs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "default_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_output_bytes": {
+          "type": "integer",
+          "minimum": 1024
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,37 @@
+schema_version: 1
+id: SCOPE-01K0W4Z36K3W5C2R0A3M8N9P7R
+task_id: TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth
+version: 1
+status: approved
+proposed_by: agent-main
+approved_by:
+  - human-security-owner
+base_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+allowed_paths:
+  - backend/payments/**
+  - tests/payments/**
+denied_paths:
+  - deploy/production/**
+allowed_operations:
+  - read
+  - write
+  - execute_tests
+owners:
+  - backend
+  - tests
+risk_tags:
+  - money
+  - auth_security
+required_gates:
+  - targeted_tests
+  - negative_security_tests
+  - independent_review
+  - rollback_plan
+network_access: none
+secret_access: []
+amendment_policy:
+  max_amendments: 2
+  max_paths_per_amendment: 4
+  require_independent_approval_for:
+    - auth_security
+    - production_deploy

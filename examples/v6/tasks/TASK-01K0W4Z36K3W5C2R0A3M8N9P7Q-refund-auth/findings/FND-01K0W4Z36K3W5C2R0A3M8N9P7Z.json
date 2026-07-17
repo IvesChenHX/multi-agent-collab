@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "FND-01K0W4Z36K3W5C2R0A3M8N9P7Z",
+  "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+  "severity": "minor",
+  "category": "maintainability",
+  "blocking_effect": "advisory",
+  "confidence": "high",
+  "status": "resolved",
+  "title": "测试名称未明确表达未授权场景",
+  "risk": "后续定位失败用例时可读性较差。",
+  "owner": "tests",
+  "location": {
+    "path": "tests/payments/test_refund_permissions.py",
+    "line_start": 12,
+    "line_end": 20
+  },
+  "evidence_refs": [
+    "EVD-01K0W4Z36K3W5C2R0A3M8N9P7Y"
+  ],
+  "invalidates": [],
+  "root_cause_key": "test-name-clarity",
+  "opened_at": "2026-07-17T11:15:00Z",
+  "resolved_at": "2026-07-17T11:22:00Z"
+}

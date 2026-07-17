@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/multi-agent-collab/schemas/risk-acceptance.schema.json",
+  "title": "Risk acceptance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "task_id",
+    "finding_ids",
+    "accepted_by",
+    "accepted_at",
+    "rationale",
+    "compensating_controls",
+    "expires_at",
+    "scope"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "$ref": "common.schema.json#/$defs/identifier"
+    },
+    "task_id": {
+      "$ref": "common.schema.json#/$defs/identifier"
+    },
+    "finding_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "accepted_by": {
+      "$ref": "common.schema.json#/$defs/actor"
+    },
+    "accepted_at": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1
+    },
+    "compensating_controls": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "expires_at": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "review_date": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "environments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "versions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/glob_path"
+          }
+        }
+      }
+    }
+  }
+}

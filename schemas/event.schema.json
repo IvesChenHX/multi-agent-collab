@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/multi-agent-collab/schemas/event.schema.json",
+  "title": "Task event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "task_id",
+    "event_type",
+    "occurred_at",
+    "actor",
+    "expected_revision",
+    "new_revision",
+    "idempotency_key",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "event_id": {
+      "$ref": "common.schema.json#/$defs/identifier"
+    },
+    "task_id": {
+      "$ref": "common.schema.json#/$defs/identifier"
+    },
+    "event_type": {
+      "enum": [
+        "task_created",
+        "scope_proposed",
+        "scope_approved",
+        "state_transitioned",
+        "work_unit_created",
+        "run_started",
+        "run_finished",
+        "result_submitted",
+        "evidence_recorded",
+        "evidence_invalidated",
+        "finding_opened",
+        "finding_resolved",
+        "risk_accepted",
+        "task_completed",
+        "task_cancelled",
+        "task_superseded",
+        "legacy_imported",
+        "policy_rebased"
+      ]
+    },
+    "occurred_at": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "actor": {
+      "$ref": "common.schema.json#/$defs/actor"
+    },
+    "run_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "expected_revision": {
+      "type": "integer",
+      "minimum": -1
+    },
+    "new_revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "payload": {
+      "type": "object"
+    }
+  }
+}

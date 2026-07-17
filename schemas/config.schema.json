@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/multi-agent-collab/schemas/config.schema.json",
+  "title": "Project governance configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "project",
+    "governance_level",
+    "default_workflow",
+    "paths",
+    "modes",
+    "close_policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 6
+    },
+    "project": {
+      "type": "string",
+      "minLength": 1
+    },
+    "governance_level": {
+      "enum": [
+        "observe",
+        "advisory",
+        "enforced",
+        "regulated"
+      ]
+    },
+    "default_workflow": {
+      "type": "string",
+      "minLength": 1
+    },
+    "default_runtime_profile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tasks",
+        "ownership",
+        "workflows",
+        "runtime_profiles"
+      ],
+      "properties": {
+        "tasks": {
+          "$ref": "common.schema.json#/$defs/repo_path"
+        },
+        "ownership": {
+          "$ref": "common.schema.json#/$defs/repo_path"
+        },
+        "workflows": {
+          "$ref": "common.schema.json#/$defs/repo_path"
+        },
+        "runtime_profiles": {
+          "$ref": "common.schema.json#/$defs/repo_path"
+        },
+        "private_artifacts": {
+          "$ref": "common.schema.json#/$defs/repo_path"
+        }
+      }
+    },
+    "modes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ask",
+        "quick",
+        "standard",
+        "high_risk",
+        "audit"
+      ],
+      "properties": {
+        "ask": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "persistent"
+          ],
+          "properties": {
+            "persistent": {
+              "const": false
+            },
+            "allow_write": {
+              "const": false
+            }
+          }
+        },
+        "quick": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "persistent",
+            "max_changed_files",
+            "max_changed_lines",
+            "require_single_owner",
+            "forbidden_risk_tags"
+          ],
+          "properties": {
+            "persistent": {
+              "const": false
+            },
+            "max_changed_files": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_changed_lines": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "require_single_owner": {
+              "type": "boolean"
+            },
+            "require_targeted_verification": {
+              "type": "boolean"
+            },
+            "forbidden_risk_tags": {
+              "$ref": "common.schema.json#/$defs/string_list"
+            }
+          }
+        },
+        "standard": {
+          "$ref": "#/$defs/persistentMode"
+        },
+        "high_risk": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/persistentMode"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "minimum_review_independence": {
+                  "enum": [
+                    "L1",
+                    "L2",
+                    "L3"
+                  ]
+                }
+              },
+              "required": [
+                "minimum_review_independence"
+              ]
+            }
+          ]
+        },
+        "audit": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/persistentMode"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "minimum_review_independence": {
+                  "enum": [
+                    "L2",
+                    "L3"
+                  ]
+                },
+                "require_export_bundle": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "minimum_review_independence",
+                "require_export_bundle"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "close_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "require_commit_bound_evidence",
+        "non_waivable_gates"
+      ],
+      "properties": {
+        "require_commit_bound_evidence": {
+          "type": "boolean"
+        },
+        "non_waivable_gates": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        },
+        "risk_acceptance_default_ttl_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3650
+        }
+      }
+    },
+    "repair_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_automatic_rounds_per_root_cause": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "fresh_context_categories": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/finding_category"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "governance_sensitive_paths": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/glob_path"
+          },
+          "uniqueItems": true
+        },
+        "forbid_shell_by_default": {
+          "type": "boolean"
+        },
+        "raw_logs_committed": {
+          "const": false
+        }
+      }
+    }
+  },
+  "$defs": {
+    "persistentMode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "persistent"
+      ],
+      "properties": {
+        "persistent": {
+          "const": true
+        },
+        "required_gates": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        },
+        "minimum_review_independence": {
+          "$ref": "common.schema.json#/$defs/independence_level"
+        },
+        "require_export_bundle": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

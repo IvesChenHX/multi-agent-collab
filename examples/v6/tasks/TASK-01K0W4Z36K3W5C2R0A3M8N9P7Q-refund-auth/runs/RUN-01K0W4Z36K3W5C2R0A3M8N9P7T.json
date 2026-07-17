@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "RUN-01K0W4Z36K3W5C2R0A3M8N9P7T",
+  "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+  "work_unit_id": "WU-01K0W4Z36K3W5C2R0A3M8N9P7S",
+  "status": "succeeded",
+  "actor": {
+    "id": "agent-backend-01",
+    "kind": "agent",
+    "display_name": "Backend Implementer"
+  },
+  "runtime": {
+    "profile": "local-single",
+    "provider": "example",
+    "model": "example-model",
+    "execution_context_id": "ctx-impl-001",
+    "worktree": "../worktrees/refund-auth",
+    "branch": "task/refund-auth"
+  },
+  "independence_level": "L0",
+  "started_at": "2026-07-17T10:20:00Z",
+  "finished_at": "2026-07-17T11:00:00Z",
+  "exit_code": 0,
+  "limits": {
+    "timeout_seconds": 3600,
+    "max_output_bytes": 10485760
+  }
+}

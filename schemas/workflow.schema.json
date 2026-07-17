@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/multi-agent-collab/schemas/workflow.schema.json",
+  "title": "Workflow definition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "name",
+    "version",
+    "states",
+    "transitions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 6
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "initial_state": {
+      "const": "triage"
+    },
+    "states": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "common.schema.json#/$defs/task_state"
+      }
+    },
+    "terminal_states": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "completed",
+          "completed_with_risk",
+          "failed",
+          "cancelled",
+          "superseded"
+        ]
+      }
+    },
+    "guards": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "machine_check": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "from": {
+            "oneOf": [
+              {
+                "$ref": "common.schema.json#/$defs/task_state"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "common.schema.json#/$defs/task_state"
+                },
+                "minItems": 1
+              }
+            ]
+          },
+          "to": {
+            "$ref": "common.schema.json#/$defs/task_state"
+          },
+          "requires": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "when": {
+            "type": "string"
+          },
+          "on_failure": {
+            "$ref": "common.schema.json#/$defs/task_state"
+          }
+        }
+      }
+    }
+  }
+}

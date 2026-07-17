@@ -1,0 +1,25 @@
+schema_version: 1
+id: local-multi
+description: 支持隔离会话和外部 worktree 管理器的本地多 Agent 运行时
+capabilities:
+  spawn_agent: true
+  parallel_runs: true
+  fresh_context: native
+  read_only_run: policy_only
+  worktree: external
+  human_gate: file_based
+  command_execution: true
+  network_control: external
+  secret_broker: external
+  artifact_store: filesystem
+  tracing: basic
+  cancellation: manual
+fallback:
+  fresh_context: block
+  independent_review: wait_for_manual
+  worktree: serialize_and_lock
+  artifact_store: digest_only
+limits:
+  max_parallel_runs: 4
+  default_timeout_seconds: 7200
+  max_output_bytes: 20971520

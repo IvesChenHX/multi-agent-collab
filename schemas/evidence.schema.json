@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/multi-agent-collab/schemas/evidence.schema.json",
+  "title": "Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "task_id",
+    "kind",
+    "subject",
+    "policy_digest",
+    "claims",
+    "recorded_at",
+    "validity"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "$ref": "common.schema.json#/$defs/identifier"
+    },
+    "task_id": {
+      "$ref": "common.schema.json#/$defs/identifier"
+    },
+    "kind": {
+      "enum": [
+        "command",
+        "ci",
+        "review",
+        "manual",
+        "static_analysis",
+        "deployment",
+        "external"
+      ]
+    },
+    "subject": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/commitSubject"
+        },
+        {
+          "$ref": "#/$defs/workspaceSubject"
+        }
+      ]
+    },
+    "policy_digest": {
+      "$ref": "common.schema.json#/$defs/digest"
+    },
+    "run_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "claims": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "gate": {
+            "type": "string"
+          },
+          "acceptance_criterion": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "started_at": {
+          "$ref": "common.schema.json#/$defs/timestamp"
+        },
+        "finished_at": {
+          "$ref": "common.schema.json#/$defs/timestamp"
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "os": {
+          "type": "string"
+        },
+        "architecture": {
+          "type": "string"
+        },
+        "tool_versions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "digest"
+        ],
+        "properties": {
+          "path": {
+            "$ref": "common.schema.json#/$defs/repo_path"
+          },
+          "digest": {
+            "$ref": "common.schema.json#/$defs/digest"
+          }
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "independence_level": {
+          "$ref": "common.schema.json#/$defs/independence_level"
+        },
+        "reviewed_diff_digest": {
+          "$ref": "common.schema.json#/$defs/digest"
+        }
+      }
+    },
+    "recorded_at": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "validity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "invalidated_by"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "valid",
+            "invalid",
+            "expired",
+            "unverifiable"
+          ]
+        },
+        "invalidated_by": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "commitSubject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "commit_sha",
+        "tree_sha"
+      ],
+      "properties": {
+        "type": {
+          "const": "commit"
+        },
+        "commit_sha": {
+          "$ref": "common.schema.json#/$defs/git_sha"
+        },
+        "tree_sha": {
+          "$ref": "common.schema.json#/$defs/git_sha"
+        }
+      }
+    },
+    "workspaceSubject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "head_commit",
+        "index_digest",
+        "worktree_diff_digest",
+        "untracked_manifest_digest"
+      ],
+      "properties": {
+        "type": {
+          "const": "workspace"
+        },
+        "head_commit": {
+          "$ref": "common.schema.json#/$defs/git_sha"
+        },
+        "index_digest": {
+          "$ref": "common.schema.json#/$defs/digest"
+        },
+        "worktree_diff_digest": {
+          "$ref": "common.schema.json#/$defs/digest"
+        },
+        "untracked_manifest_digest": {
+          "$ref": "common.schema.json#/$defs/digest"
+        }
+      }
+    }
+  }
+}

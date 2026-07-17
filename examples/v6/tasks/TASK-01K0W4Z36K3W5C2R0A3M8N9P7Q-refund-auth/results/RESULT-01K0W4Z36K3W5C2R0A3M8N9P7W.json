@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "id": "RESULT-01K0W4Z36K3W5C2R0A3M8N9P7W",
+  "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+  "work_unit_id": "WU-01K0W4Z36K3W5C2R0A3M8N9P7S",
+  "run_id": "RUN-01K0W4Z36K3W5C2R0A3M8N9P7T",
+  "outcome": "succeeded",
+  "summary": "在退款服务入口增加权限检查，并补充授权与未授权测试。",
+  "changed_files": [
+    "backend/payments/refund_service.py",
+    "tests/payments/test_refund_permissions.py"
+  ],
+  "commands": [
+    {
+      "argv": [
+        "pytest",
+        "tests/payments/test_refund_permissions.py"
+      ],
+      "exit_code": 0,
+      "summary": "8 passed"
+    }
+  ],
+  "new_risks": [],
+  "assumptions": [
+    "权限服务返回值在本次 scope 内保持稳定。"
+  ],
+  "blockers": [],
+  "scope_amendment_request": null,
+  "raw_log_ref": {
+    "path": "tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/private/test.log",
+    "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+  },
+  "submitted_at": "2026-07-17T11:00:00Z"
+}

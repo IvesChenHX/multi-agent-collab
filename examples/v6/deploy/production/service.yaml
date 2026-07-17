@@ -1,0 +1,2 @@
+# 故意存在于示例仓库，用于验证 denied path；示例任务没有修改它。
+service: payment-api

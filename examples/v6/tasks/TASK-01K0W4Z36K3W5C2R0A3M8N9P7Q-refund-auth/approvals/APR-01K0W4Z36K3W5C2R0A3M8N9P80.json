@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "APR-01K0W4Z36K3W5C2R0A3M8N9P80",
+  "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+  "kind": "scope",
+  "actor": {
+    "id": "human-security-owner",
+    "kind": "human",
+    "display_name": "Security Owner"
+  },
+  "decision": "approved",
+  "subject_ref": "SCOPE-01K0W4Z36K3W5C2R0A3M8N9P7R",
+  "independence_level": "L3",
+  "comment": "范围仅限退款业务与相关测试。",
+  "recorded_at": "2026-07-17T10:10:00Z",
+  "signature": {
+    "scheme": "none",
+    "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+  }
+}

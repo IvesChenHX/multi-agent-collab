@@ -1,0 +1,48 @@
+name: Governance PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Base commit SHA
+        required: true
+      head:
+        description: Head commit SHA
+        required: true
+      task_ids:
+        description: Comma-separated v6 task identifiers
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  governance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MAC_TASK_IDS: ${{ github.event.inputs.task_ids || vars.MAC_TASK_IDS }}
+      MAC_GOVERNANCE_LEVEL: ${{ vars.MAC_GOVERNANCE_LEVEL }}
+      PR_BASE: ${{ github.event.pull_request.base.sha || github.event.inputs.base }}
+      PR_HEAD: ${{ github.event.pull_request.head.sha || github.event.inputs.head }}
+    steps:
+      - name: Check out PR head with history
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ env.PR_HEAD }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up locked environment
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.16"
+          python-version: "3.13"
+          enable-cache: true
+      - name: Synchronize dependencies
+        run: uv sync --locked --extra test
+      - name: Validate scope and commit-bound evidence
+        run: >-
+          uv run --frozen python scripts/ci/governance_pr.py
+          --base "$PR_BASE" --head "$PR_HEAD" --json

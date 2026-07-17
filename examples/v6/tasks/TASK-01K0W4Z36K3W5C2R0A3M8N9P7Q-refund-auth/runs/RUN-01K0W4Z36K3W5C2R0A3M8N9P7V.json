@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "RUN-01K0W4Z36K3W5C2R0A3M8N9P7V",
+  "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+  "work_unit_id": "review",
+  "status": "succeeded",
+  "actor": {
+    "id": "human-security-reviewer",
+    "kind": "human",
+    "display_name": "Security Reviewer"
+  },
+  "runtime": {
+    "profile": "local-single",
+    "provider": "manual",
+    "model": "none",
+    "execution_context_id": "ctx-review-001",
+    "worktree": "../worktrees/refund-review",
+    "branch": "review/refund-auth"
+  },
+  "independence_level": "L3",
+  "started_at": "2026-07-17T11:10:00Z",
+  "finished_at": "2026-07-17T11:25:00Z",
+  "exit_code": 0,
+  "limits": {
+    "timeout_seconds": 3600,
+    "max_output_bytes": 10485760
+  }
+}

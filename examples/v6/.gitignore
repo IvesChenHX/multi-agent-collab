@@ -1,0 +1,4 @@
+.tasks-cache/
+tasks/*/private/
+tasks/*/report.md
+*.tmp

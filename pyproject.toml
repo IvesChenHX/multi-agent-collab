@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "multi-agent-collab"
+version = "0.6.0-alpha.1"
+description = "Local-first, Git-native governance core for multi-agent development"
+requires-python = ">=3.11"
+dependencies = [
+  "typer>=0.12",
+  "rich>=13.7",
+  "PyYAML>=6.0",
+  "jsonschema>=4.22",
+  "referencing>=0.35",
+  "pathspec>=0.12",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-cov>=5.0", "hypothesis>=6.100"]
+release = ["build>=1.2"]
+
+[project.scripts]
+mac = "mac.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mac"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"schemas" = "mac/schemas"
+".agents/schemas.lock.json" = "mac/schemas.lock.json"
+
+[tool.hatch.build.targets.sdist]
+include = ["src/mac", "schemas", ".agents/schemas.lock.json", "tests", "migration", "scripts", "examples", "Makefile", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q --strict-markers --cov=mac.application.governance --cov=mac.events --cov=mac.evidence --cov=mac.ids --cov=mac.ownership --cov=mac.scope --cov=mac.security --cov=mac.state_machine --cov-report=term-missing --cov-fail-under=90"
+
+[tool.coverage.run]
+branch = false
+source = [
+  "mac.application.governance",
+  "mac.events",
+  "mac.evidence",
+  "mac.ids",
+  "mac.ownership",
+  "mac.scope",
+  "mac.security",
+  "mac.state_machine",
+]
+
+[tool.coverage.report]
+exclude_also = ["if TYPE_CHECKING:", "if __name__ == .__main__.:"]

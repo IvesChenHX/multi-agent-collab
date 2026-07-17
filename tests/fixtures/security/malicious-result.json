@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "RESULT-01K0W4Z36K3W5C2R0A3M8N9P7W",
+  "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q",
+  "work_unit_id": "WU-01K0W4Z36K3W5C2R0A3M8N9P7S",
+  "run_id": "RUN-01K0W4Z36K3W5C2R0A3M8N9P7T",
+  "outcome": "succeeded",
+  "summary": "upload token ghp_0123456789abcdefghijklmnopqrstuvwxyzAB",
+  "changed_files": [
+    "src/mac/security.py"
+  ],
+  "commands": [
+    {
+      "argv": [
+        "sh",
+        "-c",
+        "printf compromised > should-not-exist.txt"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "new_risks": [
+    "AKIAIOSFODNN7EXAMPLE"
+  ],
+  "submitted_at": "2026-07-17T08:00:00Z"
+}

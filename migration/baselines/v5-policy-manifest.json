@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-17T08:58:09.902495Z",
+  "source_commit": "7e4a84e3cf91e2bb3500fbf09a8c85ea73fbff92",
+  "recommended_tag": "pre-v6-migration",
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "present": true,
+      "digest": "sha256:d21961b37cb6d705007742d3564624c59aca3a5be89adb153eea19ace93f6185"
+    },
+    {
+      "path": ".agents/config.yaml",
+      "present": true,
+      "digest": "sha256:6ba127233ced73e094b20af939ec1f7dc2c3761663798fdc4ba139c7cd70c6c4"
+    },
+    {
+      "path": ".agents/ownership.yaml",
+      "present": true,
+      "digest": "sha256:f6cd6c57bf7b25f6d98964594cb730da1acc5ab687d09770acc02b7238742b09"
+    },
+    {
+      "path": ".agents/workflows/evidence-driven-development.yaml",
+      "present": true,
+      "digest": "sha256:e2b4f3d49f25fe00a140d9e41469a3e73658b60436b80c2b117873a45d551601"
+    }
+  ],
+  "combined_digest": "sha256:256207469e3d48c4fef9dfab575b087b9115eebb878164eedd057a9ddb8081f8",
+  "requested_ref": "HEAD"
+}

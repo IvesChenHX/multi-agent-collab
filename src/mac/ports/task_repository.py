@@ -1,0 +1,9 @@
+from __future__ import annotations
+
+from typing import Any, Protocol
+
+
+class TaskRepository(Protocol):
+    def load_task(self, task_id: str) -> dict[str, Any]: ...
+    def list_events(self, task_id: str) -> list[dict[str, Any]]: ...
+    def rebuild_task(self, task_id: str) -> dict[str, Any]: ...

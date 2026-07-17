@@ -1,0 +1,1 @@
+Project,TaskId,Date,Mode,ChangedFiles,ChangedLines,RunCount,AgentCount,GovernanceActions,TotalMinutes,GovernanceMinutes,FindingsBlocker,FindingsMajor,ScopeAmendments,EvidenceReused,HumanInterventions,FalsePositive,FalseNegative,RecoveryEvent,Completed,UserScore1to5,Notes

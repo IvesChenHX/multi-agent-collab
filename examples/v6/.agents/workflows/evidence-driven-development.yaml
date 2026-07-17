@@ -1,0 +1,120 @@
+schema_version: 6
+name: evidence-driven-development
+version: 6
+initial_state: triage
+states:
+  - triage
+  - ready
+  - executing
+  - verifying
+  - reviewing
+  - repairing
+  - waiting_input
+  - waiting_external
+  - completed
+  - completed_with_risk
+  - failed
+  - cancelled
+  - superseded
+terminal_states:
+  - completed
+  - completed_with_risk
+  - failed
+  - cancelled
+  - superseded
+guards:
+  scope_approved:
+    description: scope contract 已由授权 actor 批准
+    machine_check: scope.status == 'approved'
+  gates_selected:
+    description: mode 和风险要求的 gates 已写入 task
+    machine_check: required_gates_resolved(task, scope)
+  runtime_satisfied:
+    description: runtime profile 满足 work unit 能力
+    machine_check: runtime_supports(work_unit.requirements)
+  result_submitted:
+    description: 所有必要 work unit 已提交结构化结果
+    machine_check: required_results_present(task)
+  scope_clean:
+    description: 当前 diff 不存在未处理 scope 违规
+    machine_check: scope_guard(task).blocking == 0
+  evidence_complete:
+    description: 必要 gate 和验收标准由有效证据覆盖
+    machine_check: gate_coverage(task).complete
+  review_complete:
+    description: 独立审查满足 mode 最低等级
+    machine_check: review_coverage(task).complete
+  risk_acceptance_valid:
+    description: 所有豁免都被授权且未过期
+    machine_check: waivers(task).valid
+transitions:
+  - id: triage_to_ready
+    from: triage
+    to: ready
+    requires: [scope_approved, gates_selected]
+  - id: ready_to_executing
+    from: ready
+    to: executing
+    requires: [runtime_satisfied]
+  - id: executing_to_verifying
+    from: executing
+    to: verifying
+    requires: [result_submitted, scope_clean]
+  - id: verifying_to_reviewing
+    from: verifying
+    to: reviewing
+    when: review_required(task)
+    requires: [evidence_complete]
+  - id: verifying_to_completed
+    from: verifying
+    to: completed
+    when: not review_required(task)
+    requires: [evidence_complete, scope_clean]
+  - id: reviewing_to_completed
+    from: reviewing
+    to: completed
+    requires: [review_complete, evidence_complete, scope_clean]
+  - id: review_to_repairing
+    from: [verifying, reviewing]
+    to: repairing
+    when: blocking_findings_exist(task)
+  - id: repairing_to_verifying
+    from: repairing
+    to: verifying
+    requires: [result_submitted, scope_clean]
+  - id: active_to_waiting_input
+    from: [triage, ready, executing, verifying, reviewing, repairing]
+    to: waiting_input
+    when: human_input_required(task)
+  - id: active_to_waiting_external
+    from: [executing, verifying, reviewing]
+    to: waiting_external
+    when: external_dependency_pending(task)
+  - id: waiting_input_to_executing
+    from: waiting_input
+    to: executing
+    when: input_received(task) and risk_surface_unchanged(task)
+  - id: waiting_input_to_triage
+    from: waiting_input
+    to: triage
+    when: input_received(task) and risk_surface_changed(task)
+  - id: waiting_external_to_verifying
+    from: waiting_external
+    to: verifying
+    when: external_evidence_received(task)
+  - id: to_completed_with_risk
+    from: [verifying, reviewing]
+    to: completed_with_risk
+    requires: [evidence_complete, risk_acceptance_valid, scope_clean]
+  - id: active_to_failed
+    from: [triage, ready, executing, verifying, reviewing, repairing, waiting_input, waiting_external]
+    to: failed
+    when: unrecoverable_failure(task)
+  - id: active_to_cancelled
+    from: [triage, ready, executing, verifying, reviewing, repairing, waiting_input, waiting_external]
+    to: cancelled
+    when: authorized_cancellation(task)
+  - id: active_to_superseded
+    from: [triage, ready, executing, verifying, reviewing, repairing, waiting_input, waiting_external]
+    to: superseded
+    when: successor_task_exists(task)
