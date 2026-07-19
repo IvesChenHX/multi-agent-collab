@@ -26,6 +26,9 @@ mac = "mac.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/mac"]
 
+[tool.hatch.build.hooks.custom]
+path = "scripts/release/check_schema_lock.py"
+
 [tool.hatch.build.targets.wheel.force-include]
 "schemas" = "mac/schemas"
 ".agents/schemas.lock.json" = "mac/schemas.lock.json"

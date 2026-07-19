@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from mac.evidence import PromotionResult, invalidate_evidence, promote_evidence
+from mac.evidence import PromotionResult, WorkspaceEquivalenceProof, invalidate_evidence, promote_evidence
 from mac.ids import prefixed
 from mac.io import load_data
 from mac.repository import FilesystemTaskRepository
@@ -32,9 +32,9 @@ class EvidenceService:
 
     def promote(
         self, source: Mapping[str, Any], *, current_workspace_subject: Mapping[str, Any],
-        target_commit_subject: Mapping[str, Any], workspace_equivalent: bool,
+        target_commit_subject: Mapping[str, Any], equivalence_proof: WorkspaceEquivalenceProof,
     ) -> PromotionResult:
         return promote_evidence(
             source, current_workspace_subject=current_workspace_subject,
-            target_commit_subject=target_commit_subject, workspace_equivalent=workspace_equivalent,
+            target_commit_subject=target_commit_subject, equivalence_proof=equivalence_proof,
         )

@@ -17,6 +17,8 @@ class CompiledPolicy:
     ownership: dict[str, Any]
     runtime_profile: dict[str, Any]
     transitions: tuple[Transition, ...]
+    states: frozenset[str]
+    terminal_states: frozenset[str]
 
 
 def _raise_issues(issues: list[MacIssue]) -> None:
@@ -29,7 +31,28 @@ def _raise_issues(issues: list[MacIssue]) -> None:
         )
 
 
-def compile_policy(repo: Path, schemas: SchemaSet | None = None) -> CompiledPolicy:
+def policy_source_paths(config: dict[str, Any], runtime_profile_id: str | None = None) -> tuple[str, ...]:
+    paths = config.get("paths") or {}
+    workflow_id = str(config.get("default_workflow", ""))
+    profile_id = runtime_profile_id or str(config.get("default_runtime_profile", ""))
+    return (
+        "AGENTS.md",
+        ".agents/config.yaml",
+        (Path(str(paths.get("workflows", ".agents/workflows"))) / f"{workflow_id}.yaml").as_posix(),
+        (Path(str(paths.get("runtime_profiles", ".agents/runtime-profiles"))) / f"{profile_id}.yaml").as_posix(),
+    )
+
+
+def ownership_source_path(config: dict[str, Any]) -> str:
+    return Path(str((config.get("paths") or {}).get("ownership", ".agents/ownership.yaml"))).as_posix()
+
+
+def compile_policy(
+    repo: Path,
+    schemas: SchemaSet | None = None,
+    *,
+    runtime_profile_id: str | None = None,
+) -> CompiledPolicy:
     """Compile the runtime policy exclusively from the repository machine sources."""
 
     root = repo.resolve()
@@ -42,7 +65,7 @@ def compile_policy(repo: Path, schemas: SchemaSet | None = None) -> CompiledPoli
     workflow_id = str(config.get("default_workflow", ""))
     workflow_path = root / str(paths.get("workflows", ".agents/workflows")) / f"{workflow_id}.yaml"
     ownership_path = root / str(paths.get("ownership", ".agents/ownership.yaml"))
-    profile_id = str(config.get("default_runtime_profile", ""))
+    profile_id = runtime_profile_id or str(config.get("default_runtime_profile", ""))
     profile_path = root / str(paths.get("runtime_profiles", ".agents/runtime-profiles")) / f"{profile_id}.yaml"
 
     workflow = load_data(workflow_path)
@@ -76,4 +99,12 @@ def compile_policy(repo: Path, schemas: SchemaSet | None = None) -> CompiledPoli
                 issues.append(MacIssue("POLICY_OWNER_REFERENCE_UNKNOWN", f"owner {owner_name!r} references unknown coowner {coowner!r}", ownership_path.relative_to(root).as_posix()))
 
     _raise_issues(issues)
-    return CompiledPolicy(config, workflow, ownership, runtime_profile, transitions)
+    return CompiledPolicy(
+        config,
+        workflow,
+        ownership,
+        runtime_profile,
+        transitions,
+        frozenset(str(value) for value in workflow.get("states", [])),
+        frozenset(str(value) for value in workflow.get("terminal_states", [])),
+    )

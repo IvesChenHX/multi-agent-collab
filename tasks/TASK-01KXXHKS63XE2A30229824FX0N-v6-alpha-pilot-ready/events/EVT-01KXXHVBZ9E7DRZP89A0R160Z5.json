@@ -1,0 +1,48 @@
+{
+  "actor": {
+    "id": "repo-owner",
+    "kind": "human"
+  },
+  "event_id": "EVT-01KXXHVBZ9E7DRZP89A0R160Z5",
+  "event_type": "work_unit_created",
+  "expected_revision": 15,
+  "idempotency_key": "alpha-wu-devex-ready",
+  "new_revision": 16,
+  "occurred_at": "2026-07-19T16:02:50.985692Z",
+  "payload": {
+    "work_unit": {
+      "acceptance_criteria": [],
+      "allowed_paths": [
+        "src/mac/doctor.py",
+        "src/mac/report.py",
+        "src/mac/schema_validation.py",
+        "src/mac/adapters/runtime/plain_terminal.py",
+        "scripts/ci/governance_pr.py",
+        "scripts/release/check_release_version.py",
+        "scripts/release/check_schema_lock.py",
+        ".github/workflows/ci.yml",
+        ".github/workflows/governance-pr.yml",
+        ".github/workflows/release.yml",
+        "pyproject.toml",
+        "tests/test_schema_validation.py",
+        "tests/adapters/test_plain_terminal.py",
+        "tests/operations/test_doctor.py",
+        "tests/operations/test_governance_pr.py",
+        "tests/operations/test_release_artifacts.py",
+        "tests/reporting/test_audit_bundle.py"
+      ],
+      "depends_on": [],
+      "expected_result": "tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/results/RESULT-01KXXHTR2PNYB2M57BQTRFXC2B.json",
+      "id": "WU-01KXXHTR2PNYB2M57BQTRFXC2A",
+      "owner": "devex",
+      "schema_version": 1,
+      "status": "ready",
+      "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+      "title": "Doctor、Audit、Schema-lock 与发布/CI 加固"
+    },
+    "work_unit_id": "WU-01KXXHTR2PNYB2M57BQTRFXC2A"
+  },
+  "run_id": null,
+  "schema_version": 1,
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready"
+}

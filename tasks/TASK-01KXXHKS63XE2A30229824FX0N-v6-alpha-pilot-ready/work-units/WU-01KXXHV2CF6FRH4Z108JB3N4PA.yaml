@@ -1,0 +1,21 @@
+schema_version: 1
+id: WU-01KXXHV2CF6FRH4Z108JB3N4PA
+task_id: TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready
+title: CLI 集成、全链路验证与 Pilot-ready 报告
+status: completed
+owner: platform
+allowed_paths:
+- src/mac/cli.py
+- docs/pilot/alpha-close-report.md
+- tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/**
+- tasks/private/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/**
+- tests/test_repair_round3.py
+- tests/test_repair_round4.py
+- tests/test_cli_integration.py
+- tests/security/test_authority_commands.py
+depends_on:
+- WU-01KXXHSZRPJ5YKMQ9MCQHQZH11
+- WU-01KXXHTEMXPCT29MAV3AFAMWFH
+- WU-01KXXHTR2PNYB2M57BQTRFXC2A
+acceptance_criteria: []
+expected_result: tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/results/RESULT-01KXXHV2CF6FRH4Z108JB3N4PB.json

@@ -255,9 +255,15 @@ def test_standard_cli_lifecycle_reaches_close_with_task_metadata_present(tmp_pat
     created = invoke(
         "task", "new", "--title", "lifecycle", "--objective", "close normally",
         "--allow", "src/**", "--owner", "backend", "--accept", "lifecycle closes",
+        "--parent-task", TASK_ID, "--supersedes", TASK_ID,
         "--idempotency-key", "lifecycle-create",
     )
     task_id = str(created["task_id"])
+    assert created["task"]["relationships"] == {
+        "parent_task": TASK_ID,
+        "supersedes": [TASK_ID],
+        "superseded_by": None,
+    }
     invoke("scope", "approve", task_id, "--expected-revision", "0", "--idempotency-key", "scope-approve", "--actor", "backend-owner")
     invoke("task", "transition", task_id, "ready", "--expected-revision", "1", "--idempotency-key", "ready")
     work_unit = invoke(
@@ -271,6 +277,24 @@ def test_standard_cli_lifecycle_reaches_close_with_task_metadata_present(tmp_pat
         "--expected-revision", "4", "--idempotency-key", "run-register",
     )["run"]
     run_id = str(run["id"])
+    actual_branch = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "--abbrev-ref", "HEAD"],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    assert run["runtime"]["worktree"] == str(tmp_path.resolve())
+    assert run["runtime"]["branch"] == actual_branch
+    run_started = next(
+        event
+        for event in FilesystemTaskRepository(tmp_path).list_events(task_id)
+        if event["event_type"] == "run_started"
+    )
+    assert run_started["payload"]["baseline_subject"]["type"] == "commit"
+    assert run_started["payload"]["worktree_identity"] == {
+        "path": str(tmp_path.resolve()),
+        "branch": actual_branch,
+    }
     invoke("task", "transition", task_id, "executing", "--expected-revision", "5", "--idempotency-key", "executing")
 
     source = tmp_path / "src/app.py"
@@ -295,8 +319,13 @@ def test_standard_cli_lifecycle_reaches_close_with_task_metadata_present(tmp_pat
         }),
         encoding="utf-8",
     )
-    invoke("result", "submit", task_id, str(result_path), "--expected-revision", "6", "--idempotency-key", "result-submit")
-    invoke("run", "finish", task_id, run_id, "--status", "succeeded", "--exit-code", "0")
+    submitted = invoke("result", "submit", task_id, str(result_path), "--expected-revision", "6", "--idempotency-key", "result-submit")
+    assert submitted["intake_proof"]["checks"] == {
+        "run_baseline_bound": True,
+        "worktree_identity_bound": True,
+        "diff_recomputed": True,
+        "paths_exact": True,
+    }
     invoke("task", "transition", task_id, "verifying", "--expected-revision", "7", "--idempotency-key", "verifying")
 
     for revision, claim in enumerate(("approved_scope", "targeted_tests", "AC-001"), start=8):

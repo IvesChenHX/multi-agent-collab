@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+import hashlib
+import json
 from typing import Any, Iterable, Mapping
 
 from .application.governance import Decision, evaluate_evidence
@@ -49,22 +51,89 @@ class PromotionResult:
     event_payload: dict[str, Any]
 
 
+WORKSPACE_EQUIVALENCE_CHECKS = frozenset({
+    "source_subject_bound",
+    "target_commit_resolved",
+    "effective_tree_matches",
+    "index_matches",
+    "untracked_empty",
+    "special_paths_match",
+    "lfs_verified",
+})
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceEquivalenceProof:
+    source_workspace_subject: dict[str, Any]
+    observed_workspace_subject: dict[str, Any]
+    target_commit_subject: dict[str, Any]
+    checks: dict[str, bool]
+    verifier: str
+    digest: str
+
+    @staticmethod
+    def _digest(payload: Mapping[str, Any]) -> str:
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+    @classmethod
+    def verified(
+        cls,
+        *,
+        source_workspace_subject: Mapping[str, Any],
+        observed_workspace_subject: Mapping[str, Any],
+        target_commit_subject: Mapping[str, Any],
+        checks: Mapping[str, bool],
+        verifier: str,
+    ) -> "WorkspaceEquivalenceProof":
+        payload = {
+            "source_workspace_subject": dict(source_workspace_subject),
+            "observed_workspace_subject": dict(observed_workspace_subject),
+            "target_commit_subject": dict(target_commit_subject),
+            "checks": dict(checks),
+            "verifier": verifier,
+        }
+        return cls(**payload, digest=cls._digest(payload))
+
+    def valid(self) -> bool:
+        payload = {
+            "source_workspace_subject": self.source_workspace_subject,
+            "observed_workspace_subject": self.observed_workspace_subject,
+            "target_commit_subject": self.target_commit_subject,
+            "checks": self.checks,
+            "verifier": self.verifier,
+        }
+        return (
+            bool(self.verifier)
+            and WORKSPACE_EQUIVALENCE_CHECKS.issubset(self.checks)
+            and all(self.checks[name] is True for name in WORKSPACE_EQUIVALENCE_CHECKS)
+            and self.digest == self._digest(payload)
+        )
+
+
 def promote_evidence(
     evidence: Mapping[str, Any], *, current_workspace_subject: Mapping[str, Any], target_commit_subject: Mapping[str, Any],
-    workspace_equivalent: bool = False,
+    equivalence_proof: WorkspaceEquivalenceProof | None = None,
+    workspace_equivalent: bool | None = None,
 ) -> PromotionResult:
     if (evidence.get("subject") or {}).get("type") != "workspace" or current_workspace_subject.get("type") != "workspace":
         raise ValueError("only workspace Evidence can be promoted")
     if target_commit_subject.get("type") != "commit" or not target_commit_subject.get("tree_sha"):
         raise ValueError("target commit subject is incomplete")
-    if not workspace_equivalent:
-        raise ValueError("workspace tree, index, untracked files, and special paths are not equivalent to the target commit")
+    if equivalence_proof is None or not equivalence_proof.valid():
+        raise ValueError("a structured, verified workspace equivalence proof is required")
+    if dict(evidence.get("subject") or {}) != equivalence_proof.source_workspace_subject:
+        raise ValueError("workspace equivalence proof does not bind the source Evidence subject")
+    if dict(current_workspace_subject) != equivalence_proof.observed_workspace_subject:
+        raise ValueError("workspace equivalence proof does not bind the observed workspace")
+    if dict(target_commit_subject) != equivalence_proof.target_commit_subject:
+        raise ValueError("workspace equivalence proof does not bind the target commit")
     promoted = deepcopy(dict(evidence))
     source_id = str(promoted.get("id"))
     promoted["id"] = prefixed("EVD")
     promoted["subject"] = dict(target_commit_subject)
     promoted["recorded_at"] = utc_now()
-    return PromotionResult(promoted, {"source_evidence_id": source_id, "promoted_evidence_id": promoted["id"], "workspace_subject": dict(current_workspace_subject), "commit_subject": dict(target_commit_subject)})
+    return PromotionResult(promoted, {"source_evidence_id": source_id, "promoted_evidence_id": promoted["id"], "workspace_subject": dict(current_workspace_subject), "commit_subject": dict(target_commit_subject), "equivalence_proof": {"verifier": equivalence_proof.verifier, "digest": equivalence_proof.digest, "checks": dict(equivalence_proof.checks)}})
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,8 +5,11 @@ from pathlib import Path
 from typing import Any
 
 from mac.authority import actor_authorized_for_scope, load_runtime_profiles, valid_scope_approvals
+from mac.errors import MacIssue
 from mac.git import GitRepository
 from mac.io import load_data
+from mac.policy import compile_policy, ownership_source_path, policy_source_paths
+from mac.repository import policy_ref_matches_executable
 from mac.scope import check_changes
 
 from .governance import CloseDecision, evaluate_close
@@ -32,8 +35,9 @@ def evaluate_repository_close(repo: Path, task_id: str, close_actor: str) -> Clo
     work_units = _load_many(task_dir, "work-units")
     task["work_units_complete"] = bool(work_units) and all(item.get("status") == "completed" for item in work_units)
 
-    config = load_data(root / ".agents/config.yaml")
-    ownership = load_data(root / str(config["paths"]["ownership"]))
+    compiled = compile_policy(root, runtime_profile_id=str(task.get("runtime_profile") or "") or None)
+    config = compiled.config
+    ownership = compiled.ownership
     git = GitRepository(root)
     changes = git.changes_since(scope.get("base_commit"), task_id=task_id)
     valid_approvals = valid_scope_approvals(task, scope, approvals, ownership, config)
@@ -68,11 +72,15 @@ def evaluate_repository_close(repo: Path, task_id: str, close_actor: str) -> Clo
         authorized_risk_acceptors=authorized,
         current_diff_digest=git.review_diff_digest(scope.get("base_commit"), task_id=task_id),
         runtime_profiles=load_runtime_profiles(root, config),
+        mode_required_gates=(config.get("modes", {}).get(str(task.get("mode")), {}) or {}).get("required_gates", []),
     )
     issues = list(decision.issues)
+    required_policy_paths = set(policy_source_paths(config, str(task.get("runtime_profile") or "") or None))
+    if not policy_ref_matches_executable(root, task.get("policy_ref") or {}, required_paths=required_policy_paths):
+        issues.append(MacIssue("CLOSE_POLICY_DRIFT", "frozen policy does not match the executable task policy"))
+    if not policy_ref_matches_executable(root, task.get("ownership_ref") or {}, required_paths={ownership_source_path(config)}):
+        issues.append(MacIssue("CLOSE_OWNERSHIP_DRIFT", "frozen ownership does not match the executable ownership policy"))
     if not valid_approvals:
-        from mac.errors import MacIssue
-
         issues.append(MacIssue("CLOSE_SCOPE_APPROVAL_INVALID", "approved scope has no authorized independent Approval"))
     issues.extend(scope_result.issues)
     return CloseDecision(not issues, tuple(issues), decision.covered_gates, decision.covered_acceptance)

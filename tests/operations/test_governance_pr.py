@@ -4,6 +4,7 @@ from pathlib import Path
 
 import yaml
 
+from scripts.ci import governance_pr
 from scripts.ci.governance_pr import check_current_evidence, discover_task_ids, evaluate
 
 
@@ -74,3 +75,33 @@ def test_evidence_gate_accepts_metadata_only_successor_commit_and_rejects_new_co
     subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "new code"], check=True)
     rejected = check_current_evidence(Path("."), task_directory, "HEAD")
     assert rejected["exit_code"] == 7
+
+
+def test_enforced_main_executes_and_blocks_on_current_evidence_gate(tmp_path: Path, monkeypatch):
+    config = tmp_path / "config.yaml"
+    config.write_text("governance_level: enforced\n", encoding="utf-8")
+    task_directory = f"{TASK_ID}-refund-auth"
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        governance_pr,
+        "_git_changed_paths",
+        lambda base, head: [f"tasks/{task_directory}/events/EVT-example.json"],
+    )
+    monkeypatch.setattr(
+        governance_pr,
+        "_run",
+        lambda argv: {"argv": argv, "exit_code": 0, "output": {"ok": True}, "stdout": None, "stderr": None},
+    )
+
+    def reject_current_evidence(repo: Path, directory: str, head: str):
+        calls.append((directory, head))
+        return {"argv": ["evidence-gate", directory, head], "exit_code": 7, "output": {"ok": False}, "stdout": None, "stderr": None}
+
+    monkeypatch.setattr(governance_pr, "check_current_evidence", reject_current_evidence)
+
+    exit_code = governance_pr.main(
+        ["--base", "base", "--head", "head", "--config", str(config), "--json"]
+    )
+
+    assert exit_code == 7
+    assert calls == [(task_directory, "head")]

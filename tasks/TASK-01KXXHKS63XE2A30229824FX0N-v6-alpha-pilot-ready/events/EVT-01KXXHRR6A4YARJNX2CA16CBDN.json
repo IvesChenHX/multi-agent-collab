@@ -1,0 +1,33 @@
+{
+  "actor": {
+    "id": "platform-owner",
+    "kind": "human"
+  },
+  "event_id": "EVT-01KXXHRR6A4YARJNX2CA16CBDN",
+  "event_type": "scope_approved",
+  "expected_revision": 4,
+  "idempotency_key": "alpha-scope-approval-platform",
+  "new_revision": 5,
+  "occurred_at": "2026-07-19T16:01:25.194555Z",
+  "payload": {
+    "approval": {
+      "actor": {
+        "id": "platform-owner",
+        "kind": "human"
+      },
+      "decision": "approved",
+      "id": "APR-01KXXHRQWM1BN4D5TZ5XTFEP6X",
+      "independence_level": "L2",
+      "kind": "scope",
+      "recorded_at": "2026-07-19T16:01:24.884368Z",
+      "schema_version": 1,
+      "subject_ref": "tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/scope-contract.yaml",
+      "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready"
+    },
+    "approval_id": "APR-01KXXHRQWM1BN4D5TZ5XTFEP6X",
+    "approval_kind": "scope"
+  },
+  "run_id": null,
+  "schema_version": 1,
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready"
+}

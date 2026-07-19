@@ -1,0 +1,14 @@
+{
+  "actor": {
+    "id": "devex-owner",
+    "kind": "human"
+  },
+  "decision": "approved",
+  "id": "APR-01KXXHRTBGE89M91V08P64V2WJ",
+  "independence_level": "L2",
+  "kind": "scope",
+  "recorded_at": "2026-07-19T16:01:27.408575Z",
+  "schema_version": 1,
+  "subject_ref": "tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/scope-contract.yaml",
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready"
+}

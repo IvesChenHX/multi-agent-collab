@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -11,13 +12,13 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from .errors import ExitCode, MacError, MacIssue
 from .events import replay_entity_snapshots, replay_events, replay_work_units
 from .ids import prefixed
 from .io import atomic_write_json, atomic_write_yaml, load_data
-from .policy import compile_policy
+from .policy import compile_policy, ownership_source_path, policy_source_paths
 from .schema_validation import SchemaSet
 from .state_machine import TERMINAL_STATES, TransitionContext, evaluate_transition, validate_workflow_invariants
 
@@ -48,17 +49,136 @@ def git_head(repo: Path) -> str | None:
     return value if len(value) == 40 else None
 
 
+def _policy_path(relative: str) -> str:
+    value = Path(relative)
+    if value.is_absolute() or not value.parts or ".." in value.parts or "\x00" in relative:
+        raise MacError(
+            "POLICY_PATH_UNSAFE",
+            "policy snapshot path must be repository-relative",
+            exit_code=ExitCode.SECURITY,
+            path=relative,
+        )
+    return value.as_posix()
+
+
+def _git_bytes(repo: Path, *argv: str) -> bytes | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo), *argv],
+            check=True,
+            capture_output=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    return completed.stdout
+
+
+def _canonical_policy_bytes(repo: Path, relative: str, head: str | None) -> tuple[bytes | None, bool]:
+    """Return Git-canonical bytes and whether HEAD supplied the content."""
+
+    path = repo / relative
+    if head is not None:
+        exists = _git_bytes(repo, "cat-file", "-e", f"{head}:{relative}") is not None
+        clean = _git_bytes(repo, "diff", "--quiet", head, "--", relative) is not None
+        if exists and clean:
+            content = _git_bytes(repo, "show", f"{head}:{relative}")
+            if content is not None:
+                return content, True
+    if not path.is_file():
+        return None, False
+    content = path.read_bytes()
+    if b"\x00" not in content:
+        content = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return content, False
+
+
 def build_policy_ref(repo: Path, relative_paths: list[str]) -> dict[str, Any]:
+    root = repo.resolve()
+    head = git_head(root)
     rows = []
-    for relative in relative_paths:
-        path = repo / relative
-        if path.is_file():
-            rows.append({"path": Path(relative).as_posix(), "digest": sha256_bytes(path.read_bytes())})
+    entirely_commit_bound = head is not None
+    for raw_relative in relative_paths:
+        relative = _policy_path(raw_relative)
+        content, commit_bound = _canonical_policy_bytes(root, relative, head)
+        if content is None:
+            entirely_commit_bound = False
+            continue
+        rows.append({"path": relative, "digest": sha256_bytes(content)})
+        entirely_commit_bound = entirely_commit_bound and commit_bound
     rows.sort(key=lambda row: row["path"])
     result: dict[str, Any] = {"combined_digest": sha256_bytes(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()), "files": rows}
-    if head := git_head(repo):
+    if head and entirely_commit_bound:
         result["source_commit"] = head
     return result
+
+
+def policy_ref_matches_executable(
+    repo: Path,
+    reference: Mapping[str, Any],
+    *,
+    required_paths: Iterable[str] = (),
+) -> bool:
+    """Verify a frozen reference, including exact legacy CRLF checkout digests.
+
+    Legacy v6-alpha snapshots hashed worktree bytes.  Equivalence is accepted
+    only when every stored file digest is either the immutable source-commit
+    blob digest or the exact CRLF checkout of a UTF-8 LF blob, the aggregate
+    digest is internally consistent, and the current executable content still
+    equals that source blob.
+    """
+
+    try:
+        rows = [
+            {"path": _policy_path(str(item["path"])), "digest": str(item["digest"])}
+            for item in reference.get("files", [])
+        ]
+    except (KeyError, TypeError, ValueError, MacError):
+        return False
+    rows.sort(key=lambda row: row["path"])
+    paths = [row["path"] for row in rows]
+    if not rows or len(paths) != len(set(paths)):
+        return False
+    required = {_policy_path(value) for value in required_paths}
+    missing_required = required - set(paths)
+    aggregate = sha256_bytes(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode())
+    if aggregate != reference.get("combined_digest"):
+        return False
+    source_commit = str(reference.get("source_commit", ""))
+    if source_commit and re.fullmatch(r"[0-9a-f]{40}", source_commit) is None:
+        return False
+    source_commit_valid = bool(re.fullmatch(r"[0-9a-f]{40}", source_commit))
+    if source_commit_valid:
+        source_commit_valid = _git_bytes(repo.resolve(), "rev-parse", f"{source_commit}^{{commit}}") is not None
+    head = git_head(repo.resolve())
+
+    def unchanged_from_source(path: str) -> bool:
+        source = _git_bytes(repo.resolve(), "show", f"{source_commit}:{path}")
+        current_content, _ = _canonical_policy_bytes(repo.resolve(), path, head)
+        return source is not None and current_content == source
+
+    if missing_required and (not source_commit_valid or not all(unchanged_from_source(path) for path in missing_required)):
+        return False
+    current = build_policy_ref(repo, paths)
+    if current.get("combined_digest") == aggregate:
+        return True
+    if not source_commit_valid:
+        return False
+    for row in rows:
+        source = _git_bytes(repo.resolve(), "show", f"{source_commit}:{row['path']}")
+        current_content, _ = _canonical_policy_bytes(repo.resolve(), row["path"], head)
+        if source is None or current_content != source:
+            return False
+        allowed = {sha256_bytes(source)}
+        if b"\x00" not in source and b"\r" not in source:
+            try:
+                source.decode("utf-8")
+            except UnicodeDecodeError:
+                pass
+            else:
+                allowed.add(sha256_bytes(source.replace(b"\n", b"\r\n")))
+        if row["digest"] not in allowed:
+            return False
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,53 +273,78 @@ class FilesystemTaskRepository:
     def lease(self, task_id: str, owner: str, *, ttl_seconds: float = 30.0) -> Iterator[str]:
         path = self.task_dir(task_id) / "private" / "controller.lease"
         path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = path.with_suffix(".lock")
         token = prefixed("LEASE")
         payload = {"token": token, "owner": owner, "acquired_at": utc_now(), "expires_unix": time.time() + ttl_seconds}
-        quarantined: Path | None = None
-        for attempt in range(3):
+        if ttl_seconds <= 0:
+            raise ValueError("lease ttl must be positive")
+        lock_handle = lock_path.open("a+b")
+        acquired_lock = False
+        wrote_lease = False
+        try:
+            lock_handle.seek(0, os.SEEK_END)
+            if lock_handle.tell() == 0:
+                lock_handle.write(b"\0")
+                lock_handle.flush()
+                os.fsync(lock_handle.fileno())
+            lock_handle.seek(0)
             try:
-                descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                    json.dump(payload, handle, sort_keys=True)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                break
-            except FileExistsError:
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired_lock = True
+            except (OSError, BlockingIOError) as exc:
+                raise MacError(
+                    "LEASE_CONFLICT",
+                    "task controller lease is held by another process",
+                    exit_code=ExitCode.CONFLICT,
+                    task_id=task_id,
+                ) from exc
+            if path.is_file():
                 try:
                     current = json.loads(path.read_text(encoding="utf-8"))
                     expired = float(current.get("expires_unix", 0)) <= time.time()
-                except Exception:
-                    expired = False
-                if expired and attempt < 2:
-                    quarantine = path.with_name(f".{path.name}.{prefixed('LEASE')}.expired")
-                    try:
-                        os.rename(path, quarantine)
-                        quarantined = quarantine
-                    except FileNotFoundError:
-                        pass
-                    except OSError:
-                        raise MacError("LEASE_CONFLICT", "expired lease takeover lost an atomic race", exit_code=ExitCode.CONFLICT, task_id=task_id)
-                    continue
-                if quarantined is not None:
-                    try:
-                        quarantined.unlink()
-                    except FileNotFoundError:
-                        pass
-                raise MacError("LEASE_CONFLICT", "task controller lease is active", exit_code=ExitCode.CONFLICT, task_id=task_id)
-        try:
+                except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise MacError(
+                        "LEASE_CORRUPT",
+                        "controller lease cannot be parsed safely",
+                        exit_code=ExitCode.CORRUPTION,
+                        task_id=task_id,
+                    ) from exc
+                if not expired:
+                    raise MacError(
+                        "LEASE_CONFLICT",
+                        "task controller lease is active",
+                        exit_code=ExitCode.CONFLICT,
+                        task_id=task_id,
+                    )
+            atomic_write_json(path, payload)
+            wrote_lease = True
             yield token
         finally:
-            try:
-                current = json.loads(path.read_text(encoding="utf-8"))
-                if current.get("token") == token:
-                    path.unlink()
-            except FileNotFoundError:
-                pass
-            if quarantined is not None:
+            if acquired_lock and wrote_lease:
                 try:
-                    quarantined.unlink()
-                except FileNotFoundError:
+                    current = json.loads(path.read_text(encoding="utf-8"))
+                    if current.get("token") == token:
+                        path.unlink()
+                except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
                     pass
+            if acquired_lock:
+                lock_handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            lock_handle.close()
 
     def create_task(
         self, task: dict[str, Any], *, actor: dict[str, Any], idempotency_key: str,
@@ -240,6 +385,55 @@ class FilesystemTaskRepository:
             raise
         return AppendResult(event, projection)
 
+    def _append_event_locked(
+        self, task_id: str, event_type: str, payload: dict[str, Any], *, actor: dict[str, Any],
+        expected_revision: int, idempotency_key: str, run_id: str | None = None,
+        event_id: str | None = None,
+        fault_hook: Callable[[str], None] | None = None,
+        materializations: list[tuple[Path, dict[str, Any]]] | None = None,
+        replace_existing: set[Path] | None = None,
+    ) -> AppendResult:
+        if existing := self._existing_idempotency(task_id, idempotency_key):
+            if existing.get("event_type") != event_type:
+                raise MacError("EVENT_IDEMPOTENCY_CONFLICT", "idempotency key belongs to another operation", exit_code=ExitCode.CONFLICT, task_id=task_id)
+            through_revision = int(existing.get("new_revision", 0))
+            original_events = [event for event in self.list_events(task_id) if int(event.get("new_revision", 0)) <= through_revision]
+            self.rebuild_task(task_id)
+            return AppendResult(existing, replay_events(original_events), True)
+        events = self.list_events(task_id)
+        projection = replay_events(events)
+        current = int(projection["revision"])
+        if current != expected_revision:
+            raise MacError("REVISION_CONFLICT", f"expected {expected_revision}, current {current}", exit_code=ExitCode.CONFLICT, task_id=task_id)
+        pending = list(materializations or [])
+        replace_targets = {path.resolve(strict=False) for path in (replace_existing or set())}
+        task_root = self.task_dir(task_id).resolve()
+        for target, _ in pending:
+            resolved_target = target.resolve(strict=False)
+            try:
+                resolved_target.relative_to(task_root)
+            except ValueError as exc:
+                raise MacError("ENTITY_PATH_UNSAFE", "entity target is outside the task directory", exit_code=ExitCode.SECURITY, path=str(target), task_id=task_id) from exc
+            if target.exists() and resolved_target not in replace_targets:
+                raise MacError("ENTITY_ID_CONFLICT", "entity target already exists without a matching idempotency event", exit_code=ExitCode.CONFLICT, path=target.relative_to(self.repo).as_posix(), task_id=task_id)
+        event = {
+            "schema_version": 1, "event_id": event_id or prefixed("EVT"), "task_id": task_id,
+            "event_type": event_type, "occurred_at": utc_now(), "actor": actor, "run_id": run_id,
+            "expected_revision": current, "new_revision": current + 1,
+            "idempotency_key": idempotency_key, "payload": deepcopy(payload),
+        }
+        event_path = self.task_dir(task_id) / "events" / f"{event['event_id']}.json"
+        atomic_write_json(event_path, event)
+        if fault_hook:
+            fault_hook("after_event")
+        for target, value in pending:
+            (atomic_write_yaml if target.suffix.lower() in {".yaml", ".yml"} else atomic_write_json)(target, value)
+        projection = replay_events([*events, event])
+        atomic_write_yaml(self.task_dir(task_id) / "task.yaml", projection)
+        if fault_hook:
+            fault_hook("after_projection")
+        return AppendResult(event, projection)
+
     def append_event(
         self, task_id: str, event_type: str, payload: dict[str, Any], *, actor: dict[str, Any],
         expected_revision: int, idempotency_key: str, run_id: str | None = None,
@@ -249,74 +443,55 @@ class FilesystemTaskRepository:
         replace_existing: set[Path] | None = None,
     ) -> AppendResult:
         with self.lease(task_id, str(actor.get("id", "unknown"))):
-            if existing := self._existing_idempotency(task_id, idempotency_key):
-                if existing.get("event_type") != event_type:
-                    raise MacError("EVENT_IDEMPOTENCY_CONFLICT", "idempotency key belongs to another operation", exit_code=ExitCode.CONFLICT, task_id=task_id)
-                through_revision = int(existing.get("new_revision", 0))
-                original_events = [event for event in self.list_events(task_id) if int(event.get("new_revision", 0)) <= through_revision]
-                self.rebuild_task(task_id)
-                return AppendResult(existing, replay_events(original_events), True)
-            events = self.list_events(task_id)
-            projection = replay_events(events)
-            current = int(projection["revision"])
-            if current != expected_revision:
-                raise MacError("REVISION_CONFLICT", f"expected {expected_revision}, current {current}", exit_code=ExitCode.CONFLICT, task_id=task_id)
-            pending = list(materializations or [])
-            replace_targets = {path.resolve(strict=False) for path in (replace_existing or set())}
-            task_root = self.task_dir(task_id).resolve()
-            for target, _ in pending:
-                resolved_target = target.resolve(strict=False)
-                try:
-                    resolved_target.relative_to(task_root)
-                except ValueError as exc:
-                    raise MacError("ENTITY_PATH_UNSAFE", "entity target is outside the task directory", exit_code=ExitCode.SECURITY, path=str(target), task_id=task_id) from exc
-                if target.exists() and resolved_target not in replace_targets:
-                    raise MacError("ENTITY_ID_CONFLICT", "entity target already exists without a matching idempotency event", exit_code=ExitCode.CONFLICT, path=target.relative_to(self.repo).as_posix(), task_id=task_id)
-            event = {
-                "schema_version": 1, "event_id": event_id or prefixed("EVT"), "task_id": task_id,
-                "event_type": event_type, "occurred_at": utc_now(), "actor": actor, "run_id": run_id,
-                "expected_revision": current, "new_revision": current + 1,
-                "idempotency_key": idempotency_key, "payload": deepcopy(payload),
-            }
-            event_path = self.task_dir(task_id) / "events" / f"{event['event_id']}.json"
-            atomic_write_json(event_path, event)
-            if fault_hook:
-                fault_hook("after_event")
-            for target, value in pending:
-                (atomic_write_yaml if target.suffix.lower() in {".yaml", ".yml"} else atomic_write_json)(target, value)
-            projection = replay_events([*events, event])
-            atomic_write_yaml(self.task_dir(task_id) / "task.yaml", projection)
-            if fault_hook:
-                fault_hook("after_projection")
-            return AppendResult(event, projection)
+            return self._append_event_locked(
+                task_id, event_type, payload, actor=actor,
+                expected_revision=expected_revision, idempotency_key=idempotency_key,
+                run_id=run_id, event_id=event_id, fault_hook=fault_hook,
+                materializations=materializations, replace_existing=replace_existing,
+            )
 
     def transition(
         self, task_id: str, target: str, context: TransitionContext, *, actor: dict[str, Any],
         expected_revision: int, idempotency_key: str,
     ) -> AppendResult:
-        if existing := self._existing_idempotency(task_id, idempotency_key):
-            if existing.get("event_type") != "state_transitioned" or (existing.get("payload") or {}).get("to") != target:
-                raise MacError("EVENT_IDEMPOTENCY_CONFLICT", "idempotency key belongs to another transition", exit_code=ExitCode.CONFLICT, task_id=task_id)
-            through_revision = int(existing.get("new_revision", 0))
-            original_events = [event for event in self.list_events(task_id) if int(event.get("new_revision", 0)) <= through_revision]
-            return AppendResult(existing, replay_events(original_events), True)
         with self.lease(task_id, str(actor.get("id", "unknown"))):
+            if existing := self._existing_idempotency(task_id, idempotency_key):
+                if existing.get("event_type") != "state_transitioned" or (existing.get("payload") or {}).get("to") != target:
+                    raise MacError("EVENT_IDEMPOTENCY_CONFLICT", "idempotency key belongs to another transition", exit_code=ExitCode.CONFLICT, task_id=task_id)
+                through_revision = int(existing.get("new_revision", 0))
+                original_events = [event for event in self.list_events(task_id) if int(event.get("new_revision", 0)) <= through_revision]
+                self.rebuild_task(task_id)
+                return AppendResult(existing, replay_events(original_events), True)
             task = replay_events(self.list_events(task_id))
-            compiled = compile_policy(self.repo)
-            policy_paths = [str(item.get("path")) for item in (task.get("policy_ref") or {}).get("files", [])]
-            ownership_paths = [str(item.get("path")) for item in (task.get("ownership_ref") or {}).get("files", [])]
-            if policy_paths and build_policy_ref(self.repo, policy_paths).get("combined_digest") != (task.get("policy_ref") or {}).get("combined_digest"):
+            current = int(task["revision"])
+            if current != expected_revision:
+                raise MacError("REVISION_CONFLICT", f"expected {expected_revision}, current {current}", exit_code=ExitCode.CONFLICT, task_id=task_id)
+            compiled = compile_policy(self.repo, runtime_profile_id=str(task.get("runtime_profile") or "") or None)
+            required_policy_paths = set(policy_source_paths(compiled.config, str(task.get("runtime_profile") or "") or None))
+            required_ownership_path = ownership_source_path(compiled.config)
+            if not policy_ref_matches_executable(self.repo, task.get("policy_ref") or {}, required_paths=required_policy_paths):
                 raise MacError("POLICY_DRIFT", "task policy snapshot does not match the executable machine policy", exit_code=ExitCode.SECURITY, task_id=task_id)
-            if ownership_paths and build_policy_ref(self.repo, ownership_paths).get("combined_digest") != (task.get("ownership_ref") or {}).get("combined_digest"):
+            if not policy_ref_matches_executable(self.repo, task.get("ownership_ref") or {}, required_paths={required_ownership_path}):
                 raise MacError("OWNERSHIP_DRIFT", "task ownership snapshot does not match the executable ownership policy", exit_code=ExitCode.SECURITY, task_id=task_id)
             leased_context = replace(context, controller_lease_valid=True, lease_valid=True)
-            decision = evaluate_transition(str(task["state"]), target, leased_context, transitions=compiled.transitions)
+            decision = evaluate_transition(
+                str(task["state"]),
+                target,
+                leased_context,
+                transitions=compiled.transitions,
+                states=compiled.states,
+                terminal_states=compiled.terminal_states,
+            )
             if not decision.ok:
                 raise MacError(decision.codes[0], f"{task['state']} -> {target} rejected", exit_code=ExitCode.TRANSITION, details={"failed_guards": decision.failed_guards, "failed_conditions": decision.failed_conditions})
             payload: dict[str, Any] = {"from": task["state"], "to": target, "transition_id": decision.transition.id if decision.transition else None}
+            payload["terminal_state"] = target in compiled.terminal_states
             if context.successor_task_id:
                 payload["successor_task_id"] = context.successor_task_id
-        return self.append_event(task_id, "state_transitioned", payload, actor=actor, expected_revision=expected_revision, idempotency_key=idempotency_key)
+            return self._append_event_locked(
+                task_id, "state_transitioned", payload, actor=actor,
+                expected_revision=expected_revision, idempotency_key=idempotency_key,
+            )
 
 
 def discover_task_dirs(repo: Path) -> list[Path]:

@@ -6,6 +6,7 @@ import platform
 import subprocess
 import sys
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -24,15 +25,15 @@ from .handoff import build_handoff_packet, write_handoff_packet
 from .ids import is_identifier, prefixed
 from .io import atomic_write_json, atomic_write_yaml, load_data
 from .migration import convert_v5, scan_v5
-from .policy import compile_policy
+from .policy import compile_policy, ownership_source_path, policy_source_paths
 from .report import build_audit_bundle, build_index, render_task_report, verify_audit_bundle
 from .repository import FilesystemTaskRepository, build_policy_ref, utc_now, validate_repository
-from .result import ResultService
+from .result import ResultIntakeProof, ResultService
 from .runtime import evaluate_capabilities, resolve_profile
 from .schema_validation import SchemaSet, install_schema_bundle
 from .scope import amend_scope, check_changes
 from .security import validate_result_security
-from .state_machine import TransitionContext, default_workflow_document
+from .state_machine import TransitionContext, default_workflow_document, find_transition
 
 app = typer.Typer(no_args_is_help=True, help="multi-agent-collab v6 governance core")
 policy_app = typer.Typer(no_args_is_help=True); task_app = typer.Typer(no_args_is_help=True)
@@ -124,10 +125,12 @@ def init_command(repo: Path = typer.Option(Path("."), "--repo"), project: str = 
 
 
 @app.command("doctor")
-def doctor_command(repo: Path = typer.Option(Path("."), "--repo"), repair: bool = typer.Option(False, "--repair-safe"), apply_repairs: bool = typer.Option(False, "--apply", help="Apply the repair-safe candidate set."), json_output: bool = typer.Option(False, "--json")) -> None:
+def doctor_command(repo: Path = typer.Option(Path("."), "--repo"), repair: bool = typer.Option(False, "--repair-safe"), apply_repairs: bool = typer.Option(False, "--apply", help="Apply the repair-safe candidate set."), plan_digest: Optional[str] = typer.Option(None, "--plan-digest"), json_output: bool = typer.Option(False, "--json")) -> None:
     if apply_repairs and not repair:
         raise MacError("DOCTOR_APPLY_REQUIRES_REPAIR_SAFE", "--apply requires --repair-safe", exit_code=ExitCode.CLI_USAGE)
-    payload = repair_safe(repo, apply=apply_repairs).as_dict() if repair else run_doctor(repo).as_dict(); _emit(payload, json_output)
+    if apply_repairs and plan_digest is None:
+        raise MacError("DOCTOR_PLAN_DIGEST_REQUIRED", "--apply requires --plan-digest from a prior preview", exit_code=ExitCode.CLI_USAGE)
+    payload = repair_safe(repo, apply=apply_repairs, expected_plan_digest=plan_digest).as_dict() if repair else run_doctor(repo).as_dict(); _emit(payload, json_output)
     if not payload["ok"]: raise typer.Exit(ExitCode.VALIDATION)
 
 
@@ -138,11 +141,11 @@ def validate_command(repo: Path = typer.Option(Path("."), "--repo"), schema_dir:
 
 
 @policy_app.command("compile")
-def policy_compile(repo: Path = typer.Option(Path("."), "--repo"), json_output: bool = typer.Option(False, "--json")) -> None:
-    compiled = compile_policy(repo)
+def policy_compile(repo: Path = typer.Option(Path("."), "--repo"), runtime_profile: Optional[str] = typer.Option(None, "--runtime-profile"), json_output: bool = typer.Option(False, "--json")) -> None:
+    compiled = compile_policy(repo, runtime_profile_id=runtime_profile)
     config = compiled.config
-    policy_paths = ["AGENTS.md", ".agents/config.yaml", f"{config['paths']['workflows']}/{config['default_workflow']}.yaml"]
-    ownership_paths = [str(config["paths"]["ownership"])]
+    policy_paths = list(policy_source_paths(config, str(compiled.runtime_profile["id"])))
+    ownership_paths = [ownership_source_path(config)]
     _emit({
         "ok": True,
         "policy_ref": build_policy_ref(repo, policy_paths),
@@ -163,8 +166,8 @@ def classify(changed_files: int = typer.Option(0, "--changed-files"), changed_li
 
 
 @task_app.command("new")
-def task_new(title: str = typer.Option(..., "--title"), objective: str = typer.Option(..., "--objective"), mode: str = typer.Option("standard", "--mode"), allow: list[str] = typer.Option(..., "--allow"), owner: list[str] = typer.Option(..., "--owner"), acceptance: list[str] = typer.Option(..., "--accept"), runtime_profile: str = typer.Option("local-single", "--runtime-profile"), gate: list[str] = typer.Option(["targeted_tests"], "--gate"), actor: str = typer.Option("cli-user", "--actor"), idempotency_key: str = typer.Option(..., "--idempotency-key"), repo: Path = typer.Option(Path("."), "--repo"), json_output: bool = typer.Option(False, "--json")) -> None:
-    value = TaskService(repo).create(title=title, mode=mode, objective=objective, acceptance=acceptance, allowed_paths=allow, owners=owner, runtime_profile=runtime_profile, required_gates=gate, actor=_actor(actor), idempotency_key=idempotency_key); _emit({"ok": True, "task_id": value["task"]["id"], "task": value["task"], "scope": value["scope"]}, json_output)
+def task_new(title: str = typer.Option(..., "--title"), objective: str = typer.Option(..., "--objective"), mode: str = typer.Option("standard", "--mode"), allow: list[str] = typer.Option(..., "--allow"), owner: list[str] = typer.Option(..., "--owner"), acceptance: list[str] = typer.Option(..., "--accept"), runtime_profile: str = typer.Option("local-single", "--runtime-profile"), gate: list[str] = typer.Option(["targeted_tests"], "--gate"), parent_task: Optional[str] = typer.Option(None, "--parent-task"), supersedes: list[str] = typer.Option([], "--supersedes"), actor: str = typer.Option("cli-user", "--actor"), idempotency_key: str = typer.Option(..., "--idempotency-key"), repo: Path = typer.Option(Path("."), "--repo"), json_output: bool = typer.Option(False, "--json")) -> None:
+    value = TaskService(repo).create(title=title, mode=mode, objective=objective, acceptance=acceptance, allowed_paths=allow, owners=owner, runtime_profile=runtime_profile, required_gates=gate, actor=_actor(actor), idempotency_key=idempotency_key, parent_task=parent_task, supersedes=supersedes); _emit({"ok": True, "task_id": value["task"]["id"], "task": value["task"], "scope": value["scope"]}, json_output)
 
 
 @task_app.command("show")
@@ -225,27 +228,54 @@ def _transition_context(repo: Path, task_id: str, target: str, actor: str = "cli
         work_unit_dependencies_complete=dependencies_complete,
         dependencies_complete=dependencies_complete,
         baseline_recorded=bool(scope.get("base_commit") or task.get("policy_ref", {}).get("source_commit")),
-        authorized_cancellation=True,
+        authorized_cancellation=actor_authorized_for_scope(actor, scope, ownership),
     )
+
+
+def _require_scope_owner(repo: Path, task_id: str, actor: str, operation: str) -> None:
+    directory = _repository(repo).task_dir(task_id)
+    scope = load_data(directory / "scope-contract.yaml")
+    config = load_data(repo / ".agents/config.yaml")
+    ownership = load_data(repo / ownership_source_path(config))
+    if not actor_authorized_for_scope(actor, scope, ownership):
+        raise MacError(
+            "ACTOR_SCOPE_UNAUTHORIZED",
+            f"actor claim is not authorized by Scope ownership for {operation}; trusted actor authentication remains a runtime responsibility",
+            exit_code=ExitCode.SECURITY,
+            task_id=task_id,
+        )
 
 
 @task_app.command("transition")
 def task_transition(task_id: str, target: str, expected_revision: int = typer.Option(..., "--expected-revision"), idempotency_key: str = typer.Option(..., "--idempotency-key"), actor: str = typer.Option("cli-user", "--actor"), repo: Path = typer.Option(Path("."), "--repo"), json_output: bool = typer.Option(False, "--json")) -> None:
+    task = _repository(repo).load_task(task_id)
     if target in {"completed", "completed_with_risk"}:
         close = _close_decision(repo, task_id, actor)
         if not close.ok:
             raise MacError("CLOSE_GATES_FAILED", "task cannot close", exit_code=ExitCode.EVIDENCE, details={"issues": [item.as_dict() for item in close.issues]})
+    compiled = compile_policy(repo, runtime_profile_id=str(task.get("runtime_profile") or "") or None)
+    if find_transition(str(task.get("state")), target, compiled.transitions) is None:
+        raise MacError("TRANSITION_NOT_ALLOWED", f"transition {task.get('state')} -> {target} is not allowed", exit_code=ExitCode.TRANSITION, task_id=task_id)
     result = _repository(repo).transition(task_id, target, _transition_context(repo, task_id, target, actor), actor=_actor(actor), expected_revision=expected_revision, idempotency_key=idempotency_key); _emit({"ok": True, "task": result.projection, "event": result.event}, json_output)
 
 
 @task_app.command("cancel")
 def task_cancel(task_id: str, expected_revision: int = typer.Option(...), idempotency_key: str = typer.Option(...), actor: str = typer.Option("cli-user"), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
-    result = _repository(repo).transition(task_id, "cancelled", TransitionContext(authorized_cancellation=True), actor=_actor(actor), expected_revision=expected_revision, idempotency_key=idempotency_key); _emit({"ok": True, "task": result.projection}, json_output)
+    _require_scope_owner(repo, task_id, actor, "task.cancel")
+    context = replace(_transition_context(repo, task_id, "cancelled", actor), authorized_cancellation=True)
+    result = _repository(repo).transition(task_id, "cancelled", context, actor=_actor(actor), expected_revision=expected_revision, idempotency_key=idempotency_key); _emit({"ok": True, "task": result.projection}, json_output)
 
 
 @task_app.command("supersede")
 def task_supersede(task_id: str, successor: str = typer.Option(..., "--successor"), expected_revision: int = typer.Option(...), idempotency_key: str = typer.Option(...), actor: str = typer.Option("cli-user"), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
-    result = _repository(repo).transition(task_id, "superseded", TransitionContext(successor_task_id=successor), actor=_actor(actor), expected_revision=expected_revision, idempotency_key=idempotency_key); _emit({"ok": True, "task": result.projection}, json_output)
+    _require_scope_owner(repo, task_id, actor, "task.supersede")
+    if not is_identifier(successor, "TASK"):
+        raise MacError("SUCCESSOR_TASK_ID_UNSAFE", "successor is not a safe TASK identifier", exit_code=ExitCode.SECURITY, task_id=task_id)
+    if successor == task_id:
+        raise MacError("SUCCESSOR_TASK_SELF_REFERENCE", "a task cannot supersede itself", exit_code=ExitCode.VALIDATION, task_id=task_id)
+    _repository(repo).load_task(successor)
+    context = replace(_transition_context(repo, task_id, "superseded", actor), successor_task_id=successor)
+    result = _repository(repo).transition(task_id, "superseded", context, actor=_actor(actor), expected_revision=expected_revision, idempotency_key=idempotency_key); _emit({"ok": True, "task": result.projection}, json_output)
 
 
 @task_app.command("rebuild")
@@ -346,7 +376,7 @@ def work_unit_show(task_id: str, work_unit_id: str, repo: Path = typer.Option(Pa
 
 
 @run_app.command("register")
-def run_register(task_id: str, work_unit_id: str = typer.Option(...), profile: str = typer.Option("local-single"), context_id: str = typer.Option(...), actor: str = typer.Option("cli-agent"), actor_kind: str = typer.Option("agent"), independence_level: str = typer.Option("L0"), expected_revision: int = typer.Option(...), idempotency_key: str = typer.Option(...), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
+def run_register(task_id: str, work_unit_id: str = typer.Option(...), profile: str = typer.Option("local-single"), context_id: str = typer.Option(...), provider: Optional[str] = typer.Option(None, "--provider"), model: Optional[str] = typer.Option(None, "--model"), worktree: Optional[Path] = typer.Option(None, "--worktree"), branch: Optional[str] = typer.Option(None, "--branch"), actor: str = typer.Option("cli-agent"), actor_kind: str = typer.Option("agent"), independence_level: str = typer.Option("L0"), expected_revision: int = typer.Option(...), idempotency_key: str = typer.Option(...), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
     repository = _repository(repo)
     if not is_identifier(work_unit_id, "WU"):
         raise MacError("WORK_UNIT_ID_UNSAFE", "work unit id is invalid", exit_code=ExitCode.SECURITY, task_id=task_id)
@@ -371,6 +401,26 @@ def run_register(task_id: str, work_unit_id: str = typer.Option(...), profile: s
         raise MacError("WORK_UNIT_NOT_READY", "work unit is not ready or has incomplete dependencies", exit_code=ExitCode.TRANSITION, task_id=task_id, details={"work_unit_id": work_unit_id})
     running_work_unit = deepcopy(work_unit)
     running_work_unit["status"] = "running"
+    run_root = (worktree or repo).resolve()
+    run_git = GitRepository(run_root)
+    baseline_subject = run_git.commit_subject("HEAD")
+    branch_result = subprocess.run(
+        ["git", "-C", str(run_root), "rev-parse", "--abbrev-ref", "HEAD"],
+        shell=False,
+        text=True,
+        capture_output=True,
+    )
+    if branch_result.returncode != 0:
+        raise MacError("RUN_WORKTREE_INVALID", "run worktree is not a readable Git worktree", exit_code=ExitCode.VALIDATION, task_id=task_id)
+    actual_branch = branch_result.stdout.strip()
+    if branch is not None and branch != actual_branch:
+        raise MacError("RUN_BRANCH_MISMATCH", "declared branch does not match the run worktree", exit_code=ExitCode.CONFLICT, task_id=task_id, details={"declared": branch, "actual": actual_branch})
+    worktree_identity = {"path": str(run_root), "branch": actual_branch}
+    runtime = {"profile": profile, "execution_context_id": context_id, "worktree": str(run_root), "branch": actual_branch}
+    if provider is not None:
+        runtime["provider"] = provider
+    if model is not None:
+        runtime["model"] = model
     entity = {
         "schema_version": 1,
         "id": prefixed("RUN"),
@@ -378,7 +428,7 @@ def run_register(task_id: str, work_unit_id: str = typer.Option(...), profile: s
         "work_unit_id": work_unit_id,
         "status": "running",
         "actor": _actor(actor, actor_kind),
-        "runtime": {"profile": profile, "execution_context_id": context_id},
+        "runtime": runtime,
         "independence_level": independence_level,
         "started_at": utc_now(),
         "finished_at": None,
@@ -395,14 +445,14 @@ def run_register(task_id: str, work_unit_id: str = typer.Option(...), profile: s
         idempotency_key=idempotency_key,
         actor=actor,
         related_entities=[(work_unit_path, running_work_unit)],
-        event_payload={"work_unit_id": work_unit_id, "work_unit": running_work_unit},
+        event_payload={"work_unit_id": work_unit_id, "work_unit": running_work_unit, "baseline_subject": baseline_subject, "worktree_identity": worktree_identity},
         replace_existing={work_unit_path},
     )
     _emit({"ok": True, "run": entity}, json_output)
 
 
 @run_app.command("finish")
-def run_finish(task_id: str, run_id: str, status: str = typer.Option(...), exit_code: Optional[int] = typer.Option(None), expected_revision: Optional[int] = typer.Option(None), idempotency_key: Optional[str] = typer.Option(None), actor: str = typer.Option("cli-agent"), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
+def run_finish(task_id: str, run_id: str, status: str = typer.Option(...), exit_code: Optional[int] = typer.Option(None), expected_revision: int = typer.Option(..., "--expected-revision"), idempotency_key: str = typer.Option(..., "--idempotency-key"), actor: str = typer.Option("cli-agent"), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
     repository = _repository(repo)
     if not is_identifier(run_id, "RUN"):
         raise MacError("RUN_ID_UNSAFE", "run id is invalid", exit_code=ExitCode.SECURITY, task_id=task_id)
@@ -417,9 +467,6 @@ def run_finish(task_id: str, run_id: str, status: str = typer.Option(...), exit_
     finished["status"] = status
     finished["finished_at"] = utc_now()
     finished["exit_code"] = exit_code
-    current_revision = int(repository.load_task(task_id)["revision"])
-    revision = current_revision if expected_revision is None else expected_revision
-    key = idempotency_key or f"run-finish:{run_id}:{status}:{exit_code}"
     materializations: list[tuple[Path, dict[str, Any]]] = [(run_path, finished)]
     replace_existing = {run_path}
     payload: dict[str, Any] = {"run_id": run_id, "status": status}
@@ -435,8 +482,8 @@ def run_finish(task_id: str, run_id: str, status: str = typer.Option(...), exit_
         "run_finished",
         payload,
         actor=_actor(actor, "agent"),
-        expected_revision=revision,
-        idempotency_key=key,
+        expected_revision=expected_revision,
+        idempotency_key=idempotency_key,
         run_id=run_id,
         materializations=materializations,
         replace_existing=replace_existing,
@@ -455,7 +502,60 @@ def result_validate(path: Path, json_output: bool = typer.Option(False, "--json"
 
 
 @result_app.command("submit")
-def result_submit(task_id: str, path: Path, expected_revision: int = typer.Option(...), idempotency_key: str = typer.Option(...), actor: str = typer.Option("cli-user"), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None: _emit({"ok": True, "result": ResultService(repo).submit(task_id, path, expected_revision=expected_revision, idempotency_key=idempotency_key, actor=_actor(actor))}, json_output)
+def result_submit(task_id: str, path: Path, expected_revision: int = typer.Option(...), idempotency_key: str = typer.Option(...), actor: str = typer.Option("cli-user"), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
+    repository = _repository(repo)
+    result = load_data(path)
+    if result.get("task_id") != task_id:
+        raise MacError("RESULT_TASK_MISMATCH", "result task_id does not match target task", exit_code=ExitCode.VALIDATION, task_id=task_id)
+    run_id = str(result.get("run_id", ""))
+    work_unit_id = str(result.get("work_unit_id", ""))
+    if not is_identifier(run_id, "RUN"):
+        raise MacError("RESULT_RUN_ID_UNSAFE", "result run_id is not a safe RUN identifier", exit_code=ExitCode.SECURITY, task_id=task_id)
+    if not is_identifier(work_unit_id, "WU"):
+        raise MacError("RESULT_WORK_UNIT_ID_UNSAFE", "result work_unit_id is not a safe WU identifier", exit_code=ExitCode.SECURITY, task_id=task_id)
+    run = load_data(repository.task_dir(task_id) / "runs" / f"{run_id}.json")
+    started = next(
+        (
+            event for event in repository.list_events(task_id)
+            if event.get("event_type") == "run_started"
+            and str((event.get("payload") or {}).get("run_id", event.get("run_id", ""))) == run_id
+        ),
+        None,
+    )
+    payload = (started or {}).get("payload") or {}
+    baseline_subject = payload.get("baseline_subject")
+    worktree_identity = payload.get("worktree_identity")
+    if not isinstance(baseline_subject, dict) or not isinstance(worktree_identity, dict):
+        raise MacError("RESULT_RUN_PROOF_UNAVAILABLE", "run_started must freeze baseline_subject and worktree_identity", exit_code=ExitCode.EVIDENCE, task_id=task_id)
+    run_root = Path(str((run.get("runtime") or {}).get("worktree", ""))).resolve()
+    run_git = GitRepository(run_root)
+    changes = run_git.changes_since(str(baseline_subject.get("commit_sha", "")), task_id=task_id)
+    serialized_changes = [
+        {"operation": change.operation, "path": change.path, **({"old_path": change.old_path} if change.old_path else {}), "submodule": change.submodule}
+        for change in changes
+    ]
+    actual_paths = {
+        candidate
+        for change in changes
+        for candidate in (change.old_path, change.path)
+        if candidate
+    }
+    reported_paths = {str(candidate).replace("\\", "/") for candidate in result.get("changed_files", [])}
+    workspace_changes = run_git.workspace_changes(task_id=task_id)
+    result_subject = run_git.workspace_subject(task_id=task_id) if workspace_changes else run_git.current_code_subject(task_id)
+    intake_proof = ResultIntakeProof.verified(
+        task_id=task_id,
+        work_unit_id=work_unit_id,
+        run_id=run_id,
+        baseline_subject=baseline_subject,
+        worktree_identity=worktree_identity,
+        result_subject=result_subject,
+        changes=serialized_changes,
+        checks={"run_baseline_bound": True, "worktree_identity_bound": run_root == Path(str(worktree_identity.get("path", ""))).resolve(), "diff_recomputed": True, "paths_exact": actual_paths == reported_paths},
+        verifier="mac.cli/result-intake-v1",
+    )
+    submitted = ResultService(repo).submit(task_id, result, expected_revision=expected_revision, idempotency_key=idempotency_key, actor=_actor(actor), intake_proof=intake_proof)
+    _emit({"ok": True, "result": submitted, "intake_proof": {"verifier": intake_proof.verifier, "digest": intake_proof.digest, "checks": intake_proof.checks}}, json_output)
 
 
 @evidence_app.command("record", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -487,7 +587,7 @@ def evidence_promote(task_id: str, evidence_id: str, expected_revision: int = ty
     repository = _repository(repo)
     if replay := _operation_replay(repository, task_id, idempotency_key, "evidence_recorded"):
         payload = replay.get("payload") or {}; _emit({"ok": True, "evidence": payload.get("evidence"), "promotion": payload.get("promotion")}, json_output); return
-    directory = repository.task_dir(task_id)/"evidence"; source = load_data(directory/f"{evidence_id}.json"); git = GitRepository(repo); workspace = git.workspace_subject(task_id=task_id); target = git.current_code_subject(task_id); promoted = promote_evidence(source, current_workspace_subject=workspace, target_commit_subject=target, workspace_equivalent=git.workspace_equivalent_to_commit("HEAD", task_id=task_id, source_workspace_subject=source.get("subject"))); entity = _write_entity(repo, task_id, "evidence", promoted.evidence, "evidence.schema.json", "evidence_recorded", expected_revision=expected_revision, idempotency_key=idempotency_key, actor=actor, event_payload={"promotion": promoted.event_payload}); _emit({"ok": True, "evidence": entity, "promotion": promoted.event_payload}, json_output)
+    directory = repository.task_dir(task_id)/"evidence"; source = load_data(directory/f"{evidence_id}.json"); git = GitRepository(repo); proof = git.workspace_equivalence_proof(dict(source.get("subject") or {}), "HEAD", task_id=task_id); promoted = promote_evidence(source, current_workspace_subject=proof.observed_workspace_subject, target_commit_subject=proof.target_commit_subject, equivalence_proof=proof); entity = _write_entity(repo, task_id, "evidence", promoted.evidence, "evidence.schema.json", "evidence_recorded", expected_revision=expected_revision, idempotency_key=idempotency_key, actor=actor, event_payload={"promotion": promoted.event_payload}); _emit({"ok": True, "evidence": entity, "promotion": promoted.event_payload}, json_output)
 
 
 @evidence_app.command("invalidate")
@@ -565,8 +665,8 @@ def report_bundle(task_id: str, out: Path = typer.Option(...), redact: bool = ty
 
 
 @report_app.command("verify-bundle")
-def report_verify_bundle(bundle: Path = typer.Argument(..., exists=True, dir_okay=False), json_output: bool = typer.Option(False, "--json")) -> None:
-    _emit(verify_audit_bundle(bundle), json_output)
+def report_verify_bundle(bundle: Path = typer.Argument(..., exists=True, dir_okay=False), expected_digest: Optional[str] = typer.Option(None, "--expected-digest"), trust_anchor: Optional[Path] = typer.Option(None, "--trust-anchor", exists=True, dir_okay=False), json_output: bool = typer.Option(False, "--json")) -> None:
+    _emit(verify_audit_bundle(bundle, expected_digest=expected_digest, trust_anchor=trust_anchor), json_output)
 
 
 @index_app.command("build")

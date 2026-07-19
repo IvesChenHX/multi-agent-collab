@@ -1,0 +1,68 @@
+{
+  "actor": {
+    "id": "devex-implementer",
+    "kind": "human"
+  },
+  "event_id": "EVT-01KXXHVTX2G5AK01QTRG077GAA",
+  "event_type": "run_started",
+  "expected_revision": 18,
+  "idempotency_key": "alpha-run-devex-register",
+  "new_revision": 19,
+  "occurred_at": "2026-07-19T16:03:06.274699Z",
+  "payload": {
+    "run": {
+      "actor": {
+        "id": "devex-implementer",
+        "kind": "agent"
+      },
+      "exit_code": null,
+      "finished_at": null,
+      "id": "RUN-01KXXHVTRV1J0RFJZC931C47V2",
+      "independence_level": "L0",
+      "runtime": {
+        "execution_context_id": "devex-blocker-impl-20260719",
+        "profile": "local-multi"
+      },
+      "schema_version": 1,
+      "started_at": "2026-07-19T16:03:06.139424Z",
+      "status": "running",
+      "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+      "work_unit_id": "WU-01KXXHTR2PNYB2M57BQTRFXC2A"
+    },
+    "run_id": "RUN-01KXXHVTRV1J0RFJZC931C47V2",
+    "work_unit": {
+      "acceptance_criteria": [],
+      "allowed_paths": [
+        "src/mac/doctor.py",
+        "src/mac/report.py",
+        "src/mac/schema_validation.py",
+        "src/mac/adapters/runtime/plain_terminal.py",
+        "scripts/ci/governance_pr.py",
+        "scripts/release/check_release_version.py",
+        "scripts/release/check_schema_lock.py",
+        ".github/workflows/ci.yml",
+        ".github/workflows/governance-pr.yml",
+        ".github/workflows/release.yml",
+        "pyproject.toml",
+        "tests/test_schema_validation.py",
+        "tests/adapters/test_plain_terminal.py",
+        "tests/operations/test_doctor.py",
+        "tests/operations/test_governance_pr.py",
+        "tests/operations/test_release_artifacts.py",
+        "tests/reporting/test_audit_bundle.py"
+      ],
+      "depends_on": [],
+      "expected_result": "tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/results/RESULT-01KXXHTR2PNYB2M57BQTRFXC2B.json",
+      "id": "WU-01KXXHTR2PNYB2M57BQTRFXC2A",
+      "owner": "devex",
+      "schema_version": 1,
+      "status": "running",
+      "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+      "title": "Doctor、Audit、Schema-lock 与发布/CI 加固"
+    },
+    "work_unit_id": "WU-01KXXHTR2PNYB2M57BQTRFXC2A"
+  },
+  "run_id": null,
+  "schema_version": 1,
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready"
+}

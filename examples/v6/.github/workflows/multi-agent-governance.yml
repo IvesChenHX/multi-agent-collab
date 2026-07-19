@@ -21,4 +21,4 @@ jobs:
         run: mac validate --repo . --json
       - name: Check task scope for pull request
         if: github.event_name == 'pull_request'
-        run: mac scope-check --repo . --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}" --json
+        run: mac scope check --repo . --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}" --json

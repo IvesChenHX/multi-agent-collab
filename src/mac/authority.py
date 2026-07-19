@@ -1,14 +1,66 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from dataclasses import dataclass
+from typing import Any, Iterable, Mapping, Protocol
 
-from pathspec import PathSpec
+from pathspec import GitIgnoreSpec
 
+from .errors import ExitCode, MacError
 from .io import load_data
 
 
 _LEVEL = {"L0": 0, "L1": 1, "L2": 2, "L3": 3}
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorityDecision:
+    allowed: bool
+    actor_id: str
+    operation: str
+    task_id: str | None
+    authenticated: bool
+    issuer: str
+    reason: str = ""
+
+
+class AuthorityVerifier(Protocol):
+    """Trusted runtime seam; CLI actor strings are claims, not authority."""
+
+    def authorize(self, *, actor_claim: Mapping[str, Any], operation: str, task_id: str | None) -> AuthorityDecision: ...
+
+
+def require_authority(
+    verifier: AuthorityVerifier | None,
+    *,
+    actor_claim: Mapping[str, Any],
+    operation: str,
+    task_id: str | None,
+) -> AuthorityDecision:
+    if verifier is None:
+        raise MacError(
+            "AUTHORITY_VERIFIER_REQUIRED",
+            "a trusted authority verifier is required for this mutation",
+            exit_code=ExitCode.SECURITY,
+            task_id=task_id,
+        )
+    decision = verifier.authorize(actor_claim=actor_claim, operation=operation, task_id=task_id)
+    claimed_actor = str(actor_claim.get("id", ""))
+    if (
+        not decision.allowed
+        or not decision.authenticated
+        or not decision.issuer
+        or decision.actor_id != claimed_actor
+        or decision.operation != operation
+        or decision.task_id != task_id
+    ):
+        raise MacError(
+            "ACTOR_AUTHORITY_DENIED",
+            decision.reason or "actor authority is absent or does not bind this operation",
+            exit_code=ExitCode.SECURITY,
+            task_id=task_id,
+        )
+    return decision
 
 
 def level_at_least(actual: str | None, required: str) -> bool:
@@ -27,7 +79,7 @@ def governance_sensitive(scope: Mapping[str, Any], config: Mapping[str, Any]) ->
     patterns = ((config.get("security") or {}).get("governance_sensitive_paths") or [])
     if not patterns:
         return False
-    matcher = PathSpec.from_lines("gitwildmatch", patterns)
+    matcher = GitIgnoreSpec.from_lines(patterns)
     return any(matcher.match_file(str(path)) for path in scope.get("allowed_paths", []))
 
 

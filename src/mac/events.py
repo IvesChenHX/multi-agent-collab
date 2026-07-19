@@ -67,7 +67,8 @@ def replay_events(events: Iterable[dict[str, Any]], initial_projection: dict[str
             if projection.get("state") != source:
                 raise _corrupt("EVENT_STATE_SOURCE_MISMATCH", f"projection is {projection.get('state')!r}, event expects {source!r}", event)
             projection["state"] = payload.get("to")
-            if projection["state"] in TERMINAL_STATES:
+            terminal_state = payload.get("terminal_state")
+            if terminal_state is True or (terminal_state is None and projection["state"] in TERMINAL_STATES):
                 projection["terminal"] = payload.get("terminal") or {
                     "closed_at": event.get("occurred_at"), "closed_by": event.get("actor", {}).get("id", "unknown"), "summary": payload.get("summary", f"Transitioned to {projection['state']}")
                 }

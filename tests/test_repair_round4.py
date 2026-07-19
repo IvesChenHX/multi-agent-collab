@@ -148,6 +148,10 @@ def test_run_and_result_events_project_and_rebuild_work_unit_lifecycle(tmp_path:
         work_unit_id=WORK_UNIT_ID,
         profile="local-single",
         context_id="executor-context",
+        provider=None,
+        model=None,
+        worktree=None,
+        branch=None,
         actor="executor",
         actor_kind="agent",
         independence_level="L0",
@@ -234,3 +238,46 @@ def test_close_and_validator_fail_closed_for_incomplete_required_work_unit(tmp_p
         for issue in validate_task_invariants(tmp_path, repository.task_dir(task_id))
     }
     assert "TASK_REQUIRED_WORK_UNITS_INCOMPLETE" in codes
+
+
+def test_cancel_and_supersede_require_scope_owner_and_existing_successor(tmp_path: Path) -> None:
+    _initialized_repo(tmp_path)
+    task_id = _task(tmp_path)
+    successor = TaskService(tmp_path).create(
+        title="successor",
+        mode="standard",
+        objective="continue work",
+        acceptance=["works"],
+        allowed_paths=["src/**"],
+        owners=["backend"],
+        runtime_profile="local-single",
+        required_gates=["targeted_tests"],
+        actor={"id": "test", "kind": "agent"},
+        idempotency_key="create-successor",
+    )["task"]["id"]
+
+    unauthorized = _run_cli(
+        "task", "cancel", task_id,
+        "--expected-revision", "1", "--idempotency-key", "mallory-cancel",
+        "--actor", "mallory", "--repo", str(tmp_path), "--json",
+    )
+    assert unauthorized.returncode == 9
+    assert json.loads(unauthorized.stderr)["error"]["code"] == "ACTOR_SCOPE_UNAUTHORIZED"
+
+    missing = _run_cli(
+        "task", "supersede", task_id,
+        "--successor", "TASK-01K0W4Z36K3W5C2R0A3M8N9P7R",
+        "--expected-revision", "1", "--idempotency-key", "missing-successor",
+        "--actor", "backend-owner", "--repo", str(tmp_path), "--json",
+    )
+    assert missing.returncode == 3
+    assert json.loads(missing.stderr)["error"]["code"] == "TASK_NOT_FOUND"
+
+    superseded = _run_cli(
+        "task", "supersede", task_id,
+        "--successor", str(successor),
+        "--expected-revision", "1", "--idempotency-key", "valid-successor",
+        "--actor", "backend-owner", "--repo", str(tmp_path), "--json",
+    )
+    assert superseded.returncode == 0, superseded.stderr
+    assert json.loads(superseded.stdout)["task"]["state"] == "superseded"

@@ -2,12 +2,23 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
+import stat
 import subprocess
 from pathlib import Path
 from typing import Iterable
 
 from .errors import ExitCode, MacError
 from .scope import Change, is_task_governance_metadata, normalize_repo_path, task_governance_metadata_patterns
+
+
+_LFS_POINTER_LIMIT = 1024
+_LFS_POINTER = re.compile(
+    rb"\Aversion https://git-lfs.github.com/spec/v1\n"
+    rb"oid sha256:([0-9a-f]{64})\n"
+    rb"size ([0-9]+)\n?\Z"
+)
+_SUPPORTED_INDEX_MODES = {b"100644", b"100755", b"120000", b"160000"}
 
 
 def _digest(chunks: Iterable[bytes]) -> str:
@@ -23,12 +34,31 @@ class GitRepository:
         self.root = root.resolve()
         self._run("rev-parse", "--git-dir")
 
-    def _run(self, *argv: str, text: bool = False) -> bytes | str:
+    def _run(self, *argv: str, text: bool = False, input_data: bytes | None = None) -> bytes | str:
         try:
-            result = subprocess.run(["git", "-C", str(self.root), *argv], check=True, capture_output=True, text=text)
+            result = subprocess.run(
+                ["git", "-C", str(self.root), *argv],
+                check=True,
+                capture_output=True,
+                text=text,
+                input=input_data,
+            )
         except (FileNotFoundError, subprocess.CalledProcessError) as exc:
             raise MacError("GIT_COMMAND_FAILED", f"git {' '.join(argv)} failed", exit_code=ExitCode.EXTERNAL) from exc
         return result.stdout
+
+    def _git_common_dir(self) -> Path:
+        git_dir = Path(str(self._run("rev-parse", "--git-common-dir", text=True)).strip())
+        return git_dir if git_dir.is_absolute() else (self.root / git_dir).resolve()
+
+    def _inside_nested_repository(self, relative: str) -> bool:
+        candidate = self.root / relative
+        for parent in (candidate, *candidate.parents):
+            if parent == self.root:
+                return False
+            if (parent / ".git").exists():
+                return True
+        return False
 
     @property
     def head(self) -> str:
@@ -68,7 +98,15 @@ class GitRepository:
         staged = self._parse_name_status(self._as_bytes(self._run("diff", "--cached", "--name-status", "-z", "--find-renames")), refs=("HEAD",))
         unstaged = self._parse_name_status(self._as_bytes(self._run("diff", "--name-status", "-z", "--find-renames")), refs=("HEAD",))
         untracked_raw = self._as_bytes(self._run("ls-files", "--others", "--exclude-standard", "-z"))
-        untracked = [Change("add", normalize_repo_path(os.fsdecode(value)), display_path=os.fsdecode(value)) for value in untracked_raw.split(b"\0") if value]
+        untracked = []
+        for value in untracked_raw.split(b"\0"):
+            if not value:
+                continue
+            display = os.fsdecode(value)
+            path = normalize_repo_path(display)
+            untracked.append(
+                Change("add", path, submodule=self._inside_nested_repository(path), display_path=display)
+            )
         deduplicated: dict[tuple[str | None, str, str | None, str | None], Change] = {}
         for change in [*staged, *unstaged, *untracked]:
             deduplicated[(change.old_path, change.path, change.old_display_path, change.display_path)] = change
@@ -96,7 +134,7 @@ class GitRepository:
         return value if isinstance(value, bytes) else value.encode()
 
     def commit_subject(self, commit: str = "HEAD") -> dict[str, str]:
-        self._lfs_manifest()
+        self._lfs_manifest(commit)
         commit_sha = str(self._run("rev-parse", commit, text=True)).strip()
         tree_sha = str(self._run("rev-parse", f"{commit}^{{tree}}", text=True)).strip()
         return {"type": "commit", "commit_sha": commit_sha, "tree_sha": tree_sha}
@@ -126,7 +164,8 @@ class GitRepository:
             pathspecs = (".", *(f":(exclude){pattern}" for pattern in task_governance_metadata_patterns(task_id)))
         path_args = ("--", *pathspecs) if pathspecs else ()
         index = self._as_bytes(self._run("ls-files", "--stage", "-z", *path_args))
-        lfs = self._lfs_manifest()
+        index_entries = self._index_entries(index)
+        lfs = self._lfs_manifest_from_entries(index_entries)
         diff = self._as_bytes(self._run("diff", "--binary", *path_args)) + self._as_bytes(self._run("diff", "--cached", "--binary", *path_args))
         manifest: list[bytes] = []
         untracked = self._as_bytes(self._run("ls-files", "--others", "--exclude-standard", "-z"))
@@ -137,11 +176,7 @@ class GitRepository:
             if task_id and is_task_governance_metadata(relative, task_id):
                 continue
             path = self.root / relative
-            if path.is_symlink():
-                manifest.append(relative.encode("utf-8") + b"\0" + b"120000" + b"\0" + os.readlink(path).encode("utf-8"))
-            elif path.is_file():
-                mode = oct(path.stat().st_mode & 0o777).encode()
-                manifest.append(relative.encode("utf-8") + b"\0" + mode + b"\0" + hashlib.sha256(path.read_bytes()).digest())
+            manifest.append(self._untracked_manifest_entry(relative, path))
         return {
             "type": "workspace", "head_commit": self.head, "index_digest": _digest([index, lfs]),
             "worktree_diff_digest": _digest([diff]), "untracked_manifest_digest": _digest(sorted(manifest)),
@@ -151,18 +186,16 @@ class GitRepository:
         # `git ls-tree` does not consistently support exclusion pathspecs on all
         # Git versions.  Read the immutable tree and apply the same narrow Task
         # metadata filter used for workspace subjects in process.
-        tree = self._as_bytes(self._run("ls-tree", "-r", "-z", "--full-tree", commit))
+        entries = self._tree_entries(commit)
         index_rows: list[bytes] = []
-        for row in tree.split(b"\0"):
-            if not row:
-                continue
-            metadata, path = row.split(b"\t", 1)
+        filtered_entries: list[tuple[bytes, bytes, bytes]] = []
+        for mode, object_id, path in entries:
             normalized = normalize_repo_path(os.fsdecode(path))
             if task_id and is_task_governance_metadata(normalized, task_id):
                 continue
-            mode, _kind, object_id = metadata.split(b" ", 2)
             index_rows.append(mode + b" " + object_id + b" 0\t" + path + b"\0")
-        return _digest([b"".join(index_rows), self._lfs_manifest()])
+            filtered_entries.append((mode, object_id, path))
+        return _digest([b"".join(index_rows), self._lfs_manifest_from_entries(filtered_entries)])
 
     def review_diff_digest(self, base: str | None, *, head: str = "HEAD", task_id: str | None = None) -> str:
         pathspecs: tuple[str, ...] = ()
@@ -172,6 +205,101 @@ class GitRepository:
         committed = self._as_bytes(self._run("diff", "--binary", base, head, *path_args)) if base else b""
         current = self._as_bytes(self._run("diff", "--binary", *path_args)) + self._as_bytes(self._run("diff", "--cached", "--binary", *path_args))
         return _digest([committed, current])
+
+    def _expected_source_diff_digest(
+        self, source_head: str, target_commit: str, task_id: str | None,
+    ) -> str:
+        pathspecs: tuple[str, ...] = ()
+        if task_id:
+            pathspecs = (
+                ".",
+                *(f":(exclude){pattern}" for pattern in task_governance_metadata_patterns(task_id)),
+            )
+        path_args = ("--", *pathspecs) if pathspecs else ()
+        diff = self._as_bytes(self._run("diff", "--binary", source_head, target_commit, *path_args))
+        return _digest([diff])
+
+    def workspace_equivalence_proof(
+        self, source_workspace_subject: dict[str, str], commit: str = "HEAD", *,
+        task_id: str | None = None,
+    ) -> "WorkspaceEquivalenceProof":
+        """Build a fail-closed proof binding source Evidence, observation, and commit.
+
+        The source workspace is promotable only when its staged effective tree
+        and recorded diff exactly reconstruct the target commit.  The currently
+        observed workspace must independently be a clean materialization of the
+        same commit.  Git modes bind symlinks/gitlinks, untracked manifests bind
+        special paths, and the index/commit digest routines verify LFS payloads.
+        """
+        from .evidence import WorkspaceEquivalenceProof
+
+        source = dict(source_workspace_subject)
+        observed = self.workspace_subject(task_id=task_id)
+        target_commit_sha = str(self._run("rev-parse", f"{commit}^{{commit}}", text=True)).strip()
+        target = {
+            "type": "commit",
+            "commit_sha": target_commit_sha,
+            "tree_sha": str(self._run("rev-parse", f"{target_commit_sha}^{{tree}}", text=True)).strip(),
+        }
+        target_index_digest = self._commit_index_digest(target_commit_sha, task_id)
+        empty_untracked_digest = _digest([])
+        clean_diff_digest = _digest([b""])
+        required_source_fields = {
+            "type", "head_commit", "index_digest", "worktree_diff_digest", "untracked_manifest_digest",
+        }
+        source_bound = (
+            set(source) == required_source_fields
+            and source.get("type") == "workspace"
+            and all(isinstance(source.get(name), str) and source.get(name) for name in required_source_fields)
+        )
+        expected_source_diff: str | None = None
+        if source_bound:
+            try:
+                source_head = str(self._run(
+                    "rev-parse", f"{source['head_commit']}^{{commit}}", text=True,
+                )).strip()
+                source_bound = source_head == source["head_commit"]
+                if source_bound:
+                    expected_source_diff = self._expected_source_diff_digest(
+                        source_head, target["commit_sha"], task_id,
+                    )
+            except MacError:
+                source_bound = False
+        source_index_matches = source_bound and source.get("index_digest") == target_index_digest
+        observed_index_matches = observed.get("index_digest") == target_index_digest
+        untracked_empty = (
+            source_bound
+            and source.get("untracked_manifest_digest") == empty_untracked_digest
+            and observed.get("untracked_manifest_digest") == empty_untracked_digest
+        )
+        source_tree_matches = (
+            source_index_matches
+            and expected_source_diff is not None
+            and source.get("worktree_diff_digest") == expected_source_diff
+        )
+        observed_tree_matches = (
+            observed.get("head_commit") == target["commit_sha"]
+            and observed_index_matches
+            and observed.get("worktree_diff_digest") == clean_diff_digest
+        )
+        effective_tree_matches = bool(source_tree_matches and observed_tree_matches and untracked_empty)
+        index_matches = bool(source_index_matches and observed_index_matches)
+        checks = {
+            "source_subject_bound": bool(source_bound),
+            "target_commit_resolved": bool(target.get("commit_sha") and target.get("tree_sha")),
+            "effective_tree_matches": effective_tree_matches,
+            "index_matches": index_matches,
+            "untracked_empty": bool(untracked_empty),
+            "special_paths_match": bool(effective_tree_matches and index_matches),
+            "lfs_verified": bool(index_matches),
+        }
+        return WorkspaceEquivalenceProof.verified(
+            source_workspace_subject=source,
+            observed_workspace_subject=observed,
+            target_commit_subject=target,
+            checks=checks,
+            verifier="mac.git.GitRepository/v1",
+        )
 
     def workspace_equivalent_to_commit(
         self, commit: str = "HEAD", *, task_id: str | None = None,
@@ -189,30 +317,265 @@ class GitRepository:
             and source_workspace_subject.get("untracked_manifest_digest") == _digest([])
         )
 
-    def _lfs_manifest(self) -> bytes:
-        manifest: list[bytes] = []
-        git_dir = Path(str(self._run("rev-parse", "--git-common-dir", text=True)).strip())
-        if not git_dir.is_absolute():
-            git_dir = (self.root / git_dir).resolve()
-        tracked = self._as_bytes(self._run("ls-files", "-z"))
-        for raw in tracked.split(b"\0"):
-            if not raw:
+    def _tree_entries(self, ref: str) -> list[tuple[bytes, bytes, bytes]]:
+        raw = self._as_bytes(self._run("ls-tree", "-r", "-z", "--full-tree", ref))
+        entries: list[tuple[bytes, bytes, bytes]] = []
+        for row in raw.split(b"\0"):
+            if not row:
                 continue
-            relative = normalize_repo_path(os.fsdecode(raw)); path = self.root / relative
-            if not path.is_file() or path.is_symlink():
+            metadata, path = row.split(b"\t", 1)
+            mode, _kind, object_id = metadata.split(b" ", 2)
+            self._validate_index_mode(mode, os.fsdecode(path))
+            entries.append((mode, object_id, path))
+        return entries
+
+    def _index_entries(self, raw: bytes) -> list[tuple[bytes, bytes, bytes]]:
+        entries: list[tuple[bytes, bytes, bytes]] = []
+        for row in raw.split(b"\0"):
+            if not row:
                 continue
+            metadata, path = row.split(b"\t", 1)
+            mode, object_id, stage = metadata.split(b" ", 2)
+            relative = normalize_repo_path(os.fsdecode(path))
+            self._validate_index_mode(mode, relative)
+            if stage != b"0":
+                raise MacError(
+                    "GIT_INDEX_UNMERGED", f"unmerged index entry: {relative}", exit_code=ExitCode.CORRUPTION, path=relative,
+                )
+            entries.append((mode, object_id, path))
+        return entries
+
+    @staticmethod
+    def _validate_index_mode(mode: bytes, path: str) -> None:
+        if mode not in _SUPPORTED_INDEX_MODES:
+            raise MacError(
+                "GIT_SPECIAL_MODE_UNSUPPORTED",
+                f"unsupported Git index mode {mode.decode('ascii', 'replace')}: {path}",
+                exit_code=ExitCode.SECURITY,
+                path=path,
+            )
+
+    def _untracked_manifest_entry(self, relative: str, path: Path) -> bytes:
+        is_junction = getattr(os.path, "isjunction", None)
+        if is_junction is not None and is_junction(path):
+            raise MacError(
+                "GIT_SPECIAL_PATH_UNSUPPORTED", f"untracked junction is unsupported: {relative}",
+                exit_code=ExitCode.SECURITY, path=relative,
+            )
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise MacError(
+                "GIT_PATH_CHANGED_DURING_SCAN", f"cannot inspect untracked path: {relative}",
+                exit_code=ExitCode.CORRUPTION, path=relative,
+            ) from exc
+        prefix = relative.encode("utf-8") + b"\0"
+        if stat.S_ISLNK(metadata.st_mode):
+            return prefix + b"120000\0" + os.fsencode(os.readlink(path))
+        if stat.S_ISREG(metadata.st_mode):
+            mode = oct(metadata.st_mode & 0o777).encode()
+            digest = self._read_stable_untracked_file(relative, path, metadata)
+            return prefix + mode + b"\0" + digest
+        raise MacError(
+            "GIT_SPECIAL_PATH_UNSUPPORTED", f"unsupported untracked path type: {relative}",
+            exit_code=ExitCode.SECURITY, path=relative,
+        )
+
+    @staticmethod
+    def _path_identity(metadata: os.stat_result) -> tuple[int, int] | None:
+        device = int(getattr(metadata, "st_dev", 0))
+        inode = int(getattr(metadata, "st_ino", 0))
+        return (device, inode) if inode else None
+
+    @staticmethod
+    def _content_identity(metadata: os.stat_result) -> tuple[int, int | None, int | None, int]:
+        return (
+            int(metadata.st_size),
+            getattr(metadata, "st_mtime_ns", None),
+            getattr(metadata, "st_ctime_ns", None),
+            stat.S_IMODE(metadata.st_mode),
+        )
+
+    def _read_stable_untracked_file(
+        self, relative: str, path: Path, expected: os.stat_result,
+    ) -> bytes:
+        expected_identity = self._path_identity(expected)
+        if expected_identity is None:
+            raise MacError(
+                "GIT_PATH_IDENTITY_UNAVAILABLE",
+                f"cannot establish identity for untracked path: {relative}",
+                exit_code=ExitCode.SECURITY,
+                path=relative,
+            )
+        flags = os.O_RDONLY
+        for name in ("O_BINARY", "O_CLOEXEC", "O_NOINHERIT", "O_NOFOLLOW"):
+            flags |= int(getattr(os, name, 0))
+        try:
+            descriptor = os.open(path, flags)
+        except OSError as exc:
+            raise MacError(
+                "GIT_PATH_CHANGED_DURING_SCAN", f"cannot open untracked path safely: {relative}",
+                exit_code=ExitCode.CORRUPTION, path=relative,
+            ) from exc
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or self._path_identity(opened) != expected_identity:
+                raise MacError(
+                    "GIT_PATH_CHANGED_DURING_SCAN", f"untracked path changed before read: {relative}",
+                    exit_code=ExitCode.CORRUPTION, path=relative,
+                )
+            expected_content = self._content_identity(expected)
+            opened_content = self._content_identity(opened)
+            if opened_content != expected_content:
+                raise MacError(
+                    "GIT_PATH_CHANGED_DURING_SCAN", f"untracked path metadata changed before read: {relative}",
+                    exit_code=ExitCode.CORRUPTION, path=relative,
+                )
+            hasher = hashlib.sha256()
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+            finished = os.fstat(descriptor)
+        except OSError as exc:
+            raise MacError(
+                "GIT_PATH_CHANGED_DURING_SCAN", f"cannot read untracked path safely: {relative}",
+                exit_code=ExitCode.CORRUPTION, path=relative,
+            ) from exc
+        finally:
+            os.close(descriptor)
+        try:
+            observed = path.lstat()
+        except OSError as exc:
+            raise MacError(
+                "GIT_PATH_CHANGED_DURING_SCAN", f"untracked path changed after read: {relative}",
+                exit_code=ExitCode.CORRUPTION, path=relative,
+            ) from exc
+        finished_content = self._content_identity(finished)
+        observed_content = self._content_identity(observed)
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or self._path_identity(finished) != expected_identity
+            or self._path_identity(observed) != expected_identity
+            or opened_content != finished_content
+            or finished_content != observed_content
+        ):
+            raise MacError(
+                "GIT_PATH_CHANGED_DURING_SCAN", f"untracked path changed during read: {relative}",
+                exit_code=ExitCode.CORRUPTION, path=relative,
+            )
+        return hasher.digest()
+
+    def _lfs_manifest(self, ref: str = "HEAD") -> bytes:
+        return self._lfs_manifest_from_entries(self._tree_entries(ref))
+
+    def _batch_object_metadata(self, object_ids: list[bytes]) -> dict[bytes, tuple[bytes, int]]:
+        if not object_ids:
+            return {}
+        output = self._as_bytes(self._run(
+            "cat-file",
+            "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+            input_data=b"\n".join(object_ids) + b"\n",
+        ))
+        result: dict[bytes, tuple[bytes, int]] = {}
+        lines = output.splitlines()
+        if len(lines) != len(object_ids):
+            raise MacError("GIT_OBJECT_INVALID", "Git object metadata response is incomplete", exit_code=ExitCode.CORRUPTION)
+        for requested, line in zip(object_ids, lines):
+            parts = line.split()
+            if len(parts) != 3:
+                raise MacError(
+                    "GIT_OBJECT_INVALID", f"Git object is unavailable: {requested.decode('ascii', 'replace')}",
+                    exit_code=ExitCode.CORRUPTION,
+                )
+            _resolved, object_type, raw_size = parts
             try:
-                with path.open("rb") as handle:
-                    prefix = handle.read(256)
-            except OSError:
+                size = int(raw_size)
+            except ValueError as exc:
+                raise MacError("GIT_OBJECT_INVALID", "invalid Git object size", exit_code=ExitCode.CORRUPTION) from exc
+            result[requested] = (object_type, size)
+        return result
+
+    def _batch_blob_contents(self, object_ids: list[bytes]) -> dict[bytes, bytes]:
+        if not object_ids:
+            return {}
+        output = self._as_bytes(self._run(
+            "cat-file", "--batch", input_data=b"\n".join(object_ids) + b"\n",
+        ))
+        result: dict[bytes, bytes] = {}
+        cursor = 0
+        for requested in object_ids:
+            header_end = output.find(b"\n", cursor)
+            if header_end < 0:
+                raise MacError("GIT_OBJECT_INVALID", "Git batch response is truncated", exit_code=ExitCode.CORRUPTION)
+            header = output[cursor:header_end].split()
+            if len(header) != 3 or header[1] != b"blob":
+                raise MacError(
+                    "GIT_OBJECT_INVALID", f"Git object is not a blob: {requested.decode('ascii', 'replace')}",
+                    exit_code=ExitCode.CORRUPTION,
+                )
+            try:
+                size = int(header[2])
+            except ValueError as exc:
+                raise MacError("GIT_OBJECT_INVALID", "invalid Git blob size", exit_code=ExitCode.CORRUPTION) from exc
+            start = header_end + 1
+            end = start + size
+            if end >= len(output) or output[end:end + 1] != b"\n":
+                raise MacError("GIT_OBJECT_INVALID", "Git blob response is truncated", exit_code=ExitCode.CORRUPTION)
+            result[requested] = output[start:end]
+            cursor = end + 1
+        if cursor != len(output):
+            raise MacError("GIT_OBJECT_INVALID", "Git batch response has trailing data", exit_code=ExitCode.CORRUPTION)
+        return result
+
+    def _lfs_manifest_from_entries(self, entries: Iterable[tuple[bytes, bytes, bytes]]) -> bytes:
+        manifest: list[bytes] = []
+        object_root: Path | None = None
+        regular_entries = [
+            (object_id, raw_path)
+            for mode, object_id, raw_path in entries
+            if mode in {b"100644", b"100755"}
+        ]
+        object_ids = list(dict.fromkeys(object_id for object_id, _path in regular_entries))
+        metadata = self._batch_object_metadata(object_ids)
+        for object_id, (_object_type, size) in metadata.items():
+            if _object_type != b"blob":
+                raise MacError(
+                    "GIT_OBJECT_INVALID", f"regular index entry is not a blob: {object_id.decode('ascii', 'replace')}",
+                    exit_code=ExitCode.CORRUPTION,
+                )
+        small_object_ids = [
+            object_id for object_id in object_ids if metadata[object_id][1] <= _LFS_POINTER_LIMIT
+        ]
+        contents = self._batch_blob_contents(small_object_ids)
+        for object_id, raw_path in regular_entries:
+            content = contents.get(object_id)
+            if content is None:
                 continue
-            if not prefix.startswith(b"version https://git-lfs.github.com/spec/v1\n"):
+            relative = normalize_repo_path(os.fsdecode(raw_path))
+            if not content.startswith(b"version https://git-lfs.github.com/spec/v1\n"):
                 continue
-            oid = next((line[11:].decode("ascii") for line in prefix.splitlines() if line.startswith(b"oid sha256:")), "")
-            if len(oid) != 64:
+            match = _LFS_POINTER.fullmatch(content)
+            if match is None:
                 raise MacError("GIT_LFS_POINTER_INVALID", f"invalid LFS pointer: {relative}", exit_code=ExitCode.CORRUPTION, path=relative)
-            object_path = git_dir / "lfs" / "objects" / oid[:2] / oid[2:4] / oid
-            if not object_path.is_file():
+            oid = match.group(1).decode("ascii")
+            expected_size = int(match.group(2))
+            if object_root is None:
+                object_root = self._git_common_dir() / "lfs" / "objects"
+            object_path = object_root / oid[:2] / oid[2:4] / oid
+            if object_path.is_symlink() or not object_path.is_file():
                 raise MacError("GIT_LFS_OBJECT_MISSING", f"LFS object is unavailable for {relative}", exit_code=ExitCode.CORRUPTION, path=relative)
-            manifest.append(relative.encode("utf-8") + b"\0" + oid.encode("ascii") + b"\0" + hashlib.sha256(object_path.read_bytes()).digest())
+            hasher = hashlib.sha256()
+            actual_size = 0
+            with object_path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    actual_size += len(chunk)
+                    hasher.update(chunk)
+            if actual_size != expected_size or hasher.hexdigest() != oid:
+                raise MacError(
+                    "GIT_LFS_OBJECT_TAMPERED", f"LFS object does not match pointer: {relative}",
+                    exit_code=ExitCode.CORRUPTION, path=relative,
+                )
+            manifest.append(relative.encode("utf-8") + b"\0" + oid.encode("ascii") + b"\0" + str(expected_size).encode())
         return b"".join(sorted(manifest))

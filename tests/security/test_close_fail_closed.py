@@ -177,3 +177,48 @@ def test_close_engine_rejects_risk_acceptance_for_non_waivable_gate() -> None:
 
     assert not decision.ok
     assert "RISK_NON_WAIVABLE" in decision.codes
+
+
+def test_close_independence_uses_only_runs_bound_to_implementation_evidence() -> None:
+    run_records = runs()
+    unrelated = run(
+        "RUN-01K0W4Z36K3W5C2R0A3M8N9P8A",
+        context="review",
+        level="L0",
+        can_write=True,
+    )
+    unrelated["actor"] = run_records["RUN-01K0W4Z36K3W5C2R0A3M8N9P7V"]["actor"]
+    run_records[str(unrelated["id"])] = unrelated
+
+    decision = close(run_records=run_records)
+
+    assert decision.ok, decision.codes
+
+
+def test_close_inherits_required_gates_from_scope_and_mode_policy() -> None:
+    scoped = scope()
+    scoped["required_gates"] = [*scoped["required_gates"], "scope_guard"]
+
+    decision = evaluate_close(
+        task(),
+        scoped,
+        evidence(),
+        [],
+        runs(),
+        [],
+        current_subject=workspace_subject(),
+        policy_digest=DIGEST_A,
+        close_actor="ACTOR-closer",
+        authorized_closers={"ACTOR-closer"},
+        non_waivable_gates={"scope_approved", "data_integrity", "independent_review"},
+        runtime_profiles={
+            "review-readonly": {"capabilities": {"read_only_run": "native"}},
+            "implementation": {"capabilities": {"read_only_run": "unavailable"}},
+        },
+        mode_required_gates={"negative_security_tests"},
+    )
+
+    assert not decision.ok
+    assert "CLOSE_GATE_MISSING" in decision.codes
+    missing = next(issue.details["gates"] for issue in decision.issues if issue.code == "CLOSE_GATE_MISSING")
+    assert {"scope_guard", "negative_security_tests"} <= set(missing)

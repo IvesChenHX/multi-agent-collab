@@ -1,0 +1,45 @@
+{
+  "actor": {
+    "id": "platform-owner",
+    "kind": "human"
+  },
+  "event_id": "EVT-01KXXNET1M31ZJXMDQ9EQ0TVAP",
+  "event_type": "work_unit_created",
+  "expected_revision": 25,
+  "idempotency_key": "integration-wu-scope-v3",
+  "new_revision": 26,
+  "occurred_at": "2026-07-19T17:05:53.716078Z",
+  "payload": {
+    "amendment": true,
+    "reason": "Scope v3 adds CLI lifecycle and authority regression coverage",
+    "work_unit": {
+      "acceptance_criteria": [],
+      "allowed_paths": [
+        "src/mac/cli.py",
+        "docs/pilot/alpha-close-report.md",
+        "tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/**",
+        "tasks/private/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/**",
+        "tests/test_repair_round3.py",
+        "tests/test_repair_round4.py",
+        "tests/test_cli_integration.py",
+        "tests/security/test_authority_commands.py"
+      ],
+      "depends_on": [
+        "WU-01KXXHSZRPJ5YKMQ9MCQHQZH11",
+        "WU-01KXXHTEMXPCT29MAV3AFAMWFH",
+        "WU-01KXXHTR2PNYB2M57BQTRFXC2A"
+      ],
+      "expected_result": "tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/results/RESULT-01KXXHV2CF6FRH4Z108JB3N4PB.json",
+      "id": "WU-01KXXHV2CF6FRH4Z108JB3N4PA",
+      "owner": "platform",
+      "schema_version": 1,
+      "status": "pending",
+      "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+      "title": "CLI 集成、全链路验证与 Pilot-ready 报告"
+    },
+    "work_unit_id": "WU-01KXXHV2CF6FRH4Z108JB3N4PA"
+  },
+  "run_id": null,
+  "schema_version": 1,
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready"
+}
