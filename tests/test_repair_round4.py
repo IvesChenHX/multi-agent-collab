@@ -9,7 +9,9 @@ from pathlib import Path
 import pytest
 
 from mac.application.task_service import TaskService
-from mac.cli import _close_decision, _write_entity, init_command, run_register, scope_approve
+from mac.authority import AuthorityDecision, trusted_authority_verifier
+from mac.cli import _close_decision, _write_entity, init_command, run_register, scope_approve, task_cancel, task_supersede, task_transition
+from mac.errors import MacError
 from mac.io import atomic_write_yaml, load_data
 from mac.repository import FilesystemTaskRepository, utc_now, validate_task_invariants
 from mac.result import ResultService
@@ -17,6 +19,21 @@ from mac.result import ResultService
 
 WORK_UNIT_ID = "WU-01K0W4Z36K3W5C2R0A3M8N9P7Q"
 RESULT_ID = "RESULT-01K0W4Z36K3W5C2R0A3M8N9P7Q"
+
+
+class _RuntimeVerifier:
+    def authorize(self, *, actor_claim: dict[str, object], operation: str, task_id: str | None) -> AuthorityDecision:
+        return AuthorityDecision(
+            allowed=True,
+            actor_id=str(actor_claim["id"]),
+            actor_kind=str(actor_claim["kind"]),
+            operation=operation,
+            task_id=task_id,
+            authenticated=True,
+            issuer="test-runtime-broker",
+            independence_level="L1",
+            attestation_id=f"attestation-{operation.replace('.', '-')}",
+        )
 
 
 def _git_init(root: Path) -> None:
@@ -51,7 +68,8 @@ def _task(root: Path) -> str:
         idempotency_key="create-round-4",
     )
     task_id = str(created["task"]["id"])
-    scope_approve(task_id, expected_revision=0, idempotency_key="approve-round-4", actor="backend-owner", independence_level="L1", repo=root, json_output=True)
+    with trusted_authority_verifier(_RuntimeVerifier()):
+        scope_approve(task_id, expected_revision=0, idempotency_key="approve-round-4", actor="backend-owner", independence_level="L1", repo=root, json_output=True)
     return task_id
 
 
@@ -143,23 +161,24 @@ def test_run_and_result_events_project_and_rebuild_work_unit_lifecycle(tmp_path:
         actor="test",
     )
 
-    run_register(
-        task_id,
-        work_unit_id=WORK_UNIT_ID,
-        profile="local-single",
-        context_id="executor-context",
-        provider=None,
-        model=None,
-        worktree=None,
-        branch=None,
-        actor="executor",
-        actor_kind="agent",
-        independence_level="L0",
-        expected_revision=2,
-        idempotency_key="run-start",
-        repo=tmp_path,
-        json_output=True,
-    )
+    with trusted_authority_verifier(_RuntimeVerifier()):
+        run_register(
+            task_id,
+            work_unit_id=WORK_UNIT_ID,
+            profile="local-single",
+            context_id="executor-context",
+            provider=None,
+            model=None,
+            worktree=None,
+            branch=None,
+            actor="executor",
+            actor_kind="agent",
+            independence_level="L0",
+            expected_revision=2,
+            idempotency_key="run-start",
+            repo=tmp_path,
+            json_output=True,
+        )
     run_payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     run_id = str(run_payload["run"]["id"])
     work_unit_path = tmp_path / "tasks" / task_id / "work-units" / f"{WORK_UNIT_ID}.yaml"
@@ -211,26 +230,40 @@ def test_close_and_validator_fail_closed_for_incomplete_required_work_unit(tmp_p
 
     close = _close_decision(tmp_path, task_id, "closer")
     assert "CLOSE_WORK_UNITS_INCOMPLETE" in close.codes
-
-    close_cli = _run_cli(
-        "task", "transition", task_id, "completed",
-        "--expected-revision", "2", "--idempotency-key", "rejected-close",
-        "--actor", "closer", "--repo", str(tmp_path), "--json",
+    repository = FilesystemTaskRepository(tmp_path)
+    repository.append_event(
+        task_id,
+        "state_transitioned",
+        {"from": "triage", "to": "verifying", "transition_id": "fixture", "terminal_state": False},
+        actor={"id": "fixture", "kind": "automation"},
+        expected_revision=2,
+        idempotency_key="fixture-verifying",
     )
-    assert close_cli.returncode == 7
-    close_error = json.loads(close_cli.stderr)
-    assert close_error["error"]["code"] == "CLOSE_GATES_FAILED"
+
+    with trusted_authority_verifier(_RuntimeVerifier()), pytest.raises(MacError) as rejected:
+        task_transition(
+            task_id,
+            "completed",
+            expected_revision=3,
+            idempotency_key="rejected-close",
+            actor="closer",
+            condition=[],
+            fact_id=None,
+            reason=None,
+            repo=tmp_path,
+            json_output=True,
+        )
+    assert rejected.value.code == "CLOSE_GATES_FAILED"
     assert "CLOSE_WORK_UNITS_INCOMPLETE" in {
-        issue["code"] for issue in close_error["error"]["details"]["issues"]
+        issue["code"] for issue in (rejected.value.issue.details or {})["issues"]
     }
 
-    repository = FilesystemTaskRepository(tmp_path)
     repository.append_event(
         task_id,
         "task_completed",
         {"state": "completed"},
         actor={"id": "closer", "kind": "human"},
-        expected_revision=2,
+        expected_revision=3,
         idempotency_key="corrupt-close",
     )
     codes = {
@@ -256,28 +289,30 @@ def test_cancel_and_supersede_require_scope_owner_and_existing_successor(tmp_pat
         idempotency_key="create-successor",
     )["task"]["id"]
 
-    unauthorized = _run_cli(
-        "task", "cancel", task_id,
-        "--expected-revision", "1", "--idempotency-key", "mallory-cancel",
-        "--actor", "mallory", "--repo", str(tmp_path), "--json",
-    )
-    assert unauthorized.returncode == 9
-    assert json.loads(unauthorized.stderr)["error"]["code"] == "ACTOR_SCOPE_UNAUTHORIZED"
+    with trusted_authority_verifier(_RuntimeVerifier()), pytest.raises(MacError) as unauthorized:
+        task_cancel(task_id, 1, "mallory-cancel", "mallory", tmp_path, True)
+    assert unauthorized.value.code == "ACTOR_SCOPE_UNAUTHORIZED"
 
-    missing = _run_cli(
-        "task", "supersede", task_id,
-        "--successor", "TASK-01K0W4Z36K3W5C2R0A3M8N9P7R",
-        "--expected-revision", "1", "--idempotency-key", "missing-successor",
-        "--actor", "backend-owner", "--repo", str(tmp_path), "--json",
-    )
-    assert missing.returncode == 3
-    assert json.loads(missing.stderr)["error"]["code"] == "TASK_NOT_FOUND"
+    with trusted_authority_verifier(_RuntimeVerifier()), pytest.raises(MacError) as missing:
+        task_supersede(
+            task_id,
+            "TASK-01K0W4Z36K3W5C2R0A3M8N9P7R",
+            1,
+            "missing-successor",
+            "backend-owner",
+            tmp_path,
+            True,
+        )
+    assert missing.value.code == "TASK_NOT_FOUND"
 
-    superseded = _run_cli(
-        "task", "supersede", task_id,
-        "--successor", str(successor),
-        "--expected-revision", "1", "--idempotency-key", "valid-successor",
-        "--actor", "backend-owner", "--repo", str(tmp_path), "--json",
-    )
-    assert superseded.returncode == 0, superseded.stderr
-    assert json.loads(superseded.stdout)["task"]["state"] == "superseded"
+    with trusted_authority_verifier(_RuntimeVerifier()):
+        task_supersede(
+            task_id,
+            str(successor),
+            1,
+            "valid-successor",
+            "backend-owner",
+            tmp_path,
+            True,
+        )
+    assert FilesystemTaskRepository(tmp_path).load_task(task_id)["state"] == "superseded"

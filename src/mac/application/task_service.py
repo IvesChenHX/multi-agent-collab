@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from mac.errors import ExitCode, MacError
 from mac.ids import is_identifier, prefixed
 from mac.io import load_data
 from mac.policy import ownership_source_path, policy_source_paths
@@ -18,13 +19,21 @@ class TaskService:
         self, *, title: str, mode: str, objective: str, acceptance: list[str], allowed_paths: list[str],
         owners: list[str], runtime_profile: str, required_gates: list[str], actor: dict[str, Any],
         idempotency_key: str, parent_task: str | None = None, supersedes: list[str] | None = None,
+        authority: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if mode not in {"standard", "high_risk", "audit"}:
             raise ValueError("persistent task mode must be standard, high_risk, or audit")
         if not acceptance or not allowed_paths or not owners:
             raise ValueError("acceptance, allowed_paths, and owners are required")
         if existing := self.repository.find_idempotency(idempotency_key):
-            existing_id, _ = existing
+            existing_id, event = existing
+            if authority is not None and (event.get("payload") or {}).get("authority") != authority:
+                raise MacError(
+                    "EVENT_IDEMPOTENCY_CONFLICT",
+                    "task creation retry does not bind the original authority decision",
+                    exit_code=ExitCode.CONFLICT,
+                    task_id=existing_id,
+                )
             return {"task": self.repository.load_task(existing_id), "scope": load_data(self.repository.task_dir(existing_id) / "scope-contract.yaml"), "idempotent_replay": True}
         if parent_task is not None and not is_identifier(parent_task, "TASK"):
             raise ValueError("parent_task must be a safe TASK identifier")
@@ -63,5 +72,6 @@ class TaskService:
             actor=actor,
             idempotency_key=idempotency_key,
             initial_entities=[("scope-contract.yaml", scope)],
+            authority=authority,
         )
         return {"task": created.projection, "scope": scope, "idempotent_replay": created.idempotent_replay}

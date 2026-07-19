@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ExitCode, MacError
-from .events import replay_entity_snapshots, replay_events
+from .events import replay_entity_snapshots, replay_events, replay_scope_snapshots
 from .ids import is_identifier
 from .io import atomic_write_json, atomic_write_yaml, load_data, normalize_data
 from .policy import compile_policy
@@ -472,9 +472,22 @@ def _projection_plan(root: Path, task_dir: Path) -> _ProjectionPlan:
         if projection.get("id") != task_id:
             raise ValueError("replayed task identity does not match directory")
         snapshots = replay_entity_snapshots(events)
+        current_scope, scope_history = replay_scope_snapshots(events)
         expected_outputs: list[tuple[str, str, dict[str, Any]]] = [
             ((task_dir / "task.yaml").relative_to(root).as_posix(), "yaml", projection)
         ]
+        if current_scope is not None:
+            expected_outputs.append(
+                ((task_dir / "scope-contract.yaml").relative_to(root).as_posix(), "yaml", current_scope)
+            )
+            for version, scope_snapshot in sorted(scope_history.items()):
+                expected_outputs.append(
+                    (
+                        (task_dir / "scope-history" / f"scope-contract.v{version}.yaml").relative_to(root).as_posix(),
+                        "yaml",
+                        scope_snapshot,
+                    )
+                )
         for directory, entities in snapshots.items():
             prefix, extension = _ENTITY_LAYOUT[directory]
             for entity_id, entity in sorted(entities.items()):

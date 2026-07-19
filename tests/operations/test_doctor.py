@@ -54,6 +54,27 @@ def _task_event() -> dict[str, object]:
     }
 
 
+def _scope_event(
+    revision: int,
+    scope: dict[str, object],
+    *,
+    event_type: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "event_id": f"EVT-{revision:026d}",
+        "task_id": TASK_ID,
+        "event_type": event_type,
+        "occurred_at": f"2026-07-17T00:00:0{revision}Z",
+        "actor": {"id": "tester", "type": "human"},
+        "run_id": None,
+        "expected_revision": revision - 1,
+        "new_revision": revision,
+        "idempotency_key": f"scope-{revision}",
+        "payload": {"scope": scope},
+    }
+
+
 def test_doctor_is_read_only(tmp_path):
     config = tmp_path / ".agents" / "config.yaml"
     config.parent.mkdir(parents=True)
@@ -186,3 +207,40 @@ def test_repair_safe_rejects_event_replacement_during_plan_capture(tmp_path, mon
 
     assert replaced is True
     assert caught.value.code == "DOCTOR_REPLAY_INPUT_INVALID"
+
+
+def test_repair_safe_restores_scope_contract_and_history_from_events(tmp_path: Path) -> None:
+    task_dir = tmp_path / "tasks" / TASK_ID
+    events = task_dir / "events"
+    events.mkdir(parents=True)
+    task_event = _task_event()
+    (events / str(task_event["event_id"])).with_suffix(".json").write_text(
+        json.dumps(task_event), encoding="utf-8"
+    )
+    base = {
+        "schema_version": 1,
+        "id": "SCOPE-01K0W4Z36K3W5C2R0A3M8N9P7R",
+        "task_id": TASK_ID,
+        "version": 1,
+        "status": "approved",
+    }
+    amended = {**base, "version": 2, "status": "proposed"}
+    approved = {**amended, "status": "approved"}
+    scope_events = [
+        _scope_event(1, base, event_type="scope_approved"),
+        _scope_event(2, amended, event_type="scope_proposed"),
+        _scope_event(3, approved, event_type="scope_approved"),
+    ]
+    for scope_event in scope_events:
+        (events / f"{scope_event['event_id']}.json").write_text(json.dumps(scope_event), encoding="utf-8")
+
+    preview = repair_safe(tmp_path)
+
+    assert f"tasks/{TASK_ID}/scope-contract.yaml" in preview.projections
+    assert f"tasks/{TASK_ID}/scope-history/scope-contract.v1.yaml" in preview.projections
+    repair_safe(tmp_path, apply=True, expected_plan_digest=preview.plan_digest)
+
+    from mac.io import load_data
+
+    assert load_data(task_dir / "scope-contract.yaml") == approved
+    assert load_data(task_dir / "scope-history" / "scope-contract.v1.yaml") == base

@@ -54,11 +54,11 @@ required_gates:
 - rollback_plan
 - rollback_verification
 - evidence_matches_current_commit
-revision: 29
+revision: 35
 runtime_profile: local-multi
 schema_version: 6
 scope_contract_ref: tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/scope-contract.yaml
 state: executing
 terminal: null
 title: v6 Alpha 收口与 Pilot-ready
-updated_at: '2026-07-19T17:32:50.635776Z'
+updated_at: '2026-07-19T18:30:20.569651Z'

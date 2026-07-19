@@ -333,16 +333,69 @@ def scan_v5(repo: Path) -> dict[str, Any]:
     }
 
 
-def _existing_legacy(output: Path) -> dict[str, str]:
-    result = {}
+def _existing_legacy(output: Path) -> dict[str, Path]:
+    result: dict[str, Path] = {}
     for path in output.glob("TASK-*/task.yaml") if output.is_dir() else []:
         try:
             item = load_data(path)
         except Exception:
             continue
         if item.get("legacy_id"):
-            result[str(item["legacy_id"])] = str(item["id"])
+            result[str(item["legacy_id"])] = path.parent
     return result
+
+
+def _existing_output_matches_source(task_dir: Path, scanned: dict[str, Any]) -> bool:
+    """Accept an idempotent migration output only when its source is still bound.
+
+    A failed conversion can leave a published directory only when a process dies
+    after a per-directory rename.  Never treat its legacy_id alone as proof that
+    it is a valid prior conversion: the immutable import event must bind the
+    exact source path and digest observed by the current scan.
+    """
+    if _is_link_like(task_dir) or not task_dir.is_dir():
+        return False
+    task_path = task_dir / "task.yaml"
+    events = task_dir / "events"
+    if _is_link_like(task_path) or _is_link_like(events) or not task_path.is_file() or not events.is_dir():
+        return False
+    try:
+        task = load_data(task_path)
+    except Exception:
+        return False
+    imported: list[dict[str, Any]] = []
+    for event_path in events.glob("*.json"):
+        if _is_link_like(event_path) or not event_path.is_file():
+            return False
+        try:
+            event = load_data(event_path)
+        except Exception:
+            return False
+        if event.get("event_type") == "legacy_imported":
+            imported.append(event)
+    if len(imported) != 1:
+        return False
+    payload = imported[0].get("payload") or {}
+    return (
+        task.get("legacy_id") == scanned["legacy_id"]
+        and imported[0].get("task_id") == task.get("id")
+        and payload.get("legacy_id") == scanned["legacy_id"]
+        and payload.get("source_path") == scanned["source_path"]
+        and payload.get("source_digest") == scanned["source_digest"]
+    )
+
+
+def _remove_published_outputs(paths: list[tuple[Path, str]], target: Path) -> None:
+    """Best-effort rollback of only directories atomically published by this call."""
+    for path, digest in reversed(paths):
+        try:
+            if path.parent != target or _is_link_like(path) or not path.is_dir():
+                continue
+            if _directory_digest(path) != digest:
+                continue
+            shutil.rmtree(path)
+        except OSError:
+            continue
 
 
 def convert_v5(
@@ -390,14 +443,31 @@ def convert_v5(
         raise RuntimeError("legacy migration source changed or is missing")
     registry = load_data(root / "tasks/index.yaml")
     by_id = {str(item.get("id")): item for item in registry.get("tasks", [])}
+    if target.exists() and (_is_link_like(target) or not target.is_dir()):
+        raise MacError(
+            "MIGRATION_OUTPUT_UNSAFE",
+            "migration output root must be a real directory",
+            exit_code=ExitCode.SECURITY,
+            path=str(target),
+        )
     existing = _existing_legacy(target)
     policy = build_policy_ref(root, ["AGENTS.md", ".agents/config.yaml", ".agents/workflows/evidence-driven-development.yaml"])
     ownership = build_policy_ref(root, [".agents/ownership.yaml"])
     actions = []
+    candidates: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]] = []
     for scanned in report["tasks"]:
         legacy_id = scanned["legacy_id"]
         if legacy_id in existing:
-            actions.append({"legacy_id": legacy_id, "task_id": existing[legacy_id], "action": "unchanged"})
+            task_dir = existing[legacy_id]
+            if not _existing_output_matches_source(task_dir, scanned):
+                raise MacError(
+                    "MIGRATION_EXISTING_PROVENANCE_MISMATCH",
+                    "existing migration output is not bound to the current legacy source",
+                    exit_code=ExitCode.CORRUPTION,
+                    path=task_dir.relative_to(root).as_posix(),
+                    details={"legacy_id": legacy_id, "source_path": scanned["source_path"], "source_digest": scanned["source_digest"]},
+                )
+            actions.append({"legacy_id": legacy_id, "task_id": task_dir.name, "action": "unchanged"})
             continue
         entry = by_id[legacy_id]
         task_id, scope_id, event_id = prefixed("TASK", str(entry.get("title") or legacy_id)), prefixed("SCOPE"), prefixed("EVT")
@@ -436,19 +506,59 @@ def convert_v5(
         ]
         if validation:
             raise ValueError(f"migration output is invalid: {validation[0].message}")
-        actions.append({"legacy_id": legacy_id, "task_id": task_id, "action": "would_create" if dry_run else "created", "source_path": scanned["source_path"], "source_digest": scanned["source_digest"]})
-        if not dry_run:
-            task_dir = target / task_id
-            staging = target / f".{task_id}.{prefixed('TXN')}.tmp"
-            staging.mkdir(parents=True, exist_ok=False)
-            try:
-                atomic_write_json(staging / "events" / f"{event_id}.json", event)
-                atomic_write_yaml(staging / "scope-contract.yaml", scope)
-                atomic_write_yaml(staging / "task.yaml", projection)
-                os.replace(staging, task_dir)
-            except BaseException:
-                if staging.is_dir(): shutil.rmtree(staging)
-                raise
+        action = {"legacy_id": legacy_id, "task_id": task_id, "action": "would_create", "source_path": scanned["source_path"], "source_digest": scanned["source_digest"]}
+        actions.append(action)
+        candidates.append((action, event, scope, projection))
+
+    if dry_run:
+        source_verification = _verify_sources(root, report["source_documents"])
+        if any(item["status"] != "verified" for item in source_verification):
+            raise RuntimeError("legacy migration source changed during conversion")
+    elif candidates:
+        staging_root = target.parent / f".{target.name}.{prefixed('TXN')}.tmp"
+        staging_root.mkdir(parents=True, exist_ok=False)
+        published: list[tuple[Path, str]] = []
+        published_root = False
+        try:
+            for action, event, scope, projection in candidates:
+                staged_task = staging_root / str(action["task_id"])
+                staged_task.mkdir()
+                atomic_write_json(staged_task / "events" / f"{event['event_id']}.json", event)
+                atomic_write_yaml(staged_task / "scope-contract.yaml", scope)
+                atomic_write_yaml(staged_task / "task.yaml", projection)
+            source_verification = _verify_sources(root, report["source_documents"])
+            if any(item["status"] != "verified" for item in source_verification):
+                raise RuntimeError("legacy migration source changed before publication")
+            if not target.exists():
+                os.replace(staging_root, target)
+                published_root = True
+                for action, _event, _scope, _projection in candidates:
+                    task_dir = target / str(action["task_id"])
+                    published.append((task_dir, _directory_digest(task_dir) or ""))
+            else:
+                for action, _event, _scope, _projection in candidates:
+                    task_dir = target / str(action["task_id"])
+                    if task_dir.exists() or _is_link_like(task_dir):
+                        raise MacError("MIGRATION_OUTPUT_CONFLICT", "migration output appeared during publication", exit_code=ExitCode.CONFLICT, path=str(task_dir))
+                    os.replace(staging_root / str(action["task_id"]), task_dir)
+                    published.append((task_dir, _directory_digest(task_dir) or ""))
+            source_verification = _verify_sources(root, report["source_documents"])
+            if any(item["status"] != "verified" for item in source_verification):
+                raise RuntimeError("legacy migration source changed during publication")
+            for action, _event, _scope, _projection in candidates:
+                action["action"] = "created"
+        except BaseException:
+            _remove_published_outputs(published, target)
+            if published_root:
+                try:
+                    if target.exists() and not _is_link_like(target) and target.is_dir() and not any(target.iterdir()):
+                        target.rmdir()
+                except OSError:
+                    pass
+            raise
+        finally:
+            if staging_root.is_dir() and not _is_link_like(staging_root):
+                shutil.rmtree(staging_root)
     source_verification = _verify_sources(root, report["source_documents"])
     if any(item["status"] != "verified" for item in source_verification):
         raise RuntimeError("legacy migration source changed during conversion")

@@ -171,6 +171,7 @@ class ResultService:
             task = self.repository.load_task(task_id)
             valid_approvals = valid_scope_approvals(task, scope, approvals, ownership, config)
             proof_ok = False
+            recomputed_changes: list[Change] | None = None
             if intake_proof is not None and run is not None:
                 started = next(
                     (
@@ -187,8 +188,33 @@ class ResultService:
                 run_root = Path(str(runtime.get("worktree") or self.repo)).resolve()
                 try:
                     proof_root = Path(str(intake_proof.worktree_identity.get("path", ""))).resolve()
+                    task_git = GitRepository(self.repo)
                     run_git = GitRepository(run_root)
                     baseline_commit = str((frozen_baseline or {}).get("commit_sha", ""))
+                    binding_checks = task_git.run_worktree_binding_checks(
+                        run_git,
+                        approved_base=str(scope.get("base_commit", "")),
+                        baseline_subject=dict(frozen_baseline) if isinstance(frozen_baseline, dict) else {},
+                    )
+                    same_repository = (
+                        binding_checks["same_common_dir"]
+                        and binding_checks["same_object_dir"]
+                    )
+                    baseline_valid = (
+                        binding_checks["approved_base_resolved"]
+                        and binding_checks["baseline_subject_bound"]
+                        and binding_checks["baseline_descends_from_approved_base"]
+                    )
+                    if not same_repository:
+                        issues.append(MacIssue(
+                            "RESULT_RUN_REPOSITORY_MISMATCH",
+                            "run worktree does not share the Task repository Git common-dir and object store",
+                        ))
+                    elif not baseline_valid:
+                        issues.append(MacIssue(
+                            "RESULT_RUN_BASELINE_INVALID",
+                            "run baseline is not bound to the approved Scope base and Task repository history",
+                        ))
                     recomputed_changes = run_git.changes_since(baseline_commit, task_id=task_id) if (frozen_baseline or {}).get("type") == "commit" else []
                     current_workspace_changes = run_git.workspace_changes(task_id=task_id)
                     recomputed_subject = run_git.workspace_subject(task_id=task_id) if current_workspace_changes else run_git.current_code_subject(task_id)
@@ -208,6 +234,8 @@ class ResultService:
                         and isinstance(frozen_identity, dict)
                         and intake_proof.worktree_identity == frozen_identity
                         and proof_root == run_root
+                        and same_repository
+                        and baseline_valid
                         and intake_proof.result_subject == recomputed_subject
                         and proof_keys == recomputed_keys
                     )
@@ -223,20 +251,28 @@ class ResultService:
             )
             scope_issues.extend(actual_result.issues)
             issues.extend(actual_result.issues)
+            result_changes = recomputed_changes if proof_ok and recomputed_changes is not None else actual_changes
+            if proof_ok:
+                run_scope_result = check_changes(
+                    result_changes, scope, ownership=ownership, repo_root=self.repo, task_id=task_id,
+                    governance_approval_level=max((str(item.get("independence_level", "L0")) for item in valid_approvals), default=None),
+                    submodule_approved=any("submodule_change" in item.get("comment", "") for item in valid_approvals),
+                )
+                scope_issues.extend(run_scope_result.issues)
+                issues.extend(run_scope_result.issues)
             if work_unit is not None:
-                work_unit_changes = intake_proof.scope_changes() if proof_ok and intake_proof is not None else actual_changes
-                work_unit_actual = check_changes(work_unit_changes, {**scope, "allowed_paths": list(work_unit.get("allowed_paths", []))}, ownership=ownership, repo_root=self.repo, task_id=task_id, governance_approval_level=max((str(item.get("independence_level", "L0")) for item in valid_approvals), default=None), submodule_approved=any("submodule_change" in item.get("comment", "") for item in valid_approvals))
+                work_unit_actual = check_changes(result_changes, {**scope, "allowed_paths": list(work_unit.get("allowed_paths", []))}, ownership=ownership, repo_root=self.repo, task_id=task_id, governance_approval_level=max((str(item.get("independence_level", "L0")) for item in valid_approvals), default=None), submodule_approved=any("submodule_change" in item.get("comment", "") for item in valid_approvals))
                 scope_issues.extend(work_unit_actual.issues)
                 issues.extend(work_unit_actual.issues)
-            actual_paths = {
+            corresponding_paths = {
                 normalize_repo_path(path)
-                for change in actual_changes
+                for change in result_changes
                 for path in ([change.old_path, change.path] if change.old_path else [change.path])
                 if path
             }
             reported_paths = {normalize_repo_path(str(path)) for path in result.get("changed_files", [])}
-            if not proof_ok and actual_paths != reported_paths:
-                issues.append(MacIssue("RESULT_DIFF_MISMATCH", "without a run-bound proof, reported changed_files must exactly match the current Task diff", details={"actual": sorted(actual_paths), "reported": sorted(reported_paths)}))
+            if corresponding_paths != reported_paths:
+                issues.append(MacIssue("RESULT_DIFF_MISMATCH", "reported changed_files must exactly match the repository-bound Result diff", details={"actual": sorted(corresponding_paths), "reported": sorted(reported_paths)}))
             if scope.get("status") != "approved" or not valid_approvals:
                 issues.append(MacIssue("RESULT_SCOPE_APPROVAL_INVALID", "result requires an authorized approved Scope Contract"))
         except MacError as exc:
@@ -247,7 +283,10 @@ class ResultService:
         if result.get("outcome") == "succeeded" and any(code != 0 for code in command_codes):
             issues.append(MacIssue("RESULT_OUTCOME_COMMAND_MISMATCH", "succeeded result contains a failed command"))
         if issues:
-            security = any(issue.code in {"RESULT_UNSAFE_SHELL", "SECRET_DETECTED"} for issue in issues)
+            security = any(issue.code in {
+                "RESULT_UNSAFE_SHELL", "SECRET_DETECTED", "RESULT_RUN_REPOSITORY_MISMATCH",
+                "RESULT_RUN_BASELINE_INVALID", "RESULT_RUN_PROOF_INVALID",
+            } for issue in issues)
             non_scope_issues = [issue for issue in issues if issue not in scope_issues]
             exit_code = ExitCode.SECURITY if security else (ExitCode.VALIDATION if non_scope_issues else ExitCode.SCOPE)
             raise MacError(issues[0].code, issues[0].message, exit_code=exit_code, details={"issues": [issue.as_dict() for issue in issues]})

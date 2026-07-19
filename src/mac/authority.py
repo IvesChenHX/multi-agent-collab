@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Protocol
+from pathlib import Path
+from typing import Any, Iterable, Iterator, Mapping, Protocol
 
 from pathspec import GitIgnoreSpec
 
@@ -22,6 +24,9 @@ class AuthorityDecision:
     authenticated: bool
     issuer: str
     reason: str = ""
+    actor_kind: str = ""
+    independence_level: str = "L0"
+    attestation_id: str = ""
 
 
 class AuthorityVerifier(Protocol):
@@ -30,12 +35,54 @@ class AuthorityVerifier(Protocol):
     def authorize(self, *, actor_claim: Mapping[str, Any], operation: str, task_id: str | None) -> AuthorityDecision: ...
 
 
+_AUTHORITY_VERIFIER: ContextVar[AuthorityVerifier | None] = ContextVar(
+    "mac_authority_verifier",
+    default=None,
+)
+
+
+@contextmanager
+def trusted_authority_verifier(verifier: AuthorityVerifier) -> Iterator[None]:
+    """Install a verifier supplied by the trusted runtime for this invocation.
+
+    There is deliberately no CLI flag or repository configuration that can
+    construct a verifier: repository data and actor arguments are untrusted.
+    """
+
+    token = _AUTHORITY_VERIFIER.set(verifier)
+    try:
+        yield
+    finally:
+        _AUTHORITY_VERIFIER.reset(token)
+
+
+def current_authority_verifier() -> AuthorityVerifier | None:
+    return _AUTHORITY_VERIFIER.get()
+
+
+def authority_audit_record(decision: AuthorityDecision) -> dict[str, Any]:
+    """Return the non-secret authority facts safe to persist in an event."""
+
+    return {
+        "allowed": decision.allowed,
+        "authenticated": decision.authenticated,
+        "issuer": decision.issuer,
+        "attestation_id": decision.attestation_id,
+        "actor_id": decision.actor_id,
+        "actor_kind": decision.actor_kind,
+        "operation": decision.operation,
+        "task_id": decision.task_id,
+        "independence_level": decision.independence_level,
+    }
+
+
 def require_authority(
     verifier: AuthorityVerifier | None,
     *,
     actor_claim: Mapping[str, Any],
     operation: str,
     task_id: str | None,
+    minimum_independence: str | None = None,
 ) -> AuthorityDecision:
     if verifier is None:
         raise MacError(
@@ -46,13 +93,21 @@ def require_authority(
         )
     decision = verifier.authorize(actor_claim=actor_claim, operation=operation, task_id=task_id)
     claimed_actor = str(actor_claim.get("id", ""))
+    claimed_kind = str(actor_claim.get("kind", ""))
     if (
         not decision.allowed
         or not decision.authenticated
         or not decision.issuer
+        or not decision.attestation_id
         or decision.actor_id != claimed_actor
+        or decision.actor_kind != claimed_kind
         or decision.operation != operation
         or decision.task_id != task_id
+        or decision.independence_level not in _LEVEL
+        or (
+            minimum_independence is not None
+            and not level_at_least(decision.independence_level, minimum_independence)
+        )
     ):
         raise MacError(
             "ACTOR_AUTHORITY_DENIED",

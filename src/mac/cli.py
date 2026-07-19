@@ -16,9 +16,18 @@ from typer import _click as click
 from .application.close import evaluate_repository_close
 from .application.governance import validate_risk_acceptance
 from .application.task_service import TaskService
-from .authority import actor_authorized_for_scope, owner_approvers, valid_scope_approvals
+from .authority import (
+    AuthorityDecision,
+    actor_authorized_for_scope,
+    authority_audit_record,
+    current_authority_verifier,
+    owner_approvers,
+    require_authority,
+    valid_scope_approvals,
+)
 from .doctor import repair_safe, run_doctor
 from .errors import ExitCode, MacError, MacIssue
+from .events import replay_entity_snapshots
 from .evidence import invalidate_evidence, promote_evidence
 from .git import GitRepository
 from .handoff import build_handoff_packet, write_handoff_packet
@@ -27,7 +36,12 @@ from .io import atomic_write_json, atomic_write_yaml, load_data
 from .migration import convert_v5, scan_v5
 from .policy import compile_policy, ownership_source_path, policy_source_paths
 from .report import build_audit_bundle, build_index, render_task_report, verify_audit_bundle
-from .repository import FilesystemTaskRepository, build_policy_ref, utc_now, validate_repository
+from .repository import (
+    FilesystemTaskRepository,
+    build_policy_ref,
+    utc_now,
+    validate_repository,
+)
 from .result import ResultIntakeProof, ResultService
 from .runtime import evaluate_capabilities, resolve_profile
 from .schema_validation import SchemaSet, install_schema_bundle
@@ -62,6 +76,23 @@ def _actor(actor: str, kind: str = "human") -> dict[str, str]:
     return {"id": actor, "kind": kind}
 
 
+def _authority(
+    actor: str,
+    operation: str,
+    task_id: str | None,
+    *,
+    kind: str = "human",
+    minimum_independence: str | None = None,
+) -> AuthorityDecision:
+    return require_authority(
+        current_authority_verifier(),
+        actor_claim=_actor(actor, kind),
+        operation=operation,
+        task_id=task_id,
+        minimum_independence=minimum_independence,
+    )
+
+
 def _entity_paths(repo: Path, task_id: str, directory: str, suffix: str) -> list[Path]:
     return sorted((_repository(repo).task_dir(task_id) / directory).glob(f"*.{suffix}"))
 
@@ -75,12 +106,31 @@ def _operation_replay(repository: FilesystemTaskRepository, task_id: str, idempo
     return event
 
 
+def _authorized_operation_replay(
+    repository: FilesystemTaskRepository,
+    task_id: str,
+    idempotency_key: str,
+    event_type: str,
+    authority: AuthorityDecision,
+) -> dict[str, Any] | None:
+    event = _operation_replay(repository, task_id, idempotency_key, event_type)
+    if event is not None and (event.get("payload") or {}).get("authority") != authority_audit_record(authority):
+        raise MacError(
+            "EVENT_IDEMPOTENCY_CONFLICT",
+            "operation retry does not bind the original authority decision",
+            exit_code=ExitCode.CONFLICT,
+            task_id=task_id,
+        )
+    return event
+
+
 def _write_entity(
     repo: Path, task_id: str, directory: str, entity: dict[str, Any], schema_name: str, event_type: str, *,
     expected_revision: int, idempotency_key: str, actor: str,
     related_entities: list[tuple[Path, dict[str, Any]]] | None = None,
     event_payload: dict[str, Any] | None = None,
     replace_existing: set[Path] | None = None,
+    authority: AuthorityDecision | None = None,
 ) -> dict[str, Any]:
     issues = SchemaSet().validate(entity, schema_name, path=f"{directory}/{entity['id']}")
     if issues:
@@ -95,13 +145,15 @@ def _write_entity(
         "risk-acceptances": "risk_acceptance",
     }.get(directory)
     payload = {**(event_payload or {}), reference_key: entity["id"]}
+    if authority is not None:
+        payload["authority"] = authority_audit_record(authority)
     if snapshot_key:
         payload[snapshot_key] = entity
     appended = repository.append_event(
         task_id,
         event_type,
         payload,
-        actor=_actor(actor),
+        actor=_actor(actor, authority.actor_kind if authority is not None else "human"),
         expected_revision=expected_revision,
         idempotency_key=idempotency_key,
         run_id=str(entity.get("run_id")) if entity.get("run_id") else None,
@@ -167,7 +219,8 @@ def classify(changed_files: int = typer.Option(0, "--changed-files"), changed_li
 
 @task_app.command("new")
 def task_new(title: str = typer.Option(..., "--title"), objective: str = typer.Option(..., "--objective"), mode: str = typer.Option("standard", "--mode"), allow: list[str] = typer.Option(..., "--allow"), owner: list[str] = typer.Option(..., "--owner"), acceptance: list[str] = typer.Option(..., "--accept"), runtime_profile: str = typer.Option("local-single", "--runtime-profile"), gate: list[str] = typer.Option(["targeted_tests"], "--gate"), parent_task: Optional[str] = typer.Option(None, "--parent-task"), supersedes: list[str] = typer.Option([], "--supersedes"), actor: str = typer.Option("cli-user", "--actor"), idempotency_key: str = typer.Option(..., "--idempotency-key"), repo: Path = typer.Option(Path("."), "--repo"), json_output: bool = typer.Option(False, "--json")) -> None:
-    value = TaskService(repo).create(title=title, mode=mode, objective=objective, acceptance=acceptance, allowed_paths=allow, owners=owner, runtime_profile=runtime_profile, required_gates=gate, actor=_actor(actor), idempotency_key=idempotency_key, parent_task=parent_task, supersedes=supersedes); _emit({"ok": True, "task_id": value["task"]["id"], "task": value["task"], "scope": value["scope"]}, json_output)
+    authority = _authority(actor, "task.create", None)
+    value = TaskService(repo).create(title=title, mode=mode, objective=objective, acceptance=acceptance, allowed_paths=allow, owners=owner, runtime_profile=runtime_profile, required_gates=gate, actor=_actor(actor, authority.actor_kind), idempotency_key=idempotency_key, parent_task=parent_task, supersedes=supersedes, authority=authority_audit_record(authority)); _emit({"ok": True, "task_id": value["task"]["id"], "task": value["task"], "scope": value["scope"]}, json_output)
 
 
 @task_app.command("show")
@@ -246,28 +299,177 @@ def _require_scope_owner(repo: Path, task_id: str, actor: str, operation: str) -
         )
 
 
+_EXPLICIT_TRANSITION_CONDITIONS = {
+    "blocking_findings_exist",
+    "external_dependency_pending",
+    "external_dependency_recovered",
+    "external_evidence_received",
+    "human_input_required",
+    "input_received",
+    "risk_surface_changed",
+    "risk_surface_unchanged",
+    "unrecoverable_failure",
+}
+
+
+def _transition_fact(
+    *,
+    source: str,
+    target: str,
+    expected_conditions: set[str],
+    supplied_conditions: list[str],
+    fact_id: str | None,
+    reason: str | None,
+) -> dict[str, Any] | None:
+    required = expected_conditions & _EXPLICIT_TRANSITION_CONDITIONS
+    supplied = set(supplied_conditions)
+    if supplied != required:
+        raise MacError(
+            "TRANSITION_FACT_MISMATCH",
+            "explicit transition facts must exactly match the workflow conditions",
+            exit_code=ExitCode.TRANSITION,
+            details={"required": sorted(required), "supplied": sorted(supplied)},
+        )
+    if not required:
+        if fact_id is not None or reason is not None:
+            raise MacError(
+                "TRANSITION_FACT_UNEXPECTED",
+                "this transition does not accept an external fact",
+                exit_code=ExitCode.CLI_USAGE,
+            )
+        return None
+    if not fact_id or not is_identifier(fact_id, "FACT"):
+        raise MacError(
+            "TRANSITION_FACT_ID_REQUIRED",
+            "conditional transition requires a safe --fact-id",
+            exit_code=ExitCode.CLI_USAGE,
+        )
+    normalized_reason = str(reason or "").strip()
+    if not normalized_reason:
+        raise MacError(
+            "TRANSITION_REASON_REQUIRED",
+            "conditional transition requires a non-empty --reason",
+            exit_code=ExitCode.CLI_USAGE,
+        )
+    return {
+        "id": fact_id,
+        "source": source,
+        "target": target,
+        "conditions": sorted(required),
+        "reason": normalized_reason,
+    }
+
+
+def _context_with_transition_fact(context: TransitionContext, fact: dict[str, Any] | None) -> TransitionContext:
+    if fact is None:
+        return context
+    supplied = set(fact["conditions"])
+    replacements = {
+        name: True
+        for name in supplied
+        if name in TransitionContext.__dataclass_fields__
+    }
+    if "risk_surface_unchanged" in supplied:
+        replacements["risk_surface_changed"] = False
+    return replace(context, **replacements)
+
+
+def _audited_transition(
+    repo: Path,
+    task_id: str,
+    target: str,
+    context: TransitionContext,
+    *,
+    actor: str,
+    authority: AuthorityDecision,
+    transition_fact: dict[str, Any] | None,
+    expected_revision: int,
+    idempotency_key: str,
+):
+    repository = _repository(repo)
+    transition_metadata: dict[str, Any] = {
+        "authority": authority_audit_record(authority),
+    }
+    if transition_fact is not None:
+        transition_metadata["transition_fact"] = transition_fact
+    result = repository.transition(
+        task_id,
+        target,
+        context,
+        actor=_actor(actor, authority.actor_kind),
+        expected_revision=expected_revision,
+        idempotency_key=idempotency_key,
+        transition_metadata=transition_metadata,
+    )
+    return result.event, result.projection
+
+
 @task_app.command("transition")
-def task_transition(task_id: str, target: str, expected_revision: int = typer.Option(..., "--expected-revision"), idempotency_key: str = typer.Option(..., "--idempotency-key"), actor: str = typer.Option("cli-user", "--actor"), repo: Path = typer.Option(Path("."), "--repo"), json_output: bool = typer.Option(False, "--json")) -> None:
-    task = _repository(repo).load_task(task_id)
-    if target in {"completed", "completed_with_risk"}:
+def task_transition(task_id: str, target: str, expected_revision: int = typer.Option(..., "--expected-revision"), idempotency_key: str = typer.Option(..., "--idempotency-key"), actor: str = typer.Option("cli-user", "--actor"), condition: list[str] = typer.Option([], "--condition"), fact_id: Optional[str] = typer.Option(None, "--fact-id"), reason: Optional[str] = typer.Option(None, "--reason"), repo: Path = typer.Option(Path("."), "--repo"), json_output: bool = typer.Option(False, "--json")) -> None:
+    repository = _repository(repo)
+    task = repository.load_task(task_id)
+    if target in {"cancelled", "superseded"}:
+        raise MacError(
+            "DEDICATED_TRANSITION_COMMAND_REQUIRED",
+            f"use task {'cancel' if target == 'cancelled' else 'supersede'} for {target}",
+            exit_code=ExitCode.CLI_USAGE,
+            task_id=task_id,
+        )
+    compiled = compile_policy(repo, runtime_profile_id=str(task.get("runtime_profile") or "") or None)
+    existing = next((event for event in repository.list_events(task_id) if event.get("idempotency_key") == idempotency_key), None)
+    existing_payload = (existing or {}).get("payload") or {}
+    if existing is not None and (existing.get("event_type") != "state_transitioned" or existing_payload.get("to") != target):
+        raise MacError("EVENT_IDEMPOTENCY_CONFLICT", "idempotency key belongs to another transition", exit_code=ExitCode.CONFLICT, task_id=task_id)
+    source = str(existing_payload.get("from", task.get("state")))
+    transition = find_transition(source, target, compiled.transitions)
+    if transition is None:
+        raise MacError("TRANSITION_NOT_ALLOWED", f"transition {source} -> {target} is not allowed", exit_code=ExitCode.TRANSITION, task_id=task_id)
+    transition_fact = _transition_fact(
+        source=source,
+        target=target,
+        expected_conditions=set(transition.conditions),
+        supplied_conditions=condition,
+        fact_id=fact_id,
+        reason=reason,
+    )
+    authority_required = transition_fact is not None or target in {"completed", "completed_with_risk"}
+    authority = _authority(actor, f"task.transition.{target}", task_id) if authority_required else None
+    context = _context_with_transition_fact(
+        _transition_context(repo, task_id, target, actor),
+        transition_fact,
+    )
+    if target in {"completed", "completed_with_risk"} and existing is None:
         close = _close_decision(repo, task_id, actor)
         if not close.ok:
             raise MacError("CLOSE_GATES_FAILED", "task cannot close", exit_code=ExitCode.EVIDENCE, details={"issues": [item.as_dict() for item in close.issues]})
-    compiled = compile_policy(repo, runtime_profile_id=str(task.get("runtime_profile") or "") or None)
-    if find_transition(str(task.get("state")), target, compiled.transitions) is None:
-        raise MacError("TRANSITION_NOT_ALLOWED", f"transition {task.get('state')} -> {target} is not allowed", exit_code=ExitCode.TRANSITION, task_id=task_id)
-    result = _repository(repo).transition(task_id, target, _transition_context(repo, task_id, target, actor), actor=_actor(actor), expected_revision=expected_revision, idempotency_key=idempotency_key); _emit({"ok": True, "task": result.projection, "event": result.event}, json_output)
+    if authority is not None:
+        event, projection = _audited_transition(
+            repo,
+            task_id,
+            target,
+            context,
+            actor=actor,
+            authority=authority,
+            transition_fact=transition_fact,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+        )
+        _emit({"ok": True, "task": projection, "event": event}, json_output)
+        return
+    result = _repository(repo).transition(task_id, target, context, actor=_actor(actor), expected_revision=expected_revision, idempotency_key=idempotency_key); _emit({"ok": True, "task": result.projection, "event": result.event}, json_output)
 
 
 @task_app.command("cancel")
 def task_cancel(task_id: str, expected_revision: int = typer.Option(...), idempotency_key: str = typer.Option(...), actor: str = typer.Option("cli-user"), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
+    authority = _authority(actor, "task.cancel", task_id)
     _require_scope_owner(repo, task_id, actor, "task.cancel")
     context = replace(_transition_context(repo, task_id, "cancelled", actor), authorized_cancellation=True)
-    result = _repository(repo).transition(task_id, "cancelled", context, actor=_actor(actor), expected_revision=expected_revision, idempotency_key=idempotency_key); _emit({"ok": True, "task": result.projection}, json_output)
+    _, projection = _audited_transition(repo, task_id, "cancelled", context, actor=actor, authority=authority, transition_fact=None, expected_revision=expected_revision, idempotency_key=idempotency_key); _emit({"ok": True, "task": projection}, json_output)
 
 
 @task_app.command("supersede")
 def task_supersede(task_id: str, successor: str = typer.Option(..., "--successor"), expected_revision: int = typer.Option(...), idempotency_key: str = typer.Option(...), actor: str = typer.Option("cli-user"), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
+    authority = _authority(actor, "task.supersede", task_id)
     _require_scope_owner(repo, task_id, actor, "task.supersede")
     if not is_identifier(successor, "TASK"):
         raise MacError("SUCCESSOR_TASK_ID_UNSAFE", "successor is not a safe TASK identifier", exit_code=ExitCode.SECURITY, task_id=task_id)
@@ -275,7 +477,7 @@ def task_supersede(task_id: str, successor: str = typer.Option(..., "--successor
         raise MacError("SUCCESSOR_TASK_SELF_REFERENCE", "a task cannot supersede itself", exit_code=ExitCode.VALIDATION, task_id=task_id)
     _repository(repo).load_task(successor)
     context = replace(_transition_context(repo, task_id, "superseded", actor), successor_task_id=successor)
-    result = _repository(repo).transition(task_id, "superseded", context, actor=_actor(actor), expected_revision=expected_revision, idempotency_key=idempotency_key); _emit({"ok": True, "task": result.projection}, json_output)
+    _, projection = _audited_transition(repo, task_id, "superseded", context, actor=actor, authority=authority, transition_fact=None, expected_revision=expected_revision, idempotency_key=idempotency_key); _emit({"ok": True, "task": projection}, json_output)
 
 
 @task_app.command("rebuild")
@@ -284,39 +486,42 @@ def task_rebuild(task_id: str, repo: Path = typer.Option(Path(".")), json_output
 
 @scope_app.command("propose")
 def scope_propose(task_id: str, allow: list[str] = typer.Option(..., "--allow"), deny: list[str] = typer.Option([], "--deny"), owner: list[str] = typer.Option(..., "--owner"), expected_revision: int = typer.Option(..., "--expected-revision"), idempotency_key: str = typer.Option(..., "--idempotency-key"), actor: str = typer.Option("cli-user"), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
+    authority = _authority(actor, "scope.propose", task_id)
     repository = _repository(repo); path = repository.task_dir(task_id) / "scope-contract.yaml"
-    if replay := _operation_replay(repository, task_id, idempotency_key, "scope_proposed"):
+    if replay := _authorized_operation_replay(repository, task_id, idempotency_key, "scope_proposed", authority):
         _emit({"ok": True, "scope": (replay.get("payload") or {}).get("scope"), "revision": replay.get("revision")}, json_output); return
     scope = load_data(path)
     if scope.get("status") == "approved": raise MacError("SCOPE_APPROVED_IMMUTABLE", "approved scope must be amended, not edited", exit_code=ExitCode.SCOPE)
     scope = deepcopy(scope); scope.update({"status": "proposed", "proposed_by": actor, "approved_by": [], "allowed_paths": allow, "denied_paths": deny, "owners": owner})
     issues = SchemaSet().validate(scope, "scope-contract.schema.json", path="scope-contract.yaml")
     if issues: raise MacError("SCHEMA_INVALID", issues[0].message, exit_code=ExitCode.VALIDATION, details={"issues": [item.as_dict() for item in issues]})
-    appended = repository.append_event(task_id, "scope_proposed", {"scope_id": scope["id"], "version": scope["version"], "scope": scope}, actor=_actor(actor), expected_revision=expected_revision, idempotency_key=idempotency_key, materializations=[(path, scope)], replace_existing={path})
+    appended = repository.append_event(task_id, "scope_proposed", {"scope_id": scope["id"], "version": scope["version"], "scope": scope, "authority": authority_audit_record(authority)}, actor=_actor(actor, authority.actor_kind), expected_revision=expected_revision, idempotency_key=idempotency_key, materializations=[(path, scope)], replace_existing={path})
     _emit({"ok": True, "scope": load_data(path), "revision": appended.projection["revision"]}, json_output)
 
 
 @scope_app.command("approve")
 def scope_approve(task_id: str, expected_revision: int = typer.Option(...), idempotency_key: str = typer.Option(...), actor: str = typer.Option(...), independence_level: str = typer.Option("L1"), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
+    authority = _authority(actor, "scope.approve", task_id, minimum_independence=independence_level)
     repository = _repository(repo); directory = repository.task_dir(task_id); path = directory / "scope-contract.yaml"
-    if replay := _operation_replay(repository, task_id, idempotency_key, "scope_approved"):
+    if replay := _authorized_operation_replay(repository, task_id, idempotency_key, "scope_approved", authority):
         payload = replay.get("payload") or {}; _emit({"ok": True, "scope": payload.get("scope"), "approval": payload.get("approval"), "revision": replay.get("revision")}, json_output); return
     scope = load_data(path)
     if scope["status"] != "proposed": raise MacError("SCOPE_NOT_PROPOSED", "only proposed scope can be approved", exit_code=ExitCode.SCOPE)
     task = _repository(repo).load_task(task_id); config = load_data(repo / ".agents/config.yaml"); ownership = load_data(repo / str(config["paths"]["ownership"]))
-    approval = {"schema_version": 1, "id": prefixed("APR"), "task_id": task_id, "kind": "scope", "actor": _actor(actor), "decision": "approved", "subject_ref": str(task["scope_contract_ref"]), "independence_level": independence_level, "recorded_at": utc_now()}
+    approval = {"schema_version": 1, "id": prefixed("APR"), "task_id": task_id, "kind": "scope", "actor": _actor(actor, authority.actor_kind), "decision": "approved", "subject_ref": str(task["scope_contract_ref"]), "independence_level": authority.independence_level, "recorded_at": utc_now()}
     if not valid_scope_approvals(task, scope, [approval], ownership, config):
         raise MacError("SCOPE_APPROVER_UNAUTHORIZED", "scope approval lacks owner authority or required independence", exit_code=ExitCode.SECURITY, task_id=task_id)
     scope = deepcopy(scope); scope["status"] = "approved"; scope["approved_by"] = [actor]
-    approval_path = directory / "approvals" / f"{approval['id']}.json"; event = _repository(repo).append_event(task_id, "scope_approved", {"scope_id": scope["id"], "version": scope["version"], "approval_id": approval["id"], "approval": approval, "scope": scope}, actor=_actor(actor), expected_revision=expected_revision, idempotency_key=idempotency_key, materializations=[(approval_path, approval), (path, scope)], replace_existing={path}); _emit({"ok": True, "scope": scope, "approval": approval, "revision": event.projection["revision"]}, json_output)
+    approval_path = directory / "approvals" / f"{approval['id']}.json"; event = _repository(repo).append_event(task_id, "scope_approved", {"scope_id": scope["id"], "version": scope["version"], "approval_id": approval["id"], "approval": approval, "scope": scope, "authority": authority_audit_record(authority)}, actor=_actor(actor, authority.actor_kind), expected_revision=expected_revision, idempotency_key=idempotency_key, materializations=[(approval_path, approval), (path, scope)], replace_existing={path}); _emit({"ok": True, "scope": scope, "approval": approval, "revision": event.projection["revision"]}, json_output)
 
 
 @scope_app.command("amend")
 def scope_amend(task_id: str, add: list[str] = typer.Option(..., "--add"), expected_revision: int = typer.Option(...), idempotency_key: str = typer.Option(...), actor: str = typer.Option(...), approver: list[str] = typer.Option(...), risk_tag: list[str] = typer.Option([], "--risk-tag"), independent: bool = typer.Option(False), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
+    authority = _authority(actor, "scope.amend", task_id)
     repository = _repository(repo); directory = repository.task_dir(task_id); path = directory / "scope-contract.yaml"
-    if replay := _operation_replay(repository, task_id, idempotency_key, "scope_proposed"):
+    if replay := _authorized_operation_replay(repository, task_id, idempotency_key, "scope_proposed", authority):
         _emit({"ok": True, "scope": (replay.get("payload") or {}).get("scope"), "revision": replay.get("revision"), "approval_required": True}, json_output); return
-    old = load_data(path); new = amend_scope(old, add_paths=add, actor=actor, approvers=approver, added_risk_tags=risk_tag, independent_approval=independent); history = directory / "scope-history" / f"scope-contract.v{old['version']}.yaml"; result = repository.append_event(task_id, "scope_proposed", {"scope_id": new["id"], "version": new["version"], "amendment": True, "scope": new}, actor=_actor(actor), expected_revision=expected_revision, idempotency_key=idempotency_key, materializations=[(history, old), (path, new)], replace_existing={path}); _emit({"ok": True, "scope": new, "revision": result.projection["revision"], "approval_required": True}, json_output)
+    old = load_data(path); new = amend_scope(old, add_paths=add, actor=actor, approvers=approver, added_risk_tags=risk_tag, independent_approval=independent); history = directory / "scope-history" / f"scope-contract.v{old['version']}.yaml"; result = repository.append_event(task_id, "scope_proposed", {"scope_id": new["id"], "version": new["version"], "amendment": True, "scope": new, "authority": authority_audit_record(authority)}, actor=_actor(actor, authority.actor_kind), expected_revision=expected_revision, idempotency_key=idempotency_key, materializations=[(history, old), (path, new)], replace_existing={path}); _emit({"ok": True, "scope": new, "revision": result.projection["revision"], "approval_required": True}, json_output)
 
 
 @scope_app.command("check")
@@ -377,13 +582,15 @@ def work_unit_show(task_id: str, work_unit_id: str, repo: Path = typer.Option(Pa
 
 @run_app.command("register")
 def run_register(task_id: str, work_unit_id: str = typer.Option(...), profile: str = typer.Option("local-single"), context_id: str = typer.Option(...), provider: Optional[str] = typer.Option(None, "--provider"), model: Optional[str] = typer.Option(None, "--model"), worktree: Optional[Path] = typer.Option(None, "--worktree"), branch: Optional[str] = typer.Option(None, "--branch"), actor: str = typer.Option("cli-agent"), actor_kind: str = typer.Option("agent"), independence_level: str = typer.Option("L0"), expected_revision: int = typer.Option(...), idempotency_key: str = typer.Option(...), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
+    authority = _authority(actor, "run.register", task_id, kind=actor_kind, minimum_independence=independence_level)
     repository = _repository(repo)
     if not is_identifier(work_unit_id, "WU"):
         raise MacError("WORK_UNIT_ID_UNSAFE", "work unit id is invalid", exit_code=ExitCode.SECURITY, task_id=task_id)
     existing = next((event for event in repository.list_events(task_id) if event.get("idempotency_key") == idempotency_key), None)
     if existing is not None:
-        existing_run_id = str((existing.get("payload") or {}).get("run_id", ""))
-        if existing.get("event_type") != "run_started" or not existing_run_id:
+        payload = existing.get("payload") or {}
+        existing_run_id = str(payload.get("run_id", ""))
+        if existing.get("event_type") != "run_started" or not existing_run_id or payload.get("authority") != authority_audit_record(authority):
             raise MacError("EVENT_IDEMPOTENCY_CONFLICT", "idempotency key belongs to another operation", exit_code=ExitCode.CONFLICT)
         _emit({"ok": True, "run": load_data(repository.task_dir(task_id) / "runs" / f"{existing_run_id}.json")}, json_output)
         return
@@ -402,8 +609,31 @@ def run_register(task_id: str, work_unit_id: str = typer.Option(...), profile: s
     running_work_unit = deepcopy(work_unit)
     running_work_unit["status"] = "running"
     run_root = (worktree or repo).resolve()
+    task_git = GitRepository(repo)
     run_git = GitRepository(run_root)
     baseline_subject = run_git.commit_subject("HEAD")
+    scope = load_data(repository.task_dir(task_id) / "scope-contract.yaml")
+    binding_checks = task_git.run_worktree_binding_checks(
+        run_git,
+        approved_base=str(scope.get("base_commit", "")),
+        baseline_subject=baseline_subject,
+    )
+    if not (binding_checks["same_common_dir"] and binding_checks["same_object_dir"]):
+        raise MacError(
+            "RUN_WORKTREE_REPOSITORY_MISMATCH",
+            "run worktree does not belong to the Task repository",
+            exit_code=ExitCode.SECURITY,
+            task_id=task_id,
+            details={"checks": binding_checks},
+        )
+    if not all(binding_checks.values()):
+        raise MacError(
+            "RUN_BASELINE_BINDING_INVALID",
+            "run baseline is not bound to the approved Scope base and Task repository history",
+            exit_code=ExitCode.SECURITY,
+            task_id=task_id,
+            details={"checks": binding_checks},
+        )
     branch_result = subprocess.run(
         ["git", "-C", str(run_root), "rev-parse", "--abbrev-ref", "HEAD"],
         shell=False,
@@ -427,9 +657,9 @@ def run_register(task_id: str, work_unit_id: str = typer.Option(...), profile: s
         "task_id": task_id,
         "work_unit_id": work_unit_id,
         "status": "running",
-        "actor": _actor(actor, actor_kind),
+        "actor": _actor(actor, authority.actor_kind),
         "runtime": runtime,
-        "independence_level": independence_level,
+        "independence_level": authority.independence_level,
         "started_at": utc_now(),
         "finished_at": None,
         "exit_code": None,
@@ -445,8 +675,9 @@ def run_register(task_id: str, work_unit_id: str = typer.Option(...), profile: s
         idempotency_key=idempotency_key,
         actor=actor,
         related_entities=[(work_unit_path, running_work_unit)],
-        event_payload={"work_unit_id": work_unit_id, "work_unit": running_work_unit, "baseline_subject": baseline_subject, "worktree_identity": worktree_identity},
+        event_payload={"work_unit_id": work_unit_id, "work_unit": running_work_unit, "baseline_subject": baseline_subject, "worktree_identity": worktree_identity, "repository_binding": binding_checks},
         replace_existing={work_unit_path},
+        authority=authority,
     )
     _emit({"ok": True, "run": entity}, json_output)
 
@@ -456,23 +687,129 @@ def run_finish(task_id: str, run_id: str, status: str = typer.Option(...), exit_
     repository = _repository(repo)
     if not is_identifier(run_id, "RUN"):
         raise MacError("RUN_ID_UNSAFE", "run id is invalid", exit_code=ExitCode.SECURITY, task_id=task_id)
+    terminal_statuses = {"succeeded", "failed", "cancelled"}
+    if status not in terminal_statuses:
+        raise MacError("RUN_FINISH_STATUS_INVALID", "run finish requires a terminal status", exit_code=ExitCode.VALIDATION, task_id=task_id)
     run_path = repository.task_dir(task_id) / "runs" / f"{run_id}.json"
-    run = load_data(run_path)
-    if run.get("status") == status and run.get("exit_code") == exit_code and run.get("finished_at"):
-        _emit({"ok": True, "run": run}, json_output)
+    events = repository.list_events(task_id)
+    replayed_operation = _operation_replay(repository, task_id, idempotency_key, "run_finished")
+    if replayed_operation is not None:
+        payload = replayed_operation.get("payload") or {}
+        recorded = payload.get("run")
+        if not isinstance(recorded, dict):
+            raise MacError(
+                "RUN_FINISH_SNAPSHOT_MISSING",
+                "the original run finish event has no replayable Run snapshot; retry with a new idempotency key to append a compensating event",
+                exit_code=ExitCode.CORRUPTION,
+                task_id=task_id,
+                details={"event_id": replayed_operation.get("event_id")},
+            )
+        issues = SchemaSet().validate(recorded, "run.schema.json", path=f"runs/{run_id}.json")
+        if issues or recorded.get("id") != run_id or recorded.get("task_id") != task_id or not recorded.get("finished_at"):
+            raise MacError("RUN_FINISH_SNAPSHOT_INVALID", "the original run finish snapshot is invalid", exit_code=ExitCode.CORRUPTION, task_id=task_id, details={"issues": [item.as_dict() for item in issues]})
+        if payload.get("status") != status or recorded.get("status") != status or recorded.get("exit_code") != exit_code:
+            raise MacError("EVENT_IDEMPOTENCY_CONFLICT", "run finish retry does not match the original terminal data", exit_code=ExitCode.CONFLICT, task_id=task_id)
+        repository.append_event(
+            task_id,
+            "run_finished",
+            payload,
+            actor=_actor(actor, "agent"),
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+            run_id=run_id,
+        )
+        restored = load_data(run_path)
+        if restored != recorded:
+            raise MacError("RUN_FINISH_REPLAY_FAILED", "idempotent retry did not restore the terminal Run projection", exit_code=ExitCode.CORRUPTION, task_id=task_id)
+        _emit({"ok": True, "run": restored}, json_output)
         return
-    if run.get("status") not in {"registered", "running", "unknown"}:
-        raise MacError("RUN_ALREADY_FINISHED", "run is already terminal with different data", exit_code=ExitCode.TRANSITION, task_id=task_id)
-    finished = deepcopy(run)
-    finished["status"] = status
-    finished["finished_at"] = utc_now()
-    finished["exit_code"] = exit_code
+
+    snapshots = replay_entity_snapshots(events)
+    replayed = snapshots["runs"].get(run_id)
+    if not isinstance(replayed, dict):
+        raise MacError("RUN_NOT_REPLAYABLE", "run has no authoritative event snapshot", exit_code=ExitCode.CORRUPTION, task_id=task_id)
+    replay_issues = SchemaSet().validate(replayed, "run.schema.json", path=f"runs/{run_id}.json")
+    if replay_issues or replayed.get("id") != run_id or replayed.get("task_id") != task_id:
+        raise MacError("RUN_REPLAY_SNAPSHOT_INVALID", "authoritative Run snapshot is invalid", exit_code=ExitCode.CORRUPTION, task_id=task_id, details={"issues": [item.as_dict() for item in replay_issues]})
+
+    current: dict[str, Any] | None
+    try:
+        loaded = load_data(run_path)
+        current = loaded if isinstance(loaded, dict) else None
+    except (FileNotFoundError, ValueError):
+        current = None
+
+    if replayed.get("status") in terminal_statuses:
+        if replayed.get("status") != status or replayed.get("exit_code") != exit_code or not replayed.get("finished_at"):
+            raise MacError("RUN_ALREADY_FINISHED", "run is already terminal with different data", exit_code=ExitCode.TRANSITION, task_id=task_id)
+        authoritative_event = next(
+            (
+                event
+                for event in reversed(events)
+                if event.get("event_type") == "run_finished"
+                and isinstance((event.get("payload") or {}).get("run"), dict)
+                and (event.get("payload") or {}).get("run") == replayed
+            ),
+            None,
+        )
+        if authoritative_event is None:
+            raise MacError("RUN_FINISH_EVENT_MISSING", "terminal Run snapshot has no authoritative finish event", exit_code=ExitCode.CORRUPTION, task_id=task_id)
+        if current != replayed:
+            repository.append_event(
+                task_id,
+                "run_finished",
+                authoritative_event.get("payload") or {},
+                actor=_actor(actor, "agent"),
+                expected_revision=expected_revision,
+                idempotency_key=str(authoritative_event["idempotency_key"]),
+                run_id=run_id,
+            )
+        _emit({"ok": True, "run": replayed}, json_output)
+        return
+
+    legacy_event: dict[str, Any] | None = None
+    current_terminal = current is not None and current.get("status") in terminal_statuses and current.get("finished_at")
+    if current_terminal:
+        current_issues = SchemaSet().validate(current, "run.schema.json", path=f"runs/{run_id}.json")
+        immutable = lambda item: {key: deepcopy(value) for key, value in item.items() if key not in {"status", "finished_at", "exit_code"}}
+        if current_issues or immutable(current) != immutable(replayed):
+            raise MacError("RUN_PROJECTION_TAMPERED", "terminal Run projection differs from the authoritative Run identity", exit_code=ExitCode.SECURITY, task_id=task_id, details={"issues": [item.as_dict() for item in current_issues]})
+        if current.get("status") != status or current.get("exit_code") != exit_code:
+            raise MacError("RUN_ALREADY_FINISHED", "run is already terminal with different data", exit_code=ExitCode.TRANSITION, task_id=task_id)
+        legacy_event = next(
+            (
+                event
+                for event in reversed(events)
+                if event.get("event_type") == "run_finished"
+                and (event.get("run_id") == run_id or (event.get("payload") or {}).get("run_id") == run_id)
+                and (event.get("payload") or {}).get("status") == status
+                and not isinstance((event.get("payload") or {}).get("run"), dict)
+            ),
+            None,
+        )
+        if legacy_event is None:
+            raise MacError("RUN_PROJECTION_TERMINAL_WITHOUT_EVENT", "terminal Run projection has no replayable finish event", exit_code=ExitCode.CORRUPTION, task_id=task_id)
+        finished = deepcopy(current)
+    else:
+        finished = deepcopy(replayed)
+        finished["status"] = status
+        finished["finished_at"] = utc_now()
+        finished["exit_code"] = exit_code
+    finish_issues = SchemaSet().validate(finished, "run.schema.json", path=f"runs/{run_id}.json")
+    if finish_issues:
+        raise MacError("RUN_FINISH_SNAPSHOT_INVALID", "terminal Run snapshot is invalid", exit_code=ExitCode.VALIDATION, task_id=task_id, details={"issues": [item.as_dict() for item in finish_issues]})
     materializations: list[tuple[Path, dict[str, Any]]] = [(run_path, finished)]
     replace_existing = {run_path}
-    payload: dict[str, Any] = {"run_id": run_id, "status": status}
+    payload: dict[str, Any] = {"run_id": run_id, "status": status, "run": finished}
+    if legacy_event is not None:
+        payload["compensates_event_id"] = legacy_event["event_id"]
     if status in {"failed", "cancelled"}:
-        work_unit_path = repository.task_dir(task_id) / "work-units" / f"{run['work_unit_id']}.yaml"
-        work_unit = deepcopy(load_data(work_unit_path))
+        work_unit_id = str(replayed["work_unit_id"])
+        work_unit_path = repository.task_dir(task_id) / "work-units" / f"{work_unit_id}.yaml"
+        work_unit_snapshot = snapshots["work-units"].get(work_unit_id)
+        if not isinstance(work_unit_snapshot, dict):
+            raise MacError("WORK_UNIT_NOT_REPLAYABLE", "run work unit has no authoritative event snapshot", exit_code=ExitCode.CORRUPTION, task_id=task_id)
+        work_unit = deepcopy(work_unit_snapshot)
         work_unit["status"] = "failed" if status == "failed" else "cancelled"
         materializations.append((work_unit_path, work_unit))
         replace_existing.add(work_unit_path)
@@ -614,15 +951,16 @@ def finding_resolve(task_id: str, finding_id: str, expected_revision: int = type
 
 @finding_app.command("waive")
 def finding_waive(task_id: str, finding_id: str, rationale: str = typer.Option(..., "--rationale"), control: list[str] = typer.Option(..., "--control"), expires_at: str = typer.Option(..., "--expires-at"), expected_revision: int = typer.Option(..., "--expected-revision"), idempotency_key: str = typer.Option(..., "--idempotency-key"), actor: str = typer.Option(..., "--actor"), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
+    authority = _authority(actor, "risk.accept", task_id)
     repository = _repository(repo)
-    if replay := _operation_replay(repository, task_id, idempotency_key, "risk_accepted"):
+    if replay := _authorized_operation_replay(repository, task_id, idempotency_key, "risk_accepted", authority):
         payload = replay.get("payload") or {}; _emit({"ok": True, "finding": payload.get("finding"), "risk_acceptance": payload.get("risk_acceptance")}, json_output); return
     directory = repository.task_dir(task_id); finding_path = directory / "findings" / f"{finding_id}.json"; finding = load_data(finding_path); scope = load_data(directory / "scope-contract.yaml"); config = load_data(repo / ".agents/config.yaml"); ownership = load_data(repo / str(config["paths"]["ownership"])); authorized = owner_approvers(scope, ownership)
-    acceptance = {"schema_version": 1, "id": prefixed("RISK"), "task_id": task_id, "finding_ids": [finding_id], "accepted_by": _actor(actor), "accepted_at": utc_now(), "rationale": rationale, "compensating_controls": control, "expires_at": expires_at, "scope": {"paths": list(scope.get("allowed_paths", []))}}
+    acceptance = {"schema_version": 1, "id": prefixed("RISK"), "task_id": task_id, "finding_ids": [finding_id], "accepted_by": _actor(actor, authority.actor_kind), "accepted_at": utc_now(), "rationale": rationale, "compensating_controls": control, "expires_at": expires_at, "scope": {"paths": list(scope.get("allowed_paths", []))}}
     decision = validate_risk_acceptance(acceptance, [finding], authorized_actor_ids=authorized, non_waivable_gates=set((config.get("close_policy") or {}).get("non_waivable_gates", [])))
     if not decision.ok: raise MacError("RISK_ACCEPTANCE_REJECTED", "finding cannot be waived", exit_code=ExitCode.SECURITY, details={"issues": [item.as_dict() for item in decision.issues]})
     waived = deepcopy(finding); waived["status"] = "waived"; risk_path = directory / "risk-acceptances" / f"{acceptance['id']}.json"
-    entity = _write_entity(repo, task_id, "risk-acceptances", acceptance, "risk-acceptance.schema.json", "risk_accepted", expected_revision=expected_revision, idempotency_key=idempotency_key, actor=actor, related_entities=[(finding_path, waived)], event_payload={"finding": waived}, replace_existing={finding_path}); _emit({"ok": True, "finding": waived, "risk_acceptance": entity}, json_output)
+    entity = _write_entity(repo, task_id, "risk-acceptances", acceptance, "risk-acceptance.schema.json", "risk_accepted", expected_revision=expected_revision, idempotency_key=idempotency_key, actor=actor, related_entities=[(finding_path, waived)], event_payload={"finding": waived}, replace_existing={finding_path}, authority=authority); _emit({"ok": True, "finding": waived, "risk_acceptance": entity}, json_output)
 
 
 @finding_app.command("list")
@@ -631,14 +969,15 @@ def finding_list(task_id: str, repo: Path = typer.Option(Path(".")), json_output
 
 @approval_app.command("record")
 def approval_record(task_id: str, kind: str = typer.Option(...), decision: str = typer.Option(...), subject_ref: str = typer.Option(...), actor: str = typer.Option(...), independence_level: str = typer.Option("L1"), expected_revision: int = typer.Option(..., "--expected-revision"), idempotency_key: str = typer.Option(..., "--idempotency-key"), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
+    authority = _authority(actor, f"approval.record.{kind}", task_id, minimum_independence=independence_level)
     repository = _repository(repo)
-    if replay := _operation_replay(repository, task_id, idempotency_key, "scope_approved"):
+    if replay := _authorized_operation_replay(repository, task_id, idempotency_key, "scope_approved", authority):
         _emit({"ok": True, "approval": (replay.get("payload") or {}).get("approval")}, json_output); return
-    entity = {"schema_version": 1, "id": prefixed("APR"), "task_id": task_id, "kind": kind, "actor": _actor(actor), "decision": decision, "subject_ref": subject_ref, "independence_level": independence_level, "recorded_at": utc_now()}; issues = SchemaSet().validate(entity, "approval.schema.json", path="approval");
+    entity = {"schema_version": 1, "id": prefixed("APR"), "task_id": task_id, "kind": kind, "actor": _actor(actor, authority.actor_kind), "decision": decision, "subject_ref": subject_ref, "independence_level": authority.independence_level, "recorded_at": utc_now()}; issues = SchemaSet().validate(entity, "approval.schema.json", path="approval");
     if issues: raise MacError("SCHEMA_INVALID", issues[0].message, exit_code=ExitCode.VALIDATION)
     scope = load_data(repository.task_dir(task_id) / "scope-contract.yaml"); config = load_data(repo / ".agents/config.yaml"); ownership = load_data(repo / str(config["paths"]["ownership"]));
     if not actor_authorized_for_scope(actor, scope, ownership): raise MacError("APPROVAL_ACTOR_UNAUTHORIZED", "actor is not an authorized owner approver", exit_code=ExitCode.SECURITY, task_id=task_id)
-    entity = _write_entity(repo, task_id, "approvals", entity, "approval.schema.json", "scope_approved", expected_revision=expected_revision, idempotency_key=idempotency_key, actor=actor, event_payload={"approval_kind": kind}); _emit({"ok": True, "approval": entity}, json_output)
+    entity = _write_entity(repo, task_id, "approvals", entity, "approval.schema.json", "scope_approved", expected_revision=expected_revision, idempotency_key=idempotency_key, actor=actor, event_payload={"approval_kind": kind}, authority=authority); _emit({"ok": True, "approval": entity}, json_output)
 
 
 @approval_app.command("verify")

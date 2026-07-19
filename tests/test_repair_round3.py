@@ -7,9 +7,11 @@ import sys
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from mac.application.task_service import TaskService
-from mac.cli import _transition_context, _write_entity, init_command
+from mac.authority import AuthorityDecision, trusted_authority_verifier
+from mac.cli import _transition_context, _write_entity, app, init_command
 from mac.errors import MacError
 from mac.git import GitRepository
 from mac.io import atomic_write_json, atomic_write_yaml, load_data
@@ -23,6 +25,21 @@ WORK_UNIT_ID = "WU-01K0W4Z36K3W5C2R0A3M8N9P7Q"
 RUN_ID = "RUN-01K0W4Z36K3W5C2R0A3M8N9P7Q"
 RESULT_ID = "RESULT-01K0W4Z36K3W5C2R0A3M8N9P7Q"
 EVIDENCE_ID = "EVD-01K0W4Z36K3W5C2R0A3M8N9P7Q"
+
+
+class _RuntimeVerifier:
+    def authorize(self, *, actor_claim: dict[str, object], operation: str, task_id: str | None) -> AuthorityDecision:
+        return AuthorityDecision(
+            allowed=True,
+            actor_id=str(actor_claim["id"]),
+            actor_kind=str(actor_claim["kind"]),
+            operation=operation,
+            task_id=task_id,
+            authenticated=True,
+            issuer="test-runtime-broker",
+            independence_level="L1",
+            attestation_id=f"attestation-{operation.replace('.', '-')}",
+        )
 
 
 def _git_init(root: Path) -> None:
@@ -248,8 +265,9 @@ def test_standard_cli_lifecycle_reaches_close_with_task_metadata_present(tmp_pat
     subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "add backend owner"], check=True)
 
     def invoke(*args: str) -> dict[str, object]:
-        completed = _run_cli(*args, "--repo", str(tmp_path), "--json")
-        assert completed.returncode == 0, completed.stderr
+        with trusted_authority_verifier(_RuntimeVerifier()):
+            completed = CliRunner().invoke(app, [*args, "--repo", str(tmp_path), "--json"])
+        assert completed.exit_code == 0, completed.output
         return json.loads(completed.stdout)
 
     created = invoke(

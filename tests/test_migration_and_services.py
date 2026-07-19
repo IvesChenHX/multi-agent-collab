@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+import mac.migration as migration_module
 from mac.application.task_service import TaskService
+from mac.authority import AuthorityDecision, trusted_authority_verifier
 from mac.cli import init_command, scope_approve
 from mac.errors import MacError
 from mac.events import replay_events
@@ -17,6 +19,21 @@ from mac.migration import convert_v5, list_tasks_dual, scan_v5
 from mac.repository import FilesystemTaskRepository
 from mac.result import ResultService
 from mac.runtime import evaluate_capabilities, resolve_profile
+
+
+class _AuthorityVerifier:
+    def authorize(self, *, actor_claim: dict[str, object], operation: str, task_id: str | None) -> AuthorityDecision:
+        return AuthorityDecision(
+            allowed=True,
+            actor_id=str(actor_claim["id"]),
+            actor_kind=str(actor_claim["kind"]),
+            operation=operation,
+            task_id=task_id,
+            authenticated=True,
+            issuer="test-runtime-broker",
+            independence_level="L1",
+            attestation_id=f"attestation-{operation.replace('.', '-')}",
+        )
 
 
 def init_repo(root: Path) -> None:
@@ -40,7 +57,8 @@ def test_task_and_result_services_are_idempotent_and_handoff_is_minimal(tmp_path
     retried = service.create(title="different retry text", mode="standard", objective="ignored", acceptance=["ignored"], allowed_paths=["other/**"], owners=["other"], runtime_profile="local-single", required_gates=[], actor={"id": "a", "kind": "agent"}, idempotency_key="create-service")
     assert retried["task"]["id"] == created["task"]["id"]
     task_id = str(created["task"]["id"])
-    scope_approve(task_id, expected_revision=0, idempotency_key="approve-service", actor="backend-owner", independence_level="L1", repo=tmp_path, json_output=True)
+    with trusted_authority_verifier(_AuthorityVerifier()):
+        scope_approve(task_id, expected_revision=0, idempotency_key="approve-service", actor="backend-owner", independence_level="L1", repo=tmp_path, json_output=True)
     task_dir = FilesystemTaskRepository(tmp_path).task_dir(task_id)
     work_unit_id = "WU-01K0W4Z36K3W5C2R0A3M8N9P7S"
     run_id = "RUN-01K0W4Z36K3W5C2R0A3M8N9P7T"
@@ -96,6 +114,82 @@ def test_migration_scan_dry_run_apply_repeat_and_dual_read(tmp_path: Path) -> No
     assert rows[0]["legacy_integrity"] == "metadata_only"
     assert rows[0]["verification_status"] == "unverifiable"
     assert not list((tmp_path / "tasks-v6").rglob("evidence/*.json"))
+
+
+def test_migration_rolls_back_staged_root_when_source_changes_during_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "tasks").mkdir(); (tmp_path / ".agents/workflows").mkdir(parents=True)
+    (tmp_path / "tasks/index.yaml").write_text(
+        yaml.safe_dump({"tasks": [{"id": "TASK-0001", "title": "legacy", "status": "complete"}]}),
+        encoding="utf-8",
+    )
+    for path in (tmp_path / "AGENTS.md", tmp_path / ".agents/config.yaml", tmp_path / ".agents/ownership.yaml", tmp_path / ".agents/workflows/evidence-driven-development.yaml"):
+        path.parent.mkdir(parents=True, exist_ok=True); path.write_text("x\n", encoding="utf-8")
+
+    original = migration_module._verify_sources
+    calls = 0
+
+    def source_changes_after_publish(root: Path, records: list[dict[str, object]]) -> list[dict[str, object]]:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            return [{"status": "changed"}]
+        return original(root, records)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(migration_module, "_verify_sources", source_changes_after_publish)
+    with pytest.raises(RuntimeError, match="during publication"):
+        convert_v5(tmp_path, dry_run=False)
+
+    assert not (tmp_path / "tasks-v6").exists()
+    monkeypatch.setattr(migration_module, "_verify_sources", original)
+    assert convert_v5(tmp_path, dry_run=False)["created"] == 1
+
+
+def test_migration_rolls_back_partial_publish_and_rejects_stale_existing_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "tasks").mkdir(); (tmp_path / ".agents/workflows").mkdir(parents=True)
+    index = tmp_path / "tasks/index.yaml"
+    index.write_text(
+        yaml.safe_dump({"tasks": [
+            {"id": "TASK-0001", "title": "first", "status": "complete"},
+            {"id": "TASK-0002", "title": "second", "status": "complete"},
+        ]}),
+        encoding="utf-8",
+    )
+    for path in (tmp_path / "AGENTS.md", tmp_path / ".agents/config.yaml", tmp_path / ".agents/ownership.yaml", tmp_path / ".agents/workflows/evidence-driven-development.yaml"):
+        path.parent.mkdir(parents=True, exist_ok=True); path.write_text("x\n", encoding="utf-8")
+    target = tmp_path / "tasks-v6"; target.mkdir()
+    original_replace = migration_module.os.replace
+    moves = 0
+
+    def fail_second_publish(source: str | Path, destination: str | Path) -> None:
+        nonlocal moves
+        source_path, destination_path = Path(source), Path(destination)
+        if source_path.name.startswith("TASK-") and destination_path.parent == target:
+            moves += 1
+            if moves == 2:
+                raise OSError("simulated publish interruption")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(migration_module.os, "replace", fail_second_publish)
+    with pytest.raises(OSError, match="simulated publish interruption"):
+        convert_v5(tmp_path, dry_run=False)
+    assert not list(target.glob("TASK-*"))
+
+    monkeypatch.setattr(migration_module.os, "replace", original_replace)
+    assert convert_v5(tmp_path, dry_run=False)["created"] == 2
+    index.write_text(
+        yaml.safe_dump({"tasks": [
+            {"id": "TASK-0001", "title": "first", "status": "complete", "summary": "changed after migration"},
+            {"id": "TASK-0002", "title": "second", "status": "complete"},
+        ]}),
+        encoding="utf-8",
+    )
+    with pytest.raises(MacError) as captured:
+        convert_v5(tmp_path, dry_run=False)
+    assert captured.value.code == "MIGRATION_EXISTING_PROVENANCE_MISMATCH"
 
 
 def test_v5_scan_reports_status_references_entity_digests_and_rollback_matrix(tmp_path: Path) -> None:

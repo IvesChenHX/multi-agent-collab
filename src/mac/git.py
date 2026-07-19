@@ -51,6 +51,87 @@ class GitRepository:
         git_dir = Path(str(self._run("rev-parse", "--git-common-dir", text=True)).strip())
         return git_dir if git_dir.is_absolute() else (self.root / git_dir).resolve()
 
+    @staticmethod
+    def _canonical_storage_path(path: Path) -> str:
+        """Return a comparison key that is stable for Windows paths and symlinks."""
+        return os.path.normcase(os.path.realpath(path.resolve()))
+
+    def storage_identity(self) -> dict[str, str]:
+        """Identify the shared Git storage behind this working tree.
+
+        Linked worktrees have different per-worktree git dirs, but must resolve
+        to the same common dir and object directory.  Callers must compare both:
+        an unrelated clone can contain byte-identical commits without belonging
+        to the Task repository.
+        """
+        common_dir = self._git_common_dir()
+        object_dir = Path(str(self._run("rev-parse", "--git-path", "objects", text=True)).strip())
+        if not object_dir.is_absolute():
+            object_dir = (self.root / object_dir).resolve()
+        return {
+            "common_dir": self._canonical_storage_path(common_dir),
+            "object_dir": self._canonical_storage_path(object_dir),
+        }
+
+    def shares_storage_with(self, other: "GitRepository") -> bool:
+        """Return true only for worktrees backed by the same Git repository."""
+        return self.storage_identity() == other.storage_identity()
+
+    def commit_is_ancestor(self, ancestor: str, descendant: str) -> bool:
+        result = subprocess.run(
+            ["git", "-C", str(self.root), "merge-base", "--is-ancestor", ancestor, descendant],
+            shell=False,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
+            return False
+        raise MacError(
+            "GIT_COMMAND_FAILED",
+            "git merge-base --is-ancestor failed",
+            exit_code=ExitCode.EXTERNAL,
+        )
+
+    def run_worktree_binding_checks(
+        self,
+        run_repository: "GitRepository",
+        *,
+        approved_base: str,
+        baseline_subject: dict[str, str],
+    ) -> dict[str, bool]:
+        """Verify a run worktree before its baseline is trusted or frozen.
+
+        This is the public seam for `run register` and Result intake.  The Task
+        repository is `self`; the run repository may be its main worktree or a
+        linked worktree, but never an independent clone.  The frozen baseline
+        must resolve identically through both worktrees and descend from the
+        approved Scope base.
+        """
+        task_storage = self.storage_identity()
+        run_storage = run_repository.storage_identity()
+        checks = {
+            "same_common_dir": task_storage["common_dir"] == run_storage["common_dir"],
+            "same_object_dir": task_storage["object_dir"] == run_storage["object_dir"],
+            "approved_base_resolved": False,
+            "baseline_subject_bound": False,
+            "baseline_descends_from_approved_base": False,
+        }
+        try:
+            task_base = self.commit_subject(approved_base)
+            task_baseline = self.commit_subject(str(baseline_subject.get("commit_sha", "")))
+            run_baseline = run_repository.commit_subject(str(baseline_subject.get("commit_sha", "")))
+            checks["approved_base_resolved"] = task_base["commit_sha"] == approved_base
+            checks["baseline_subject_bound"] = (
+                baseline_subject == task_baseline == run_baseline
+            )
+            checks["baseline_descends_from_approved_base"] = self.commit_is_ancestor(
+                task_base["commit_sha"], task_baseline["commit_sha"]
+            )
+        except (MacError, KeyError, TypeError, ValueError):
+            pass
+        return checks
+
     def _inside_nested_repository(self, relative: str) -> bool:
         candidate = self.root / relative
         for parent in (candidate, *candidate.parents):

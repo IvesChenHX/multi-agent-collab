@@ -349,19 +349,30 @@ class FilesystemTaskRepository:
     def create_task(
         self, task: dict[str, Any], *, actor: dict[str, Any], idempotency_key: str,
         initial_entities: list[tuple[str, dict[str, Any]]] | None = None,
+        authority: Mapping[str, Any] | None = None,
     ) -> AppendResult:
         task_id = str(task["id"])
         directory = self.task_dir(task_id)
         if directory.exists():
             existing = self._existing_idempotency(task_id, idempotency_key)
             if existing:
+                if authority is not None and (existing.get("payload") or {}).get("authority") != dict(authority):
+                    raise MacError(
+                        "EVENT_IDEMPOTENCY_CONFLICT",
+                        "task creation retry does not bind the original authority decision",
+                        exit_code=ExitCode.CONFLICT,
+                        task_id=task_id,
+                    )
                 return AppendResult(existing, self.load_task(task_id), True)
             raise MacError("TASK_EXISTS", f"task {task_id} already exists", exit_code=ExitCode.CONFLICT)
         event = {
             "schema_version": 1, "event_id": prefixed("EVT"), "task_id": task_id,
             "event_type": "task_created", "occurred_at": utc_now(), "actor": actor, "run_id": None,
             "expected_revision": -1, "new_revision": 0, "idempotency_key": idempotency_key,
-            "payload": {"task": deepcopy(task)},
+            "payload": {
+                "task": deepcopy(task),
+                **({"authority": deepcopy(dict(authority))} if authority is not None else {}),
+            },
         }
         projection = replay_events([event])
         self.tasks_root.mkdir(parents=True, exist_ok=True)
@@ -453,10 +464,17 @@ class FilesystemTaskRepository:
     def transition(
         self, task_id: str, target: str, context: TransitionContext, *, actor: dict[str, Any],
         expected_revision: int, idempotency_key: str,
+        transition_metadata: Mapping[str, Any] | None = None,
     ) -> AppendResult:
+        frozen_metadata = deepcopy(dict(transition_metadata)) if transition_metadata is not None else None
         with self.lease(task_id, str(actor.get("id", "unknown"))):
             if existing := self._existing_idempotency(task_id, idempotency_key):
-                if existing.get("event_type") != "state_transitioned" or (existing.get("payload") or {}).get("to") != target:
+                existing_payload = existing.get("payload") or {}
+                if (
+                    existing.get("event_type") != "state_transitioned"
+                    or existing_payload.get("to") != target
+                    or existing_payload.get("transition_metadata") != frozen_metadata
+                ):
                     raise MacError("EVENT_IDEMPOTENCY_CONFLICT", "idempotency key belongs to another transition", exit_code=ExitCode.CONFLICT, task_id=task_id)
                 through_revision = int(existing.get("new_revision", 0))
                 original_events = [event for event in self.list_events(task_id) if int(event.get("new_revision", 0)) <= through_revision]
@@ -486,6 +504,8 @@ class FilesystemTaskRepository:
                 raise MacError(decision.codes[0], f"{task['state']} -> {target} rejected", exit_code=ExitCode.TRANSITION, details={"failed_guards": decision.failed_guards, "failed_conditions": decision.failed_conditions})
             payload: dict[str, Any] = {"from": task["state"], "to": target, "transition_id": decision.transition.id if decision.transition else None}
             payload["terminal_state"] = target in compiled.terminal_states
+            if frozen_metadata is not None:
+                payload["transition_metadata"] = frozen_metadata
             if context.successor_task_id:
                 payload["successor_task_id"] = context.successor_task_id
             return self._append_event_locked(

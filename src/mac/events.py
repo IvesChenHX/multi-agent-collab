@@ -117,6 +117,60 @@ def replay_entity_snapshots(events: Iterable[dict[str, Any]], initial_projection
     return projection
 
 
+def replay_scope_snapshots(
+    events: Iterable[dict[str, Any]],
+    initial_projection: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, dict[int, dict[str, Any]]]:
+    """Rebuild the current Scope Contract and its immutable version history.
+
+    Scope mutations carry their materialized snapshot in the Task event.  Some
+    ``scope_approved`` events only record an approval entity, so they are
+    intentionally ignored unless they also contain a ``scope`` snapshot.  A
+    version may have both proposed and approved snapshots; the last committed
+    snapshot for that version is authoritative.
+    """
+
+    event_list = [deepcopy(event) for event in events]
+    task_projection = replay_events(event_list, initial_projection=initial_projection)
+    ordered = sorted(
+        event_list,
+        key=lambda item: (int(item.get("new_revision", -1)), str(item.get("event_id", ""))),
+    )
+    task_id = str(task_projection.get("id", ""))
+    scope_id: str | None = None
+    latest_version = 0
+    current: dict[str, Any] | None = None
+    versions: dict[int, dict[str, Any]] = {}
+    for event in ordered:
+        if event.get("event_type") not in {"scope_proposed", "scope_approved"}:
+            continue
+        snapshot = (event.get("payload") or {}).get("scope")
+        if snapshot is None:
+            continue
+        if not isinstance(snapshot, dict):
+            raise _corrupt("EVENT_SCOPE_SNAPSHOT_INVALID", "scope snapshot must be an object", event)
+        version = snapshot.get("version")
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise _corrupt("EVENT_SCOPE_VERSION_INVALID", "scope snapshot version must be a positive integer", event)
+        if version < latest_version:
+            raise _corrupt("EVENT_SCOPE_VERSION_ROLLBACK", "scope snapshot version rolled back", event)
+        if str(snapshot.get("task_id", "")) != task_id:
+            raise _corrupt("EVENT_SCOPE_TASK_MISMATCH", "scope snapshot belongs to another task", event)
+        candidate_scope_id = str(snapshot.get("id", ""))
+        if not candidate_scope_id:
+            raise _corrupt("EVENT_SCOPE_ID_MISSING", "scope snapshot id is missing", event)
+        if scope_id is not None and candidate_scope_id != scope_id:
+            raise _corrupt("EVENT_SCOPE_ID_CHANGED", "scope identity changed across versions", event)
+        scope_id = candidate_scope_id
+        latest_version = version
+        current = deepcopy(snapshot)
+        versions[version] = deepcopy(snapshot)
+    if current is None:
+        return None, {}
+    history = {version: snapshot for version, snapshot in versions.items() if version != latest_version}
+    return current, history
+
+
 def replay_work_units(events: Iterable[dict[str, Any]], initial_projection: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
     """Rebuild work-unit snapshots recorded by run/result lifecycle events.
 
