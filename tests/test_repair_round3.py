@@ -10,14 +10,14 @@ import pytest
 from typer.testing import CliRunner
 
 from mac.application.task_service import TaskService
-from mac.authority import AuthorityDecision, trusted_authority_verifier
-from mac.cli import _transition_context, _write_entity, app, init_command
+from mac.cli import app, init_command, run_register, scope_approve, task_transition, work_unit_new, work_unit_ready
 from mac.errors import MacError
 from mac.git import GitRepository
 from mac.io import atomic_write_json, atomic_write_yaml, load_data
-from mac.repository import FilesystemTaskRepository, utc_now, validate_repository, validate_task_invariants
+from mac.repository import AppendEvent, FilesystemTaskRepository, MutationGateway, resolve_transition_context, utc_now, validate_repository, validate_task_invariants
 from mac.scope import Change, check_changes
 from mac.state_machine import DEFAULT_TRANSITIONS, parse_transitions, validate_workflow_invariants
+from tests.security.test_authority_commands import configure_test_authority
 
 
 TASK_ID = "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q"
@@ -27,19 +27,9 @@ RESULT_ID = "RESULT-01K0W4Z36K3W5C2R0A3M8N9P7Q"
 EVIDENCE_ID = "EVD-01K0W4Z36K3W5C2R0A3M8N9P7Q"
 
 
-class _RuntimeVerifier:
-    def authorize(self, *, actor_claim: dict[str, object], operation: str, task_id: str | None) -> AuthorityDecision:
-        return AuthorityDecision(
-            allowed=True,
-            actor_id=str(actor_claim["id"]),
-            actor_kind=str(actor_claim["kind"]),
-            operation=operation,
-            task_id=task_id,
-            authenticated=True,
-            issuer="test-runtime-broker",
-            independence_level="L1",
-            attestation_id=f"attestation-{operation.replace('.', '-')}",
-        )
+@pytest.fixture(autouse=True)
+def _host_authority_broker(monkeypatch: pytest.MonkeyPatch) -> None:
+    configure_test_authority(monkeypatch)
 
 
 def _git_init(root: Path) -> None:
@@ -52,6 +42,10 @@ def _initialized_repo(root: Path) -> None:
     _git_init(root)
     init_command(repo=root, project="test", json_output=True)
     (root / "AGENTS.md").write_text("# rules\n", encoding="utf-8")
+    ownership_path = root / ".agents/ownership.yaml"
+    ownership = load_data(ownership_path)
+    ownership["owners"]["backend"] = {"priority": 10, "implementation_role": "backend-implementer", "include": ["src/**"], "approvers": ["backend-owner"]}
+    atomic_write_yaml(ownership_path, ownership)
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "init"], check=True)
 
@@ -70,10 +64,8 @@ def _task(root: Path) -> tuple[str, dict[str, object]]:
         idempotency_key="create-round-3",
     )
     task_id = str(created["task"]["id"])
-    scope = dict(created["scope"])
-    scope["status"] = "approved"
-    scope["approved_by"] = ["owner"]
-    atomic_write_yaml(root / "tasks" / task_id / "scope-contract.yaml", scope)
+    scope_approve(task_id, expected_revision=0, idempotency_key="approve-round-3", actor="backend-owner", independence_level="L1", repo=root, json_output=True)
+    task_transition(task_id, "ready", expected_revision=1, idempotency_key="ready-round-3", actor="controller", condition=[], fact_id=None, reason=None, repo=root, json_output=True)
     return task_id, created["task"]
 
 
@@ -111,11 +103,12 @@ def _run(task_id: str) -> dict[str, object]:
 def test_ready_work_unit_only_requires_its_declared_dependencies(tmp_path: Path) -> None:
     _initialized_repo(tmp_path)
     task_id, _ = _task(tmp_path)
-    directory = tmp_path / "tasks" / task_id
-    atomic_write_yaml(directory / "work-units" / f"{WORK_UNIT_ID}.yaml", _work_unit(task_id))
-    atomic_write_json(directory / "runs" / f"{RUN_ID}.json", _run(task_id))
+    work_unit_new(task_id, title="implement", owner="backend", allow=["src/**"], depends_on=[], expected_revision=2, idempotency_key="dependencies-unit", actor="executor", repo=tmp_path, json_output=True)
+    work_unit_id = next((tmp_path / "tasks" / task_id / "work-units").glob("*.yaml")).stem
+    work_unit_ready(task_id, work_unit_id, expected_revision=3, idempotency_key="dependencies-ready", actor="executor", repo=tmp_path, json_output=True)
+    run_register(task_id, work_unit_id=work_unit_id, profile="local-single", context_id="ctx-1", provider=None, model=None, worktree=None, branch=None, actor="executor", actor_kind="agent", independence_level="L0", expected_revision=4, idempotency_key="ready-dependencies-run", repo=tmp_path, json_output=True)
 
-    context = _transition_context(tmp_path, task_id, "executing")
+    context = resolve_transition_context(tmp_path, task_id, "executing", "executor")
 
     assert context.executor_run_created
     assert context.dependencies_complete
@@ -166,22 +159,23 @@ def test_revision_conflict_does_not_leave_run_and_validator_rejects_orphans(tmp_
     task_id, task = _task(tmp_path)
     directory = tmp_path / "tasks" / task_id
     run = _run(task_id)
+    work_unit = _work_unit(task_id)
 
     with pytest.raises(MacError, match="expected 99"):
-        _write_entity(
-            tmp_path,
-            task_id,
-            "runs",
-            run,
-            "run.schema.json",
-            "run_started",
+        MutationGateway(tmp_path).execute(AppendEvent(
+            task_id=task_id,
+            event_type="run_started",
+            payload={"run_id": RUN_ID, "work_unit_id": WORK_UNIT_ID, "work_unit": work_unit, "run": run},
+            actor_claim={"id": "executor", "kind": "agent"},
             expected_revision=99,
             idempotency_key="stale-run",
-            actor="executor",
-        )
+            operation="run.register",
+            run_id=RUN_ID,
+            materializations=((directory / "work-units" / f"{WORK_UNIT_ID}.yaml", work_unit), (directory / "runs" / f"{RUN_ID}.json", run)),
+        ))
 
     assert not (directory / "runs" / f"{RUN_ID}.json").exists()
-    assert len(FilesystemTaskRepository(tmp_path).list_events(task_id)) == 1
+    assert len(FilesystemTaskRepository(tmp_path).list_events(task_id)) == 3
 
     atomic_write_yaml(directory / "work-units" / f"{WORK_UNIT_ID}.yaml", _work_unit(task_id))
     atomic_write_json(directory / "runs" / f"{RUN_ID}.json", run)
@@ -255,18 +249,11 @@ def test_init_emits_complete_reachable_workflow_and_valid_repository(tmp_path: P
     assert not [issue for issue in validate_repository(tmp_path) if issue.severity == "error"]
 
 
-def test_standard_cli_lifecycle_reaches_close_with_task_metadata_present(tmp_path: Path) -> None:
+def test_standard_cli_lifecycle_waits_for_an_isolated_evidence_executor(tmp_path: Path) -> None:
     _initialized_repo(tmp_path)
-    ownership_path = tmp_path / ".agents/ownership.yaml"
-    ownership = load_data(ownership_path)
-    ownership["owners"]["backend"] = {"priority": 10, "implementation_role": "backend-implementer", "include": ["src/**"], "approvers": ["backend-owner"]}
-    atomic_write_yaml(ownership_path, ownership)
-    subprocess.run(["git", "-C", str(tmp_path), "add", ".agents/ownership.yaml"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "add backend owner"], check=True)
 
     def invoke(*args: str) -> dict[str, object]:
-        with trusted_authority_verifier(_RuntimeVerifier()):
-            completed = CliRunner().invoke(app, [*args, "--repo", str(tmp_path), "--json"])
+        completed = CliRunner().invoke(app, [*args, "--repo", str(tmp_path), "--json"])
         assert completed.exit_code == 0, completed.output
         return json.loads(completed.stdout)
 
@@ -289,6 +276,7 @@ def test_standard_cli_lifecycle_reaches_close_with_task_metadata_present(tmp_pat
         "--expected-revision", "2", "--idempotency-key", "work-unit",
     )["work_unit"]
     work_unit_id = str(work_unit["id"])
+    result_id = Path(str(work_unit["expected_result"])).stem
     invoke("work-unit", "ready", task_id, work_unit_id, "--expected-revision", "3", "--idempotency-key", "work-unit-ready")
     run = invoke(
         "run", "register", task_id, "--work-unit-id", work_unit_id, "--context-id", "executor-context",
@@ -325,7 +313,7 @@ def test_standard_cli_lifecycle_reaches_close_with_task_metadata_present(tmp_pat
     result_path.write_text(
         json.dumps({
             "schema_version": 1,
-            "id": RESULT_ID,
+            "id": result_id,
             "task_id": task_id,
             "work_unit_id": work_unit_id,
             "run_id": run_id,
@@ -337,7 +325,18 @@ def test_standard_cli_lifecycle_reaches_close_with_task_metadata_present(tmp_pat
         }),
         encoding="utf-8",
     )
-    submitted = invoke("result", "submit", task_id, str(result_path), "--expected-revision", "6", "--idempotency-key", "result-submit")
+    submitted = invoke(
+        "result",
+        "submit",
+        task_id,
+        str(result_path),
+        "--expected-revision",
+        "6",
+        "--idempotency-key",
+        "result-submit",
+        "--actor",
+        "cli-agent",
+    )
     assert submitted["intake_proof"]["checks"] == {
         "run_baseline_bound": True,
         "worktree_identity_bound": True,
@@ -346,16 +345,26 @@ def test_standard_cli_lifecycle_reaches_close_with_task_metadata_present(tmp_pat
     }
     invoke("task", "transition", task_id, "verifying", "--expected-revision", "7", "--idempotency-key", "verifying")
 
-    for revision, claim in enumerate(("approved_scope", "targeted_tests", "AC-001"), start=8):
-        completed = _run_cli(
-            "evidence", "record", task_id, "--claim", claim, "--expected-revision", str(revision),
-            "--idempotency-key", f"evidence-{claim}", "--repo", str(tmp_path), "--commit", "--json",
-            "--", sys.executable, "-c", "pass",
-        )
-        assert completed.returncode == 0, completed.stderr
+    evidence = _run_cli(
+        "evidence", "record", task_id, "--claim", "approved_scope", "--expected-revision", "8",
+        "--idempotency-key", "evidence-approved-scope", "--repo", str(tmp_path), "--commit", "--json",
+        "--", sys.executable, "-c", "pass",
+    )
+    assert evidence.returncode == 10
+    assert json.loads(evidence.stderr)["error"]["code"] == "EVIDENCE_ISOLATED_EXECUTOR_REQUIRED"
 
-    closed = invoke("task", "transition", task_id, "completed", "--expected-revision", "11", "--idempotency-key", "completed", "--actor", "backend-owner")
-    assert closed["task"]["state"] == "completed"
+    waiting = invoke(
+        "task", "transition", task_id, "waiting_external",
+        "--expected-revision", "8", "--idempotency-key", "waiting-for-evidence-executor",
+        "--condition", "external_dependency_pending",
+        "--fact-id", "FACT-01K0W4Z36K3W5C2R0A3M8N9P7Q",
+        "--reason", "formal command Evidence requires an isolated executor",
+    )
+    assert waiting["task"]["state"] == "waiting_external"
+    assert not any(
+        event["event_type"] == "evidence_recorded"
+        for event in FilesystemTaskRepository(tmp_path).list_events(task_id)
+    )
     assert not [issue for issue in validate_repository(tmp_path) if issue.severity == "error"]
 
 

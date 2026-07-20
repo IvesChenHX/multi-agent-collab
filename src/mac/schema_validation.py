@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from functools import lru_cache
 from importlib import resources
 import os
 from pathlib import Path
@@ -255,26 +256,53 @@ def install_schema_bundle(repo_root: Path) -> None:
     atomic_write_json(repo_root.resolve() / ".agents/schemas.lock.json", {"schema_version": 1, "generated_from": "schemas", "files": records})
 
 
+@lru_cache(maxsize=32)
+def _compile_schema_bundle(
+    root_text: str,
+    lock_digest: str,
+) -> tuple[dict[str, dict[str, Any]], Registry, dict[str, Draft202012Validator]]:
+    """Compile an integrity-checked schema bundle once per immutable lock digest."""
+
+    del lock_digest  # It is deliberately part of the cache key.
+    root = Path(root_text)
+    schemas = {
+        name: json.loads((root / name).read_text(encoding="utf-8"))
+        for name in sorted(SCHEMA_NAMES)
+    }
+    missing = SCHEMA_NAMES - schemas.keys()
+    if missing:
+        raise ValueError(f"missing schemas: {', '.join(sorted(missing))}")
+    registry = Registry()
+    for name, schema in schemas.items():
+        Draft202012Validator.check_schema(schema)
+        resource = Resource.from_contents(schema)
+        registry = registry.with_resource(schema["$id"], resource).with_resource(name, resource)
+    validators = {
+        name: Draft202012Validator(
+            schema,
+            registry=registry,
+            format_checker=Draft202012Validator.FORMAT_CHECKER,
+        )
+        for name, schema in schemas.items()
+    }
+    return schemas, registry, validators
+
+
 class SchemaSet:
     def __init__(self, schema_dir: Path | None = None) -> None:
         root = schema_dir or _default_schema_dir()
         _enforce_default_lock(root)
-        self.schemas = {
-            name: json.loads((root / name).read_text(encoding="utf-8")) for name in sorted(SCHEMA_NAMES)
-        }
+        lock_path = _default_lock_path(root)
+        if lock_path is None:
+            raise ValueError("schema lock is missing")
+        lock_digest = schema_digest(lock_path.read_bytes())
+        self.schemas, self.registry, self.validators = _compile_schema_bundle(
+            str(root.resolve()),
+            lock_digest,
+        )
         missing = SCHEMA_NAMES - self.schemas.keys()
         if missing:
             raise ValueError(f"missing schemas: {', '.join(sorted(missing))}")
-        registry = Registry()
-        for name, schema in self.schemas.items():
-            Draft202012Validator.check_schema(schema)
-            resource = Resource.from_contents(schema)
-            registry = registry.with_resource(schema["$id"], resource).with_resource(name, resource)
-        self.registry = registry
-        self.validators = {
-            name: Draft202012Validator(schema, registry=self.registry, format_checker=Draft202012Validator.FORMAT_CHECKER)
-            for name, schema in self.schemas.items()
-        }
 
     def validate(self, data: dict[str, Any], schema_name: str, *, path: str) -> list[MacIssue]:
         if schema_name not in self.schemas:

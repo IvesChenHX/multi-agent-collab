@@ -5,9 +5,14 @@ from pathlib import Path
 
 import hashlib
 import json
+import pytest
 
 from mac.repository import build_policy_ref, policy_ref_matches_executable
 from mac.application.task_service import TaskService
+from mac.cli import init_command
+from mac.io import atomic_write_yaml, load_data
+from mac.policy import compile_frozen_policy, ownership_source_path, policy_source_paths
+from tests.security.test_authority_commands import configure_test_authority
 
 
 def _git(repo: Path, *argv: str) -> str:
@@ -96,28 +101,52 @@ def test_policy_ref_rejects_non_hex_source_commit_before_git_revision_lookup(tmp
     assert not policy_ref_matches_executable(tmp_path, reference, required_paths={"AGENTS.md"})
 
 
-def test_task_policy_snapshot_binds_selected_runtime_profile(tmp_path: Path) -> None:
+def test_frozen_policy_compilation_ignores_later_worktree_policy_drift(tmp_path: Path) -> None:
     _git(tmp_path, "init", "-q")
     _git(tmp_path, "config", "user.email", "tests@example.invalid")
     _git(tmp_path, "config", "user.name", "Tests")
-    files = {
-        "AGENTS.md": "# policy\n",
-        ".agents/config.yaml": (
-            "default_workflow: evidence-driven-development\n"
-            "default_runtime_profile: local-multi\n"
-            "paths:\n"
-            "  workflows: .agents/workflows\n"
-            "  ownership: .agents/ownership.yaml\n"
-            "  runtime_profiles: .agents/runtime-profiles\n"
-        ),
-        ".agents/workflows/evidence-driven-development.yaml": "name: evidence-driven-development\n",
-        ".agents/runtime-profiles/local-multi.yaml": "id: local-multi\n",
-        ".agents/ownership.yaml": "owners: {}\n",
-    }
-    for relative, content in files.items():
-        path = tmp_path / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+    init_command(repo=tmp_path, project="frozen-policy", json_output=True)
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-qm", "governance")
+    config = load_data(tmp_path / ".agents/config.yaml")
+    policy_ref = build_policy_ref(tmp_path, list(policy_source_paths(config, "local-single")))
+    ownership_ref = build_policy_ref(tmp_path, [ownership_source_path(config)])
+
+    original = compile_frozen_policy(
+        tmp_path,
+        policy_ref,
+        ownership_ref,
+        runtime_profile_id="local-single",
+    )
+    workflow_path = tmp_path / ".agents/workflows/evidence-driven-development.yaml"
+    drifted = load_data(workflow_path)
+    drifted["transitions"][0]["id"] = "worktree-only-transition-id"
+    atomic_write_yaml(workflow_path, drifted)
+
+    replayed = compile_frozen_policy(
+        tmp_path,
+        policy_ref,
+        ownership_ref,
+        runtime_profile_id="local-single",
+    )
+
+    assert replayed.workflow == original.workflow
+    assert replayed.transitions == original.transitions
+
+
+def test_task_policy_snapshot_binds_selected_runtime_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_test_authority(monkeypatch)
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "tests@example.invalid")
+    _git(tmp_path, "config", "user.name", "Tests")
+    init_command(repo=tmp_path, project="runtime-bound", json_output=True)
+    source_profile = load_data(tmp_path / ".agents/runtime-profiles/local-single.yaml")
+    source_profile["id"] = "local-multi"
+    atomic_write_yaml(tmp_path / ".agents/runtime-profiles/local-multi.yaml", source_profile)
+    (tmp_path / "AGENTS.md").write_text("# policy\n", encoding="utf-8")
     _git(tmp_path, "add", ".")
     _git(tmp_path, "commit", "-qm", "governance")
 

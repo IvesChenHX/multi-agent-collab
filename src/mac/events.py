@@ -123,11 +123,11 @@ def replay_scope_snapshots(
 ) -> tuple[dict[str, Any] | None, dict[int, dict[str, Any]]]:
     """Rebuild the current Scope Contract and its immutable version history.
 
-    Scope mutations carry their materialized snapshot in the Task event.  Some
-    ``scope_approved`` events only record an approval entity, so they are
-    intentionally ignored unless they also contain a ``scope`` snapshot.  A
-    version may have both proposed and approved snapshots; the last committed
-    snapshot for that version is authoritative.
+    Task creation and Scope mutations carry their materialized snapshot in the
+    Task event.  Some ``scope_approved`` events only record an approval entity,
+    so they are intentionally ignored unless they also contain a ``scope``
+    snapshot.  A version may have both proposed and approved snapshots; the
+    last committed snapshot for that version is authoritative.
     """
 
     event_list = [deepcopy(event) for event in events]
@@ -142,7 +142,7 @@ def replay_scope_snapshots(
     current: dict[str, Any] | None = None
     versions: dict[int, dict[str, Any]] = {}
     for event in ordered:
-        if event.get("event_type") not in {"scope_proposed", "scope_approved"}:
+        if event.get("event_type") not in {"task_created", "scope_proposed", "scope_approved"}:
             continue
         snapshot = (event.get("payload") or {}).get("scope")
         if snapshot is None:

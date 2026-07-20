@@ -14,7 +14,7 @@ from mac.errors import MacError
 from mac.evidence import WORKSPACE_EQUIVALENCE_CHECKS
 from mac.git import GitRepository
 from mac.ownership import OwnershipResolver
-from mac.scope import Change, check_changes, normalize_repo_path
+from mac.scope import Change, amend_scope, check_changes, normalize_repo_path
 
 
 def test_ownership_uses_exclude_specificity_priority_and_reports_ambiguity() -> None:
@@ -79,6 +79,79 @@ def test_scope_patterns_do_not_use_deprecated_pathspec_factory() -> None:
 
     assert result.ok
     assert not [item for item in captured if issubclass(item.category, DeprecationWarning)]
+
+
+def test_change_guard_enforces_allowed_operations() -> None:
+    result = check_changes(
+        [Change("modify", "src/app.py")],
+        {
+            "allowed_paths": ["src/**"],
+            "denied_paths": [],
+            "allowed_operations": ["read"],
+            "owners": [],
+        },
+    )
+
+    assert not result.ok
+    assert {issue.code for issue in result.issues} == {"SCOPE_OPERATION_DENIED"}
+
+
+def test_change_guard_requires_delete_and_write_for_destructive_changes() -> None:
+    deleted = check_changes(
+        [Change("delete", "src/old.py")],
+        {
+            "allowed_paths": ["src/**"],
+            "denied_paths": [],
+            "allowed_operations": ["write"],
+            "owners": [],
+        },
+    )
+    renamed = check_changes(
+        [Change("rename", "src/new.py", old_path="src/old.py")],
+        {
+            "allowed_paths": ["src/**"],
+            "denied_paths": [],
+            "allowed_operations": ["write"],
+            "owners": [],
+        },
+    )
+    allowed_delete = check_changes(
+        [Change("delete", "src/old.py")],
+        {
+            "allowed_paths": ["src/**"],
+            "denied_paths": [],
+            "allowed_operations": ["delete"],
+            "owners": [],
+        },
+    )
+
+    assert {issue.details["required_operation"] for issue in deleted.issues} == {"delete"}
+    assert {issue.details["required_operation"] for issue in renamed.issues} == {"delete"}
+    assert allowed_delete.ok
+
+
+def test_scope_amendment_can_explicitly_add_delete_authority() -> None:
+    contract = {
+        "id": "SCOPE-01K0W4Z36K3W5C2R0A3M8N9P7Q",
+        "version": 1,
+        "status": "approved",
+        "allowed_paths": ["src/**"],
+        "allowed_operations": ["read", "write"],
+        "risk_tags": [],
+        "amendment_policy": {"max_amendments": 2, "max_paths_per_amendment": 4},
+    }
+
+    amended = amend_scope(
+        contract,
+        add_paths=[],
+        add_operations=["delete"],
+        actor="proposer",
+        approvers=[],
+    )
+
+    assert amended["status"] == "proposed"
+    assert amended["version"] == 2
+    assert amended["allowed_operations"] == ["read", "write", "delete"]
 
 
 def test_git_reader_and_workspace_digest_cover_staged_unstaged_untracked_and_delete(tmp_path: Path) -> None:

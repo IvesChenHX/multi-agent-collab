@@ -2,16 +2,48 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
+from mac.application.task_service import TaskService
+from mac.cli import init_command, scope_amend, scope_approve
 from mac.doctor import repair_safe, run_doctor
 from mac.errors import MacError
+from mac.io import load_data
+from tests.security.test_authority_commands import configure_test_authority
 
 
 TASK_ID = "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q"
+
+
+@pytest.fixture(autouse=True)
+def _host_authority_broker(monkeypatch: pytest.MonkeyPatch) -> None:
+    configure_test_authority(monkeypatch)
+
+
+def _signed_task(root: Path) -> str:
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "test"], check=True)
+    init_command(repo=root, project="doctor-recovery", json_output=True)
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "freeze governance"], check=True)
+    created = TaskService(root).create(
+        title="doctor",
+        mode="standard",
+        objective="Prove safe recovery.",
+        acceptance=["Recover"],
+        allowed_paths=["src/**"],
+        owners=["governance"],
+        runtime_profile="local-single",
+        required_gates=["targeted_tests"],
+        actor={"id": "proposer", "kind": "human"},
+        idempotency_key="doctor-fixture",
+    )
+    return str(created["task"]["id"])
 
 
 def _snapshot(root: Path) -> dict[str, bytes]:
@@ -87,14 +119,12 @@ def test_doctor_is_read_only(tmp_path):
 
 
 def test_repair_safe_only_repairs_derived_or_temporary_state(tmp_path):
-    task_dir = tmp_path / "tasks" / TASK_ID
-    events = task_dir / "events"
-    events.mkdir(parents=True)
-    (events / "EVT-01K0W4Z36K3W5C2R0A3M8N9P81.json").write_text(
-        json.dumps(_task_event()), encoding="utf-8"
-    )
+    task_id = _signed_task(tmp_path)
+    task_dir = tmp_path / "tasks" / task_id
+    (task_dir / "task.yaml").unlink()
     scope = task_dir / "scope-contract.yaml"
-    scope.write_text("status: approved\nallowed_paths:\n  - src/**\n", encoding="utf-8")
+    expected_scope = load_data(scope)
+    scope.unlink()
     risk = task_dir / "risk-acceptance.json"
     risk.write_text('{"status":"active"}\n', encoding="utf-8")
     approval = task_dir / "approvals" / "APR.json"
@@ -121,7 +151,7 @@ def test_repair_safe_only_repairs_derived_or_temporary_state(tmp_path):
         ),
         encoding="utf-8",
     )
-    protected = {path: path.read_bytes() for path in (scope, risk, approval)}
+    protected = {path: path.read_bytes() for path in (risk, approval)}
 
     preview = repair_safe(tmp_path)
 
@@ -136,6 +166,7 @@ def test_repair_safe_only_repairs_derived_or_temporary_state(tmp_path):
     assert arbitrary.exists()
     assert lookalike.exists()
     assert (task_dir / "task.yaml").is_file()
+    assert load_data(scope) == expected_scope
     assert (tmp_path / "tasks" / "INDEX.generated.json").is_file()
     assert {path: path.read_bytes() for path in protected} == protected
 
@@ -181,6 +212,21 @@ def test_repair_safe_rejects_non_replayable_event_inputs(tmp_path):
     assert caught.value.code == "DOCTOR_REPLAY_INPUT_INVALID"
 
 
+def test_repair_safe_rejects_unsigned_modern_event_stream(tmp_path: Path) -> None:
+    task_dir = tmp_path / "tasks" / TASK_ID
+    events = task_dir / "events"
+    events.mkdir(parents=True)
+    event = _task_event()
+    event["actor"] = {"id": "tester", "kind": "human"}
+    (events / f"{event['event_id']}.json").write_text(json.dumps(event), encoding="utf-8")
+
+    with pytest.raises(MacError) as caught:
+        repair_safe(tmp_path)
+
+    assert caught.value.code == "DOCTOR_REPLAY_INPUT_INVALID"
+    assert (caught.value.issue.details or {})["cause"] == "EVENT_AUTHORITY_MISSING"
+
+
 def test_repair_safe_rejects_event_replacement_during_plan_capture(tmp_path, monkeypatch):
     task_dir = tmp_path / "tasks" / TASK_ID
     events = task_dir / "events"
@@ -210,37 +256,51 @@ def test_repair_safe_rejects_event_replacement_during_plan_capture(tmp_path, mon
 
 
 def test_repair_safe_restores_scope_contract_and_history_from_events(tmp_path: Path) -> None:
-    task_dir = tmp_path / "tasks" / TASK_ID
-    events = task_dir / "events"
-    events.mkdir(parents=True)
-    task_event = _task_event()
-    (events / str(task_event["event_id"])).with_suffix(".json").write_text(
-        json.dumps(task_event), encoding="utf-8"
+    task_id = _signed_task(tmp_path)
+    task_dir = tmp_path / "tasks" / task_id
+    scope_approve(
+        task_id,
+        expected_revision=0,
+        idempotency_key="doctor-scope-v1",
+        actor="governance-owner",
+        independence_level="L1",
+        repo=tmp_path,
+        json_output=True,
     )
-    base = {
-        "schema_version": 1,
-        "id": "SCOPE-01K0W4Z36K3W5C2R0A3M8N9P7R",
-        "task_id": TASK_ID,
-        "version": 1,
-        "status": "approved",
-    }
-    amended = {**base, "version": 2, "status": "proposed"}
-    approved = {**amended, "status": "approved"}
-    scope_events = [
-        _scope_event(1, base, event_type="scope_approved"),
-        _scope_event(2, amended, event_type="scope_proposed"),
-        _scope_event(3, approved, event_type="scope_approved"),
-    ]
-    for scope_event in scope_events:
-        (events / f"{scope_event['event_id']}.json").write_text(json.dumps(scope_event), encoding="utf-8")
+    scope_amend(
+        task_id,
+        add=["tests/**"],
+        add_operation=[],
+        expected_revision=1,
+        idempotency_key="doctor-scope-amend",
+        actor="proposer",
+        approver=["governance-owner"],
+        risk_tag=[],
+        independent=False,
+        repo=tmp_path,
+        json_output=True,
+    )
+    scope_approve(
+        task_id,
+        expected_revision=2,
+        idempotency_key="doctor-scope-v2",
+        actor="governance-owner",
+        independence_level="L1",
+        repo=tmp_path,
+        json_output=True,
+    )
+    scope_path = task_dir / "scope-contract.yaml"
+    history_path = task_dir / "scope-history" / "scope-contract.v1.yaml"
+    approved = load_data(scope_path)
+    base = load_data(history_path)
+    scope_path.unlink()
+    history_path.unlink()
 
     preview = repair_safe(tmp_path)
 
-    assert f"tasks/{TASK_ID}/scope-contract.yaml" in preview.projections
-    assert f"tasks/{TASK_ID}/scope-history/scope-contract.v1.yaml" in preview.projections
+    assert f"tasks/{task_id}/scope-contract.yaml" in preview.projections
+    assert f"tasks/{task_id}/scope-history/scope-contract.v1.yaml" in preview.projections
     repair_safe(tmp_path, apply=True, expected_plan_digest=preview.plan_digest)
-
-    from mac.io import load_data
 
     assert load_data(task_dir / "scope-contract.yaml") == approved
     assert load_data(task_dir / "scope-history" / "scope-contract.v1.yaml") == base

@@ -200,9 +200,16 @@ class GitRepository:
             ]
         return changes
 
-    def changes_since(self, base: str | None, *, head: str = "HEAD", task_id: str | None = None) -> list[Change]:
+    def changes_since(
+        self,
+        base: str | None,
+        *,
+        head: str = "HEAD",
+        task_id: str | None = None,
+        include_workspace: bool = True,
+    ) -> list[Change]:
         committed = self.diff_changes(base, head) if base else []
-        current = self.workspace_changes(task_id=task_id)
+        current = self.workspace_changes(task_id=task_id) if include_workspace else []
         combined: dict[tuple[str | None, str, str | None, str | None], Change] = {}
         for change in [*committed, *current]:
             if task_id and is_task_governance_metadata(change.path, task_id) and not (change.old_path and not is_task_governance_metadata(change.old_path, task_id)):
@@ -278,13 +285,25 @@ class GitRepository:
             filtered_entries.append((mode, object_id, path))
         return _digest([b"".join(index_rows), self._lfs_manifest_from_entries(filtered_entries)])
 
-    def review_diff_digest(self, base: str | None, *, head: str = "HEAD", task_id: str | None = None) -> str:
+    def review_diff_digest(
+        self,
+        base: str | None,
+        *,
+        head: str = "HEAD",
+        task_id: str | None = None,
+        include_workspace: bool = True,
+    ) -> str:
         pathspecs: tuple[str, ...] = ()
         if task_id:
             pathspecs = (".", *(f":(exclude){pattern}" for pattern in task_governance_metadata_patterns(task_id)))
         path_args = ("--", *pathspecs) if pathspecs else ()
         committed = self._as_bytes(self._run("diff", "--binary", base, head, *path_args)) if base else b""
-        current = self._as_bytes(self._run("diff", "--binary", *path_args)) + self._as_bytes(self._run("diff", "--cached", "--binary", *path_args))
+        current = (
+            self._as_bytes(self._run("diff", "--binary", *path_args))
+            + self._as_bytes(self._run("diff", "--cached", "--binary", *path_args))
+            if include_workspace
+            else b""
+        )
         return _digest([committed, current])
 
     def _expected_source_diff_digest(

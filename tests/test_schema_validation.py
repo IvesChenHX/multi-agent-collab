@@ -130,7 +130,9 @@ def test_explicit_schema_set_fails_closed_on_semantic_lock_drift(tmp_path: Path)
     schema = schemas / "task.schema.json"
     canonical = schema.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
     schema.write_bytes(canonical.replace(b"\n", b"\r\n"))
-    SchemaSet(schemas)
+    first = SchemaSet(schemas)
+    second = SchemaSet(schemas)
+    assert second.validators is first.validators
     schema.write_text(schema.read_text(encoding="utf-8") + " ", encoding="utf-8", newline="\n")
 
     with pytest.raises(ValueError, match="schema lock mismatch"):

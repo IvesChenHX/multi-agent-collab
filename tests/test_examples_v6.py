@@ -21,7 +21,7 @@ def _entities(directory: str, suffix: str) -> dict[str, dict[str, object]]:
     }
 
 
-def test_tracked_example_replays_without_seed_and_rebuilds_every_entity_snapshot() -> None:
+def test_tracked_example_replays_structurally_but_is_not_full_integrity_evidence() -> None:
     task = load_data(TASK_DIR / "task.yaml")
     events = [load_data(path) for path in sorted((TASK_DIR / "events").glob("*.json"))]
 
@@ -31,7 +31,8 @@ def test_tracked_example_replays_without_seed_and_rebuilds_every_entity_snapshot
     for directory in ("runs", "results", "evidence", "findings", "approvals"):
         assert snapshots[directory] == _entities(directory, ".json")
     assert snapshots["risk-acceptances"] == {}
-    assert validate_task_invariants(EXAMPLE_ROOT, TASK_DIR) == []
+    issues = validate_task_invariants(EXAMPLE_ROOT, TASK_DIR)
+    assert [issue.code for issue in issues] == ["EVENT_AUTHORITY_MISSING"]
 
 
 def test_tracked_example_entities_conform_to_the_executable_schemas() -> None:

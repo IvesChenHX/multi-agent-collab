@@ -82,6 +82,17 @@ def test_scope_snapshots_replay_current_and_version_history() -> None:
     assert history == {1: approved_v1}
 
 
+def test_scope_snapshot_replays_from_task_creation_event() -> None:
+    scope = {"id": "SCOPE-1", "task_id": "TASK-1", "version": 1, "status": "proposed"}
+    created = deepcopy(initial())
+    created["payload"]["scope"] = scope
+
+    current, history = replay_scope_snapshots([created])
+
+    assert current == scope
+    assert history == {}
+
+
 def test_scope_replay_rejects_version_rollback_and_identity_change() -> None:
     scope_v2 = {"id": "SCOPE-1", "task_id": "TASK-1", "version": 2, "status": "approved"}
     rolled_back = {**scope_v2, "version": 1}

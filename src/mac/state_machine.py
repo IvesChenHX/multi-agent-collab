@@ -108,6 +108,7 @@ class TransitionContext:
     controller_lease_valid: bool = False
     work_unit_dependencies_complete: bool = False
     current_subject_digest: bool = False
+    current_subject: dict[str, str] | None = None
     close_findings_clean: bool = False
     close_actor_authorized: bool = False
     blocking_findings_exist: bool = False

@@ -152,6 +152,12 @@ def check_changes(
     deny_spec = GitIgnoreSpec.from_lines(contract.get("denied_paths", []))
     resolver = OwnershipResolver(ownership) if ownership else None
     contract_owners = set(str(value) for value in contract.get("owners", []))
+    raw_allowed_operations = contract.get("allowed_operations")
+    allowed_operations = (
+        {str(value) for value in raw_allowed_operations}
+        if isinstance(raw_allowed_operations, list)
+        else {"read", "write"}
+    )
     allowed: list[str] = []
     normalized_changes: list[Change] = []
     root = repo_root.resolve() if repo_root else None
@@ -216,6 +222,21 @@ def check_changes(
                     issues.append(MacIssue("SCOPE_OWNER_OUTSIDE", f"owner {match.owners[0]} is not approved by scope", path))
         if normalized:
             normalized_changes.append(Change(change.operation, normalized[-1], normalized[0] if change.old_path and len(normalized) > 1 else None, change.submodule, change.display_path, change.old_display_path))
+            required_operations = {
+                "add": (("write", normalized[-1]),),
+                "modify": (("write", normalized[-1]),),
+                "copy": (("read", normalized[0]), ("write", normalized[-1])),
+                "rename": (("delete", normalized[0]), ("write", normalized[-1])),
+                "delete": (("delete", normalized[-1]),),
+            }.get(change.operation, ((change.operation, normalized[-1]),))
+            for required_operation, operation_path in required_operations:
+                if required_operation not in allowed_operations:
+                    issues.append(MacIssue(
+                        "SCOPE_OPERATION_DENIED",
+                        f"change operation {change.operation!r} requires Scope operation {required_operation!r}",
+                        operation_path,
+                        details={"operation": change.operation, "required_operation": required_operation},
+                    ))
         if change.operation == "rename" and len(normalized) == 2 and resolver:
             old_owner, new_owner = resolver.resolve(normalized[0]), resolver.resolve(normalized[1])
             if old_owner.status == new_owner.status == "resolved" and old_owner.owners != new_owner.owners:
@@ -230,6 +251,7 @@ def check_paths(changed_paths: list[str], contract: dict[str, Any], *, repo_root
 def amend_scope(
     contract: dict[str, Any], *, add_paths: list[str], actor: str, approvers: list[str],
     added_risk_tags: list[str] | None = None, independent_approval: bool = False,
+    add_operations: list[str] | None = None,
 ) -> dict[str, Any]:
     policy = contract.get("amendment_policy", {})
     amendment_count = max(0, int(contract.get("version", 1)) - 1)
@@ -241,6 +263,15 @@ def amend_scope(
     if pattern_issues:
         raise ValueError(pattern_issues[0].message)
     risk_tags = set(str(value) for value in contract.get("risk_tags", [])) | set(added_risk_tags or [])
+    operations = list(dict.fromkeys([
+        *[str(value) for value in contract.get("allowed_operations", [])],
+        *[str(value) for value in (add_operations or [])],
+    ]))
+    supported_operations = {
+        "read", "write", "delete", "execute_tests", "generate_artifacts", "network", "use_secrets",
+    }
+    if not operations or any(value not in supported_operations for value in operations):
+        raise ValueError("scope amendment contains an unsupported operation")
     result = {**contract}
     result["id"] = contract["id"].split("-")[0] + "-" + contract["id"].split("-", 1)[1]
     result["version"] = int(contract["version"]) + 1
@@ -248,5 +279,6 @@ def amend_scope(
     result["proposed_by"] = actor
     result["approved_by"] = []
     result["allowed_paths"] = list(dict.fromkeys([*contract.get("allowed_paths", []), *add_paths]))
+    result["allowed_operations"] = operations
     result["risk_tags"] = sorted(risk_tags)
     return result

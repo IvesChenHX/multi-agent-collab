@@ -1,19 +1,48 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from mac.application.task_service import TaskService
-from mac.authority import AuthorityDecision, trusted_authority_verifier
-from mac.cli import init_command, scope_approve
+from mac.cli import init_command, scope_amend, scope_approve, task_transition
 from mac.errors import MacError
 from mac.git import GitRepository
 from mac.io import atomic_write_yaml, load_data
-from mac.repository import FilesystemTaskRepository, utc_now
+from mac.repository import AppendEvent, FilesystemTaskRepository, MutationGateway, utc_now
 from mac.result import ResultIntakeProof, ResultService
+from tests.security.test_authority_commands import configure_test_authority
+
+
+@pytest.fixture(autouse=True)
+def _host_authority_broker(monkeypatch: pytest.MonkeyPatch) -> None:
+    configure_test_authority(monkeypatch)
+
+
+def _assert_store_timestamped_result(
+    root: Path,
+    submitted: dict[str, object],
+    original: dict[str, object],
+) -> None:
+    assert {key: value for key, value in submitted.items() if key != "submitted_at"} == {
+        key: value for key, value in original.items() if key != "submitted_at"
+    }
+    repository = FilesystemTaskRepository(root)
+    event = next(
+        event
+        for event in reversed(repository.list_events(str(submitted["task_id"])))
+        if event.get("event_type") == "result_submitted"
+    )
+    assert submitted["submitted_at"] == event["occurred_at"]
+    task_dir = repository.task_dir(str(submitted["task_id"]))
+    stored_result = load_data(task_dir / "results" / f"{submitted['id']}.json")
+    stored_run = load_data(task_dir / "runs" / f"{submitted['run_id']}.json")
+    assert stored_result["submitted_at"] == event["occurred_at"]
+    assert stored_run["finished_at"] == event["occurred_at"]
 
 
 def _proof() -> ResultIntakeProof:
@@ -57,29 +86,25 @@ def _git(root: Path, *argv: str, input_text: str | None = None) -> str:
     return completed.stdout.strip()
 
 
-class _ScopeApprovalVerifier:
-    def __init__(self, independence_level: str) -> None:
-        self.independence_level = independence_level
-
-    def authorize(
-        self, *, actor_claim: dict[str, object], operation: str, task_id: str | None,
-    ) -> AuthorityDecision:
-        return AuthorityDecision(
-            allowed=True,
-            actor_id=str(actor_claim["id"]),
-            actor_kind=str(actor_claim["kind"]),
-            operation=operation,
-            task_id=task_id,
-            authenticated=True,
-            issuer="test-result-intake",
-            independence_level=self.independence_level,
-            attestation_id=f"test-{operation}-{task_id}",
-        )
-
-
 def _scope_approve_with_authority(*, independence_level: str, **kwargs: object) -> None:
-    with trusted_authority_verifier(_ScopeApprovalVerifier(independence_level)):
+    with patch.dict(os.environ, {"MAC_AUTHORITY_BROKER_CONTEXT_TEST_INDEPENDENCE": independence_level}):
         scope_approve(independence_level=independence_level, **kwargs)
+
+
+def _transition_task_ready(root: Path, task_id: str, expected_revision: int) -> int:
+    task_transition(
+        task_id=task_id,
+        target="ready",
+        expected_revision=expected_revision,
+        idempotency_key=f"ready-{task_id}",
+        actor="controller",
+        condition=[],
+        fact_id=None,
+        reason=None,
+        repo=root,
+        json_output=True,
+    )
+    return expected_revision + 1
 
 
 def _run_bound_result_case(
@@ -136,25 +161,27 @@ def _run_bound_result_case(
         "independence_level": "L1",
         "recorded_at": utc_now(),
     }
-    repository.append_event(
-        task_id,
-        "scope_approved",
-        {
+    MutationGateway(root, repository=repository).execute(AppendEvent(
+        task_id=task_id,
+        event_type="scope_approved",
+        payload={
             "scope_id": scope["id"],
             "version": scope["version"],
             "approval_id": approval_id,
             "approval": approval,
             "scope": scope,
         },
-        actor={"id": "backend-owner", "kind": "human"},
+        actor_claim={"id": "backend-owner", "kind": "human"},
         expected_revision=0,
         idempotency_key="approve-run-bound",
-        materializations=[
+        operation="scope.approve",
+        materializations=(
             (task_dir / "approvals" / f"{approval_id}.json", approval),
             (scope_path, scope),
-        ],
-        replace_existing={scope_path},
-    )
+        ),
+        replace_existing=frozenset({scope_path}),
+    ))
+    _transition_task_ready(root, task_id, 1)
 
     if execution_kind == "worktree":
         _git(root, "worktree", "add", "-q", "-b", "codex/run-bound", str(execution_root), "HEAD")
@@ -187,18 +214,43 @@ def _run_bound_result_case(
     work_unit_id = "WU-01K0W4Z36K3W5C2R0A3M8N9P8H"
     run_id = "RUN-01K0W4Z36K3W5C2R0A3M8N9P8J"
     result_id = "RESULT-01K0W4Z36K3W5C2R0A3M8N9P8K"
-    work_unit = {
+    pending_work_unit = {
         "schema_version": 1,
         "id": work_unit_id,
         "task_id": task_id,
         "title": "change src",
-        "status": "running",
+        "status": "pending",
         "owner": "backend",
         "allowed_paths": ["src/**"],
         "depends_on": [],
         "acceptance_criteria": [],
         "expected_result": f"tasks/{task_id}/results/{result_id}.json",
     }
+    work_unit_path = task_dir / "work-units" / f"{work_unit_id}.yaml"
+    gateway = MutationGateway(root, repository=repository)
+    gateway.execute(AppendEvent(
+        task_id=task_id,
+        event_type="work_unit_created",
+        payload={"work_unit_id": work_unit_id, "work_unit": pending_work_unit},
+        actor_claim={"id": "controller", "kind": "agent"},
+        expected_revision=2,
+        idempotency_key="create-run-bound-work-unit",
+        operation="work_unit.create",
+        materializations=((work_unit_path, pending_work_unit),),
+    ))
+    ready_work_unit = {**pending_work_unit, "status": "ready"}
+    gateway.execute(AppendEvent(
+        task_id=task_id,
+        event_type="work_unit_created",
+        payload={"work_unit_id": work_unit_id, "work_unit": ready_work_unit},
+        actor_claim={"id": "controller", "kind": "agent"},
+        expected_revision=3,
+        idempotency_key="ready-run-bound-work-unit",
+        operation="work_unit.ready",
+        materializations=((work_unit_path, ready_work_unit),),
+        replace_existing=frozenset({work_unit_path}),
+    ))
+    work_unit = {**ready_work_unit, "status": "running"}
     run = {
         "schema_version": 1,
         "id": run_id,
@@ -213,30 +265,33 @@ def _run_bound_result_case(
             "branch": branch,
         },
         "independence_level": "L0",
-        "started_at": "2026-07-20T00:00:00Z",
+        "started_at": "2026-07-01T00:00:00Z",
         "finished_at": None,
         "exit_code": None,
     }
-    repository.append_event(
-        task_id,
-        "run_started",
-        {
+    run_payload = {
             "run_id": run_id,
             "work_unit_id": work_unit_id,
             "work_unit": work_unit,
             "run": run,
             "baseline_subject": baseline,
             "worktree_identity": identity,
-        },
-        actor={"id": "executor", "kind": "agent"},
-        expected_revision=1,
+    }
+    gateway.execute(AppendEvent(
+        task_id=task_id,
+        event_type="run_started",
+        payload=run_payload,
+        actor_claim={"id": "executor", "kind": "agent"},
+        expected_revision=4,
         idempotency_key="run-bound-start",
+        operation="run.register",
         run_id=run_id,
-        materializations=[
-            (task_dir / "work-units" / f"{work_unit_id}.yaml", work_unit),
+        materializations=(
+            (work_unit_path, work_unit),
             (task_dir / "runs" / f"{run_id}.json", run),
-        ],
-    )
+        ),
+        replace_existing=frozenset({work_unit_path}),
+    ))
 
     (execution_root / "src").mkdir(exist_ok=True)
     (execution_root / "src/app.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -297,59 +352,131 @@ def test_result_accepts_linked_worktree_from_same_repository(
     submitted = ResultService(task_root).submit(
         task_id,
         result,
-        expected_revision=2,
+        expected_revision=5,
         idempotency_key="submit-linked-worktree",
         actor={"id": "executor", "kind": "agent"},
         intake_proof=proof,
     )
 
-    assert submitted == result
+    _assert_store_timestamped_result(task_root, submitted, result)
 
 
-def test_result_rejects_self_consistent_proof_from_external_repository(
+def test_result_store_time_replaces_a_caller_reported_future_timestamp(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    task_root = tmp_path_factory.mktemp("ri-store-time")
+    run_root = task_root.parent / "linked store-time worktree"
+    task_id, result, proof = _run_bound_result_case(
+        task_root,
+        run_root,
+        execution_kind="worktree",
+    )
+    result["submitted_at"] = "2099-01-01T00:00:00Z"
+
+    submitted = ResultService(task_root).submit(
+        task_id,
+        result,
+        expected_revision=5,
+        idempotency_key="submit-store-time",
+        actor={"id": "executor", "kind": "agent"},
+        intake_proof=proof,
+    )
+    replayed = ResultService(task_root).submit(
+        task_id,
+        result,
+        expected_revision=5,
+        idempotency_key="submit-store-time",
+        actor={"id": "executor", "kind": "agent"},
+        intake_proof=proof,
+    )
+
+    assert submitted["submitted_at"] != result["submitted_at"]
+    assert replayed == submitted
+    _assert_store_timestamped_result(task_root, submitted, result)
+
+
+def test_result_retry_requires_the_exact_authorized_payload(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    task_root = tmp_path_factory.mktemp("ri-replay")
+    run_root = task_root.parent / "linked replay worktree"
+    task_id, result, proof = _run_bound_result_case(
+        task_root,
+        run_root,
+        execution_kind="worktree",
+    )
+    service = ResultService(task_root)
+    first = service.submit(
+        task_id,
+        result,
+        expected_revision=5,
+        idempotency_key="submit-result-replay",
+        actor={"id": "executor", "kind": "agent"},
+        intake_proof=proof,
+    )
+    retry = service.submit(
+        task_id,
+        result,
+        expected_revision=5,
+        idempotency_key="submit-result-replay",
+        actor={"id": "executor", "kind": "agent"},
+        intake_proof=proof,
+    )
+    assert retry == first
+
+    with pytest.raises(MacError) as caught:
+        service.submit(
+            task_id,
+            {**result, "summary": "different payload"},
+            expected_revision=5,
+            idempotency_key="submit-result-replay",
+            actor={"id": "executor", "kind": "agent"},
+            intake_proof=proof,
+        )
+    assert caught.value.code == "MUTATION_IDEMPOTENCY_CONFLICT"
+    events = FilesystemTaskRepository(task_root).list_events(task_id)
+    assert sum(event.get("event_type") == "result_submitted" for event in events) == 1
+
+
+def test_run_registration_rejects_self_consistent_external_repository(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     task_root = tmp_path_factory.mktemp("re")
     run_root = task_root.parent / "external clone"
-    task_id, result, proof = _run_bound_result_case(
-        task_root, run_root, execution_kind="external"
-    )
-
-    assert not GitRepository(task_root).shares_storage_with(GitRepository(run_root))
-
     with pytest.raises(MacError) as caught:
-        ResultService(task_root).submit(
-            task_id,
-            result,
-            expected_revision=2,
-            idempotency_key="submit-external-clone",
-            actor={"id": "executor", "kind": "agent"},
-            intake_proof=proof,
+        _run_bound_result_case(
+            task_root, run_root, execution_kind="external"
         )
 
-    assert caught.value.code == "RESULT_RUN_REPOSITORY_MISMATCH"
+    assert caught.value.code == "MUTATION_RUN_REPOSITORY_INVALID"
 
 
-def test_result_rejects_run_baseline_outside_approved_base_history(
+def test_run_registration_rejects_external_repository_before_result_proof(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    task_root = tmp_path_factory.mktemp("ri-no-proof")
+    run_root = task_root.parent / "external no proof"
+    with pytest.raises(MacError) as caught:
+        _run_bound_result_case(
+            task_root,
+            run_root,
+            execution_kind="external",
+        )
+
+    assert caught.value.code == "MUTATION_RUN_REPOSITORY_INVALID"
+
+
+def test_run_registration_rejects_baseline_outside_approved_base_history(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     task_root = tmp_path_factory.mktemp("rb")
     run_root = task_root.parent / "unrelated worktree"
-    task_id, result, proof = _run_bound_result_case(
-        task_root, run_root, execution_kind="unrelated-worktree"
-    )
-
     with pytest.raises(MacError) as caught:
-        ResultService(task_root).submit(
-            task_id,
-            result,
-            expected_revision=2,
-            idempotency_key="submit-unrelated-worktree",
-            actor={"id": "executor", "kind": "agent"},
-            intake_proof=proof,
+        _run_bound_result_case(
+            task_root, run_root, execution_kind="unrelated-worktree"
         )
 
-    assert caught.value.code == "RESULT_RUN_BASELINE_INVALID"
+    assert caught.value.code == "MUTATION_RUN_REPOSITORY_INVALID"
 
 
 def _multi_owner_result_case(root: Path, *, work_unit_owner: str) -> tuple[str, dict[str, object]]:
@@ -400,22 +527,48 @@ def _multi_owner_result_case(root: Path, *, work_unit_owner: str) -> tuple[str, 
         repo=root,
         json_output=True,
     )
+    _transition_task_ready(root, task_id, 1)
     task_dir = FilesystemTaskRepository(root).task_dir(task_id)
     work_unit_id = "WU-01K0W4Z36K3W5C2R0A3M8N9P8A"
     run_id = "RUN-01K0W4Z36K3W5C2R0A3M8N9P8B"
     result_id = "RESULT-01K0W4Z36K3W5C2R0A3M8N9P8C"
-    work_unit = {
+    pending_work_unit = {
         "schema_version": 1,
         "id": work_unit_id,
         "task_id": task_id,
         "title": "implementation and tests",
-        "status": "running",
+        "status": "pending",
         "owner": work_unit_owner,
         "allowed_paths": ["src/**", "tests/**"],
         "depends_on": [],
         "acceptance_criteria": [],
         "expected_result": f"tasks/{task_id}/results/{result_id}.json",
     }
+    work_unit_path = task_dir / "work-units" / f"{work_unit_id}.yaml"
+    gateway = MutationGateway(root)
+    gateway.execute(AppendEvent(
+        task_id=task_id,
+        event_type="work_unit_created",
+        payload={"work_unit_id": work_unit_id, "work_unit": pending_work_unit},
+        actor_claim={"id": "controller", "kind": "agent"},
+        expected_revision=2,
+        idempotency_key="create-multi-owner-work-unit",
+        operation="work_unit.create",
+        materializations=((work_unit_path, pending_work_unit),),
+    ))
+    ready_work_unit = {**pending_work_unit, "status": "ready"}
+    gateway.execute(AppendEvent(
+        task_id=task_id,
+        event_type="work_unit_created",
+        payload={"work_unit_id": work_unit_id, "work_unit": ready_work_unit},
+        actor_claim={"id": "controller", "kind": "agent"},
+        expected_revision=3,
+        idempotency_key="ready-multi-owner-work-unit",
+        operation="work_unit.ready",
+        materializations=((work_unit_path, ready_work_unit),),
+        replace_existing=frozenset({work_unit_path}),
+    ))
+    work_unit = {**ready_work_unit, "status": "running"}
     run = {
         "schema_version": 1,
         "id": run_id,
@@ -425,23 +578,25 @@ def _multi_owner_result_case(root: Path, *, work_unit_owner: str) -> tuple[str, 
         "actor": {"id": "executor", "kind": "agent"},
         "runtime": {"profile": "local-single", "execution_context_id": "result-intake"},
         "independence_level": "L0",
-        "started_at": "2026-07-20T00:00:00Z",
+        "started_at": "2026-07-01T00:00:00Z",
         "finished_at": None,
         "exit_code": None,
     }
-    FilesystemTaskRepository(root).append_event(
-        task_id,
-        "run_started",
-        {"run_id": run_id, "work_unit_id": work_unit_id, "work_unit": work_unit, "run": run},
-        actor={"id": "executor", "kind": "agent"},
-        expected_revision=1,
+    gateway.execute(AppendEvent(
+        task_id=task_id,
+        event_type="run_started",
+        payload={"run_id": run_id, "work_unit_id": work_unit_id, "work_unit": work_unit, "run": run},
+        actor_claim={"id": "executor", "kind": "agent"},
+        expected_revision=4,
         idempotency_key="run-multi-owner",
+        operation="run.register",
         run_id=run_id,
-        materializations=[
-            (task_dir / "work-units" / f"{work_unit_id}.yaml", work_unit),
+        materializations=(
+            (work_unit_path, work_unit),
             (task_dir / "runs" / f"{run_id}.json", run),
-        ],
-    )
+        ),
+        replace_existing=frozenset({work_unit_path}),
+    ))
     (root / "src").mkdir()
     (root / "tests").mkdir()
     (root / "src/app.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -467,27 +622,19 @@ def test_result_uses_task_scope_path_owners_for_multi_owner_work_unit(tmp_path: 
     submitted = ResultService(tmp_path).submit(
         task_id,
         result,
-        expected_revision=2,
+        expected_revision=5,
         idempotency_key="submit-multi-owner",
         actor={"id": "executor", "kind": "agent"},
     )
 
-    assert submitted == result
+    _assert_store_timestamped_result(tmp_path, submitted, result)
 
 
 def test_result_rejects_work_unit_owner_outside_task_scope(tmp_path: Path) -> None:
-    task_id, result = _multi_owner_result_case(tmp_path, work_unit_owner="security")
-
     with pytest.raises(MacError) as caught:
-        ResultService(tmp_path).submit(
-            task_id,
-            result,
-            expected_revision=2,
-            idempotency_key="submit-owner-outside",
-            actor={"id": "executor", "kind": "agent"},
-        )
+        _multi_owner_result_case(tmp_path, work_unit_owner="security")
 
-    assert caught.value.code == "RESULT_WORK_UNIT_OWNER_OUTSIDE"
+    assert caught.value.code == "MUTATION_WORK_UNIT_STATE_INVALID"
 
 
 def _governance_result_case(root: Path, *, approval_level: str | None) -> tuple[str, dict[str, object], int]:
@@ -519,70 +666,61 @@ def _governance_result_case(root: Path, *, approval_level: str | None) -> tuple[
     repository = FilesystemTaskRepository(root)
     task_dir = repository.task_dir(task_id)
     revision = 0
-    if approval_level == "L2":
+    if approval_level is not None:
         _scope_approve_with_authority(
             task_id=task_id,
             expected_revision=revision,
             idempotency_key="approve-governance-result",
             actor="governance-owner",
-            independence_level="L2",
+            independence_level=approval_level,
             repo=root,
             json_output=True,
         )
         revision += 1
-    elif approval_level == "L0":
-        scope_path = task_dir / "scope-contract.yaml"
-        scope = dict(load_data(scope_path))
-        scope["status"] = "approved"
-        scope["approved_by"] = ["governance-owner"]
-        approval_id = "APR-01K0W4Z36K3W5C2R0A3M8N9P8D"
-        approval = {
-            "schema_version": 1,
-            "id": approval_id,
-            "task_id": task_id,
-            "kind": "scope",
-            "actor": {"id": "governance-owner", "kind": "human"},
-            "decision": "approved",
-            "subject_ref": str(created["task"]["scope_contract_ref"]),
-            "independence_level": "L0",
-            "recorded_at": utc_now(),
-        }
-        repository.append_event(
-            task_id,
-            "scope_approved",
-            {
-                "scope_id": scope["id"],
-                "version": scope["version"],
-                "approval_id": approval_id,
-                "approval": approval,
-                "scope": scope,
-            },
-            actor={"id": "governance-owner", "kind": "human"},
-            expected_revision=revision,
-            idempotency_key="record-l0-governance-approval",
-            materializations=[
-                (task_dir / "approvals" / f"{approval_id}.json", approval),
-                (scope_path, scope),
-            ],
-            replace_existing={scope_path},
-        )
-        revision += 1
+        revision = _transition_task_ready(root, task_id, revision)
 
     work_unit_id = "WU-01K0W4Z36K3W5C2R0A3M8N9P8E"
     run_id = "RUN-01K0W4Z36K3W5C2R0A3M8N9P8F"
     result_id = "RESULT-01K0W4Z36K3W5C2R0A3M8N9P8G"
-    work_unit = {
+    pending_work_unit = {
         "schema_version": 1,
         "id": work_unit_id,
         "task_id": task_id,
         "title": "governance CI",
-        "status": "running",
+        "status": "pending",
         "owner": "governance",
         "allowed_paths": [".github/workflows/governance-pr.yml"],
         "depends_on": [],
         "acceptance_criteria": [],
         "expected_result": f"tasks/{task_id}/results/{result_id}.json",
     }
+    work_unit_path = task_dir / "work-units" / f"{work_unit_id}.yaml"
+    gateway = MutationGateway(root, repository=repository)
+    gateway.execute(AppendEvent(
+        task_id=task_id,
+        event_type="work_unit_created",
+        payload={"work_unit_id": work_unit_id, "work_unit": pending_work_unit},
+        actor_claim={"id": "controller", "kind": "agent"},
+        expected_revision=revision,
+        idempotency_key="create-governance-work-unit",
+        operation="work_unit.create",
+        materializations=((work_unit_path, pending_work_unit),),
+    ))
+    revision += 1
+    ready_work_unit = {**pending_work_unit, "status": "ready"}
+    gateway.execute(AppendEvent(
+        task_id=task_id,
+        event_type="work_unit_created",
+        payload={"work_unit_id": work_unit_id, "work_unit": ready_work_unit},
+        actor_claim={"id": "controller", "kind": "agent"},
+        expected_revision=revision,
+        idempotency_key="ready-governance-work-unit",
+        operation="work_unit.ready",
+        materializations=((work_unit_path, ready_work_unit),),
+        replace_existing=frozenset({work_unit_path}),
+    ))
+    revision += 1
+    work_unit = {**ready_work_unit, "status": "running"}
     run = {
         "schema_version": 1,
         "id": run_id,
@@ -592,23 +730,25 @@ def _governance_result_case(root: Path, *, approval_level: str | None) -> tuple[
         "actor": {"id": "executor", "kind": "agent"},
         "runtime": {"profile": "local-single", "execution_context_id": "governance-result"},
         "independence_level": "L0",
-        "started_at": "2026-07-20T00:00:00Z",
+        "started_at": "2026-07-01T00:00:00Z",
         "finished_at": None,
         "exit_code": None,
     }
-    repository.append_event(
-        task_id,
-        "run_started",
-        {"run_id": run_id, "work_unit_id": work_unit_id, "work_unit": work_unit, "run": run},
-        actor={"id": "executor", "kind": "agent"},
+    gateway.execute(AppendEvent(
+        task_id=task_id,
+        event_type="run_started",
+        payload={"run_id": run_id, "work_unit_id": work_unit_id, "work_unit": work_unit, "run": run},
+        actor_claim={"id": "executor", "kind": "agent"},
         expected_revision=revision,
         idempotency_key="run-governance-result",
+        operation="run.register",
         run_id=run_id,
-        materializations=[
-            (task_dir / "work-units" / f"{work_unit_id}.yaml", work_unit),
+        materializations=(
+            (work_unit_path, work_unit),
             (task_dir / "runs" / f"{run_id}.json", run),
-        ],
-    )
+        ),
+        replace_existing=frozenset({work_unit_path}),
+    ))
     revision += 1
     workflow = root / ".github/workflows/governance-pr.yml"
     workflow.parent.mkdir(parents=True)
@@ -639,7 +779,39 @@ def test_governance_sensitive_result_accepts_valid_l2_scope_approval(tmp_path: P
         actor={"id": "executor", "kind": "agent"},
     )
 
-    assert submitted == result
+    _assert_store_timestamped_result(tmp_path, submitted, result)
+
+
+def test_result_does_not_reuse_scope_approval_after_amendment(tmp_path: Path) -> None:
+    task_id, result, revision = _governance_result_case(tmp_path, approval_level="L2")
+    scope_amend(
+        task_id=task_id,
+        add=["docs/**"],
+        expected_revision=revision,
+        idempotency_key="amend-governance-result",
+        actor="executor",
+        approver=["governance-owner"],
+        risk_tag=[],
+        independent=False,
+        repo=tmp_path,
+        json_output=True,
+    )
+    revision += 1
+
+    with pytest.raises(MacError) as caught:
+        ResultService(tmp_path).submit(
+            task_id,
+            result,
+            expected_revision=revision,
+            idempotency_key="submit-after-unbound-v2-approval",
+            actor={"id": "executor", "kind": "agent"},
+        )
+
+    issue_codes = {
+        str(issue["code"])
+        for issue in (caught.value.issue.details or {}).get("issues", [])
+    }
+    assert "RESULT_SCOPE_APPROVAL_INVALID" in issue_codes
 
 
 @pytest.mark.parametrize("approval_level", ["L0", None])
@@ -647,20 +819,11 @@ def test_governance_sensitive_result_rejects_insufficient_scope_approval(
     tmp_path: Path,
     approval_level: str | None,
 ) -> None:
-    task_id, result, revision = _governance_result_case(tmp_path, approval_level=approval_level)
-
     with pytest.raises(MacError) as caught:
-        ResultService(tmp_path).submit(
-            task_id,
-            result,
-            expected_revision=revision,
-            idempotency_key="submit-unapproved-governance-result",
-            actor={"id": "executor", "kind": "agent"},
-        )
+        _governance_result_case(tmp_path, approval_level=approval_level)
 
-    assert caught.value.code == "SCOPE_GOVERNANCE_SENSITIVE"
-    issue_codes = {
-        str(issue["code"])
-        for issue in (caught.value.issue.details or {}).get("issues", [])
-    }
-    assert "RESULT_SCOPE_APPROVAL_INVALID" in issue_codes
+    assert caught.value.code == (
+        "ACTOR_AUTHORITY_DENIED"
+        if approval_level == "L0"
+        else "MUTATION_WORK_UNIT_STATE_INVALID"
+    )

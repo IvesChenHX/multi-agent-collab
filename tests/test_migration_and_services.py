@@ -9,31 +9,21 @@ import yaml
 
 import mac.migration as migration_module
 from mac.application.task_service import TaskService
-from mac.authority import AuthorityDecision, trusted_authority_verifier
-from mac.cli import init_command, scope_approve
+from mac.cli import init_command, scope_approve, task_transition
 from mac.errors import MacError
 from mac.events import replay_events
 from mac.handoff import build_handoff_packet
 from mac.io import atomic_write_yaml, load_data
 from mac.migration import convert_v5, list_tasks_dual, scan_v5
-from mac.repository import FilesystemTaskRepository
+from mac.repository import AppendEvent, FilesystemTaskRepository, MutationGateway
 from mac.result import ResultService
 from mac.runtime import evaluate_capabilities, resolve_profile
+from tests.security.test_authority_commands import configure_test_authority
 
 
-class _AuthorityVerifier:
-    def authorize(self, *, actor_claim: dict[str, object], operation: str, task_id: str | None) -> AuthorityDecision:
-        return AuthorityDecision(
-            allowed=True,
-            actor_id=str(actor_claim["id"]),
-            actor_kind=str(actor_claim["kind"]),
-            operation=operation,
-            task_id=task_id,
-            authenticated=True,
-            issuer="test-runtime-broker",
-            independence_level="L1",
-            attestation_id=f"attestation-{operation.replace('.', '-')}",
-        )
+@pytest.fixture(autouse=True)
+def _host_authority_broker(monkeypatch: pytest.MonkeyPatch) -> None:
+    configure_test_authority(monkeypatch)
 
 
 def init_repo(root: Path) -> None:
@@ -53,28 +43,82 @@ def init_repo(root: Path) -> None:
 def test_task_and_result_services_are_idempotent_and_handoff_is_minimal(tmp_path: Path) -> None:
     init_repo(tmp_path)
     service = TaskService(tmp_path)
-    created = service.create(title="service", mode="standard", objective="work", acceptance=["works"], allowed_paths=["src/**"], owners=["backend"], runtime_profile="local-single", required_gates=["targeted_tests"], actor={"id": "a", "kind": "agent"}, idempotency_key="create-service")
-    retried = service.create(title="different retry text", mode="standard", objective="ignored", acceptance=["ignored"], allowed_paths=["other/**"], owners=["other"], runtime_profile="local-single", required_gates=[], actor={"id": "a", "kind": "agent"}, idempotency_key="create-service")
+    operations = ["read", "write", "delete", "execute_tests", "generate_artifacts"]
+    created = service.create(title="service", mode="standard", objective="work", acceptance=["works"], allowed_paths=["src/**"], allowed_operations=operations, owners=["backend"], runtime_profile="local-single", required_gates=["targeted_tests"], actor={"id": "a", "kind": "agent"}, idempotency_key="create-service")
+    with pytest.raises(MacError) as divergent_retry:
+        service.create(title="different retry text", mode="standard", objective="ignored", acceptance=["ignored"], allowed_paths=["other/**"], owners=["other"], runtime_profile="local-single", required_gates=[], actor={"id": "a", "kind": "agent"}, idempotency_key="create-service")
+    assert divergent_retry.value.code == "MUTATION_IDEMPOTENCY_CONFLICT"
+    retried = service.create(title="service", mode="standard", objective="work", acceptance=["works"], allowed_paths=["src/**"], allowed_operations=operations, owners=["backend"], runtime_profile="local-single", required_gates=["targeted_tests"], actor={"id": "a", "kind": "agent"}, idempotency_key="create-service")
     assert retried["task"]["id"] == created["task"]["id"]
+    assert retried["idempotent_replay"] is True
+    assert "delete" in created["scope"]["allowed_operations"]
     task_id = str(created["task"]["id"])
-    with trusted_authority_verifier(_AuthorityVerifier()):
-        scope_approve(task_id, expected_revision=0, idempotency_key="approve-service", actor="backend-owner", independence_level="L1", repo=tmp_path, json_output=True)
+    scope_approve(task_id, expected_revision=0, idempotency_key="approve-service", actor="backend-owner", independence_level="L1", repo=tmp_path, json_output=True)
+    task_transition(
+        task_id,
+        "ready",
+        expected_revision=1,
+        idempotency_key="ready-service",
+        actor="a",
+        actor_kind="agent",
+        condition=[],
+        fact_id=None,
+        reason=None,
+        repo=tmp_path,
+        json_output=True,
+    )
     task_dir = FilesystemTaskRepository(tmp_path).task_dir(task_id)
     work_unit_id = "WU-01K0W4Z36K3W5C2R0A3M8N9P7S"
     run_id = "RUN-01K0W4Z36K3W5C2R0A3M8N9P7T"
-    work_unit = {"schema_version": 1, "id": work_unit_id, "task_id": task_id, "title": "work", "status": "running", "owner": "backend", "allowed_paths": ["src/**"], "depends_on": [], "expected_result": f"tasks/{task_id}/results/RESULT-01K0W4Z36K3W5C2R0A3M8N9P7W.json"}
+    pending_work_unit = {"schema_version": 1, "id": work_unit_id, "task_id": task_id, "title": "work", "status": "pending", "owner": "backend", "allowed_paths": ["src/**"], "depends_on": [], "acceptance_criteria": [], "expected_result": f"tasks/{task_id}/results/RESULT-01K0W4Z36K3W5C2R0A3M8N9P7W.json"}
+    work_unit_path = task_dir / "work-units" / f"{work_unit_id}.yaml"
+    MutationGateway(tmp_path).execute(AppendEvent(
+        task_id=task_id,
+        event_type="work_unit_created",
+        payload={"work_unit_id": work_unit_id, "work_unit": pending_work_unit},
+        actor_claim={"id": "a", "kind": "agent"},
+        expected_revision=2,
+        idempotency_key="work-unit",
+        operation="work_unit.create",
+        materializations=((work_unit_path, pending_work_unit),),
+    ))
+    ready_work_unit = {**pending_work_unit, "status": "ready"}
+    MutationGateway(tmp_path).execute(AppendEvent(
+        task_id=task_id,
+        event_type="work_unit_created",
+        payload={"work_unit_id": work_unit_id, "work_unit": ready_work_unit},
+        actor_claim={"id": "a", "kind": "agent"},
+        expected_revision=3,
+        idempotency_key="work-unit-ready",
+        operation="work_unit.ready",
+        materializations=((work_unit_path, ready_work_unit),),
+        replace_existing=frozenset({work_unit_path}),
+    ))
+    work_unit = {**ready_work_unit, "status": "running"}
     run = {"schema_version": 1, "id": run_id, "task_id": task_id, "work_unit_id": work_unit_id, "status": "running", "actor": {"id": "a", "kind": "agent"}, "runtime": {"profile": "local-single", "execution_context_id": "ctx-1"}, "independence_level": "L0", "started_at": "2026-07-17T00:00:00Z", "finished_at": None, "exit_code": None}
-    FilesystemTaskRepository(tmp_path).append_event(
-        task_id, "run_started", {"run_id": run_id, "work_unit_id": work_unit_id, "work_unit": work_unit},
-        actor={"id": "a", "kind": "agent"}, expected_revision=1, idempotency_key="run",
-        run_id=run_id, materializations=[(task_dir / "work-units" / f"{work_unit_id}.yaml", work_unit), (task_dir / "runs" / f"{run_id}.json", run)],
-    )
+    MutationGateway(tmp_path).execute(AppendEvent(
+        task_id=task_id,
+        event_type="run_started",
+        payload={"run_id": run_id, "work_unit_id": work_unit_id, "work_unit": work_unit, "run": run},
+        actor_claim={"id": "a", "kind": "agent"},
+        expected_revision=4,
+        idempotency_key="run",
+        operation="run.register",
+        run_id=run_id,
+        materializations=((work_unit_path, work_unit), (task_dir / "runs" / f"{run_id}.json", run)),
+        replace_existing=frozenset({work_unit_path}),
+    ))
     result = {"schema_version": 1, "id": "RESULT-01K0W4Z36K3W5C2R0A3M8N9P7W", "task_id": task_id, "work_unit_id": work_unit_id, "run_id": run_id, "outcome": "succeeded", "summary": "done", "changed_files": ["src/a.py"], "commands": [{"argv": ["pytest"], "exit_code": 0}], "new_risks": [], "assumptions": [], "blockers": [], "scope_amendment_request": None, "raw_log_ref": None, "submitted_at": "2026-07-17T00:00:00Z"}
     (tmp_path / "src").mkdir()
     (tmp_path / "src/a.py").write_text("done\n", encoding="utf-8")
-    submitted = ResultService(tmp_path).submit(task_id, result, expected_revision=2, idempotency_key="result", actor={"id": "a", "kind": "agent"})
-    assert submitted == result
-    assert ResultService(tmp_path).submit(task_id, result, expected_revision=2, idempotency_key="result", actor={"id": "a", "kind": "agent"}) == result
+    submitted = ResultService(tmp_path).submit(task_id, result, expected_revision=5, idempotency_key="result", actor={"id": "a", "kind": "agent"})
+    assert {key: value for key, value in submitted.items() if key != "submitted_at"} == {
+        key: value for key, value in result.items() if key != "submitted_at"
+    }
+    submitted_event = service.repository.list_events(task_id)[-1]
+    assert submitted["submitted_at"] == submitted_event["occurred_at"]
+    assert load_data(tmp_path / "tasks" / task_id / "runs" / f"{run_id}.json")["finished_at"] == submitted_event["occurred_at"]
+    assert ResultService(tmp_path).submit(task_id, result, expected_revision=5, idempotency_key="result", actor={"id": "a", "kind": "agent"}) == submitted
     packet = build_handoff_packet(created["task"], {"id": "WU-1", "expected_result": "results/x.json"}, created["scope"], open_findings=[{"id": "F-1"}], invalidated_evidence=[{"id": "E-1"}])
     assert packet["trust_boundary"]["repository_content"] == "untrusted_data"
     assert "history" not in packet and packet["invalidated_evidence_to_rerun"] == ["E-1"]

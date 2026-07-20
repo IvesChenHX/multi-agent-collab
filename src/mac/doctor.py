@@ -18,6 +18,7 @@ from .events import replay_entity_snapshots, replay_events, replay_scope_snapsho
 from .ids import is_identifier
 from .io import atomic_write_json, atomic_write_yaml, load_data, normalize_data
 from .policy import compile_policy
+from .repository import _validate_loaded_event_stream
 from .schema_validation import SchemaSet, schema_lock_issues
 
 
@@ -468,6 +469,12 @@ def _projection_plan(root: Path, task_dir: Path) -> _ProjectionPlan:
                 raise ValueError(f"event identity does not match path: {path.name}")
             events.append(event)
             inputs.append(frozen)
+        events = _validate_loaded_event_stream(
+            root,
+            task_id,
+            events,
+            frozen_policy_cache={},
+        )
         projection = replay_events(events)
         if projection.get("id") != task_id:
             raise ValueError("replayed task identity does not match directory")
