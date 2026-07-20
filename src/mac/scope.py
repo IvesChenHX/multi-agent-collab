@@ -110,10 +110,55 @@ def _is_within(root: Path, target: Path) -> bool:
         return False
 
 
+def _existing_path_collision_issues(root: Path, display_path: str) -> list[MacIssue]:
+    """Compare every raw path segment with existing siblings.
+
+    Checking only the current diff misses a new spelling that collides with a
+    tracked path on case-insensitive or Unicode-normalizing filesystems.  The
+    walk deliberately stays inside the repository and never follows an
+    escaping symlink/junction while enumerating siblings.
+    """
+    issues: list[MacIssue] = []
+    parent = root
+    raw_parts = PurePosixPath(display_path.replace("\\", "/")).parts
+    for index, segment in enumerate(raw_parts):
+        try:
+            resolved_parent = parent.resolve(strict=False)
+        except OSError:
+            break
+        if not _is_within(root, resolved_parent) or not parent.is_dir():
+            break
+        try:
+            sibling_names = [entry.name for entry in parent.iterdir()]
+        except OSError:
+            break
+        normalized_segment = unicodedata.normalize("NFC", segment)
+        for sibling in sibling_names:
+            if sibling == segment:
+                continue
+            normalized_sibling = unicodedata.normalize("NFC", sibling)
+            relative = "/".join((*raw_parts[:index], segment))
+            if normalized_sibling == normalized_segment:
+                issues.append(MacIssue(
+                    "SCOPE_UNICODE_COLLISION",
+                    f"existing path segment {sibling!r} normalizes to {segment!r}",
+                    relative,
+                ))
+            elif normalized_sibling.casefold() == normalized_segment.casefold():
+                issues.append(MacIssue(
+                    "SCOPE_CASE_COLLISION",
+                    f"existing path segment {sibling!r} collides with {segment!r}",
+                    relative,
+                ))
+        parent = parent / segment
+    return issues
+
+
 def check_changes(
     changes: Iterable[Change], contract: dict[str, Any], *, ownership: dict[str, Any] | None = None,
     repo_root: Path | None = None, task_id: str | None = None,
     governance_approval_level: str | None = None, submodule_approved: bool = False,
+    governance_sensitive_patterns: Iterable[str] | None = None,
 ) -> ScopeCheckResult:
     raw_changes = list(changes)
     issues = validate_patterns([*contract.get("allowed_paths", []), *contract.get("denied_paths", [])])
@@ -128,7 +173,7 @@ def check_changes(
     root = repo_root.resolve() if repo_root else None
     path_keys: dict[str, str] = {}
     unicode_keys: dict[str, str] = {}
-    governance_patterns = ["AGENTS.md", ".agents/**", ".github/workflows/*governance*", "schemas/**"]
+    governance_patterns = list(governance_sensitive_patterns or ["AGENTS.md", ".agents/**", ".github/workflows/*governance*", "schemas/**"])
     governance_spec = PathSpec.from_lines("gitwildmatch", governance_patterns)
     for change in raw_changes:
         paths = [change.old_path, change.path] if change.old_path else [change.path]
@@ -159,6 +204,7 @@ def check_changes(
             else:
                 unicode_keys[unicode_key] = display_path
             if root is not None:
+                issues.extend(_existing_path_collision_issues(root, display_path))
                 candidate = root / path
                 if not _is_within(root, candidate.resolve(strict=False)):
                     issues.append(MacIssue("SCOPE_SYMLINK_ESCAPE", "symlink resolves outside repository", path))

@@ -104,6 +104,63 @@
           "minimum": 1
         }
       }
+    },
+    "independence_attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "read_only",
+        "commit_participation"
+      ],
+      "properties": {
+        "read_only": {
+          "type": "boolean"
+        },
+        "commit_participation": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/git_sha"
+          },
+          "uniqueItems": true
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "independence_level": {
+            "enum": ["L2", "L3"]
+          }
+        },
+        "required": ["independence_level"]
+      },
+      "then": {
+        "required": ["independence_attestation"],
+        "properties": {
+          "runtime": {
+            "required": ["profile", "provider", "model", "execution_context_id"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "independence_level": {"const": "L3"}
+        },
+        "required": ["independence_level"]
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "properties": {
+              "kind": {"const": "human"}
+            }
+          }
+        }
+      }
+    }
+  ]
 }

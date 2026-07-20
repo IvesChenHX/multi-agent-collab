@@ -5,10 +5,17 @@ import json
 import pytest
 
 from mac.adapters.runtime import PlainTerminalAdapter, ResultCollectionError
+from mac.schema_validation import install_schema_bundle
+import mac.schema_validation as schema_validation
 
 
 @pytest.fixture
-def runtime_inputs():
+def runtime_inputs(tmp_path, monkeypatch):
+    schema_repo = tmp_path / "locked-schema-fixture"
+    install_schema_bundle(schema_repo)
+    monkeypatch.setattr(
+        schema_validation, "_default_schema_dir", lambda: schema_repo / "schemas"
+    )
     task = {
         "id": "TASK-01K00000000000000000000000",
         "title": "Implement adapter",
@@ -59,6 +66,35 @@ def test_plain_terminal_builds_self_contained_packet_without_process_control(tmp
     assert not hasattr(adapter, "launch")
     assert not hasattr(adapter, "inspect")
     assert not hasattr(adapter, "cancel")
+
+
+def test_plain_terminal_preserves_the_frozen_policy_reference(tmp_path, runtime_inputs):
+    task, work_unit, scope = runtime_inputs
+    task["policy_ref"] = {
+        "source_commit": "1" * 40,
+        "files": [
+            {"path": "AGENTS.md", "digest": "sha256:" + "b" * 64},
+            {
+                "path": ".agents/workflows/evidence-driven-development.yaml",
+                "digest": "sha256:" + "c" * 64,
+            },
+        ],
+        "combined_digest": "sha256:" + "d" * 64,
+    }
+
+    packet = PlainTerminalAdapter().build(
+        tmp_path,
+        "private/handoff.md",
+        task,
+        work_unit,
+        scope,
+    )
+
+    assert packet.policy_ref == task["policy_ref"]
+    assert packet.policy_digest == task["policy_ref"]["combined_digest"]
+    rendered = packet.to_markdown()
+    assert task["policy_ref"]["source_commit"] in rendered
+    assert "AGENTS.md" in rendered
 
 
 def test_plain_terminal_profile_is_conservative():

@@ -14,10 +14,23 @@ from .report import build_index
 from .schema_validation import SchemaSet, schema_lock_issues
 
 
-_ATOMIC_FILE = re.compile(r"^\..+\.[A-Za-z0-9_-]{6,}\.tmp$")
+_ATOMIC_FILE = re.compile(r"^\.(?P<target>.+)\.[A-Za-z0-9_-]{6,}\.tmp$")
 _TASK_STAGING = re.compile(r"^\.TASK-[^.]+\.TXN-[A-Z0-9]+\.tmp$")
 _LEASE_QUARANTINE = re.compile(r"^\.controller\.lease\.LEASE-[A-Z0-9]+\.expired$")
+_CAS_QUARANTINE = re.compile(r"^\.controller\.lease\.cas\.CAS-[A-Z0-9]+\.expired$")
 _MINIMUM_TEMP_AGE_SECONDS = 60.0
+_TASK_ROOT_ATOMIC_TARGETS = frozenset({"task.yaml", "scope-contract.yaml", "report.md"})
+_TASK_ENTITY_ATOMIC_TARGETS = {
+    "approvals": re.compile(r"^APR-[A-Z0-9-]+\.json$"),
+    "events": re.compile(r"^EVT-[A-Z0-9-]+\.json$"),
+    "evidence": re.compile(r"^EVD-[A-Z0-9-]+\.json$"),
+    "findings": re.compile(r"^FND-[A-Z0-9-]+\.json$"),
+    "results": re.compile(r"^RESULT-[A-Z0-9-]+\.json$"),
+    "risk-acceptances": re.compile(r"^(?:RISK|RA)-[A-Z0-9-]+\.json$"),
+    "runs": re.compile(r"^RUN-[A-Z0-9-]+\.json$"),
+    "scope-history": re.compile(r"^[A-Za-z0-9._-]+\.ya?ml$"),
+    "work-units": re.compile(r"^WU-[A-Z0-9-]+\.ya?ml$"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,13 +171,53 @@ def _migration_incomplete_count(repo: Path) -> int:
     return len(legacy - imported)
 
 
+def _known_atomic_file(path: Path, tasks: Path) -> bool:
+    """Recognize only temp files emitted by MAC atomic writers in known locations."""
+    match = _ATOMIC_FILE.fullmatch(path.name)
+    if not path.is_file() or match is None:
+        return False
+    try:
+        relative = path.resolve(strict=True).relative_to(tasks.resolve(strict=True))
+    except (OSError, ValueError):
+        return False
+    parts = relative.parts
+    target = match.group("target")
+    if len(parts) == 1:
+        return target == "INDEX.generated.json"
+    if len(parts) == 2 and parts[0].startswith("TASK-"):
+        return target in _TASK_ROOT_ATOMIC_TARGETS
+    if len(parts) == 3 and parts[0].startswith("TASK-"):
+        pattern = _TASK_ENTITY_ATOMIC_TARGETS.get(parts[1])
+        return bool(pattern and pattern.fullmatch(target))
+    return False
+
+
+def _config_schema_version(repo: Path) -> tuple[bool, str]:
+    path = repo / ".agents/config.yaml"
+    if not path.is_file():
+        return False, ".agents/config.yaml is missing"
+    try:
+        version = load_data(path).get("schema_version")
+    except Exception as exc:
+        return False, f"cannot read config schema version: {exc}"
+    return version == 6, f"config schema_version is {version!r}; expected 6"
+
+
 def _known_temporary_files(tasks: Path, *, now: float | None = None) -> list[Path]:
     if not tasks.is_dir():
         return []
     cutoff = (now if now is not None else time.time()) - _MINIMUM_TEMP_AGE_SECONDS
     candidates: list[Path] = []
     for path in tasks.rglob("*.tmp"):
-        known = (path.is_file() and _ATOMIC_FILE.fullmatch(path.name)) or (path.is_dir() and path.parent == tasks and _TASK_STAGING.fullmatch(path.name))
+        try:
+            staging = (
+                path.is_dir()
+                and path.parent.resolve(strict=True) == tasks.resolve(strict=True)
+                and _TASK_STAGING.fullmatch(path.name)
+            )
+        except OSError:
+            staging = False
+        known = _known_atomic_file(path, tasks) or bool(staging)
         try:
             old_enough = path.stat().st_mtime <= cutoff
         except OSError:
@@ -174,26 +227,110 @@ def _known_temporary_files(tasks: Path, *, now: float | None = None) -> list[Pat
     return sorted(candidates)
 
 
-def _expired_leases(tasks: Path, *, now: float | None = None) -> list[Path]:
-    current = now if now is not None else time.time()
+def _safe_task_private_dirs(tasks: Path) -> list[Path]:
+    """Return only direct, non-link private directories contained by this tasks root."""
+    if not tasks.is_dir() or tasks.is_symlink():
+        return []
+    try:
+        tasks_root = tasks.resolve(strict=True)
+    except OSError:
+        return []
     result: list[Path] = []
-    if not tasks.is_dir():
-        return result
-    for path in sorted(tasks.rglob("controller.lease")):
+    for task in sorted(tasks.glob("TASK-*")):
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if float(data["expires_unix"]) <= current:
-                result.append(path)
-        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-            continue
-    cutoff = current - _MINIMUM_TEMP_AGE_SECONDS
-    for path in sorted(tasks.rglob(".controller.lease.*.expired")):
-        try:
-            if path.is_file() and _LEASE_QUARANTINE.fullmatch(path.name) and path.stat().st_mtime <= cutoff:
-                result.append(path)
+            if task.is_symlink() or not task.is_dir() or task.resolve(strict=True).parent != tasks_root:
+                continue
+            private = task / "private"
+            if private.is_symlink() or not private.is_dir():
+                continue
+            if private.resolve(strict=True).parent != task.resolve(strict=True):
+                continue
         except OSError:
             continue
+        result.append(private)
     return result
+
+
+def _expired_leases(tasks: Path, *, now: float | None = None) -> list[Path]:
+    from .repository import (
+        CONTROLLER_CAS_FILENAME,
+        controller_cas_coordination_is_active,
+        controller_cas_recoverable,
+    )
+
+    current = now if now is not None else time.time()
+    result: list[Path] = []
+    for private in _safe_task_private_dirs(tasks):
+        path = private / "controller.lease"
+        try:
+            if path.is_file() and not path.is_symlink():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if float(data["expires_unix"]) <= current:
+                    result.append(path)
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            pass
+        cas = private / CONTROLLER_CAS_FILENAME
+        if (
+            controller_cas_recoverable(cas, now=current)
+            and not controller_cas_coordination_is_active(private)
+        ):
+            result.append(cas)
+        cutoff = current - _MINIMUM_TEMP_AGE_SECONDS
+        for quarantine in sorted(private.glob(".*.expired")):
+            try:
+                if (
+                    quarantine.is_file()
+                    and not quarantine.is_symlink()
+                    and (_LEASE_QUARANTINE.fullmatch(quarantine.name) or _CAS_QUARANTINE.fullmatch(quarantine.name))
+                    and quarantine.stat().st_mtime <= cutoff
+                ):
+                    result.append(quarantine)
+            except OSError:
+                continue
+    return sorted(result)
+
+
+def _remove_revalidated_expired_lease(path: Path, tasks: Path, repository: object, *, now: float) -> bool:
+    from .errors import MacError
+    from .repository import CONTROLLER_CAS_FILENAME, controller_cas_recoverable
+
+    private_dirs: set[Path] = set()
+    for item in _safe_task_private_dirs(tasks):
+        try:
+            private_dirs.add(item.resolve(strict=True))
+        except OSError:
+            continue
+    try:
+        private = path.parent.resolve(strict=True)
+    except OSError:
+        return False
+    if private not in private_dirs or path.is_symlink() or not path.is_file():
+        return False
+    if path.name == CONTROLLER_CAS_FILENAME:
+        if not controller_cas_recoverable(path, now=now):
+            return False
+        try:
+            return bool(repository.repair_stale_cas_guard(path.parent.parent.name, now=now))
+        except MacError:
+            return False
+    if _LEASE_QUARANTINE.fullmatch(path.name) or _CAS_QUARANTINE.fullmatch(path.name):
+        try:
+            if path.stat().st_mtime > now - _MINIMUM_TEMP_AGE_SECONDS:
+                return False
+            path.unlink()
+            return True
+        except OSError:
+            return False
+    if path.name != "controller.lease":
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if float(data["expires_unix"]) <= now:
+            path.unlink()
+            return True
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return False
+    return False
 
 
 def run_doctor(repo: Path) -> DoctorReport:
@@ -212,6 +349,7 @@ def run_doctor(repo: Path) -> DoctorReport:
     policy_drift = _policy_drift_count(root)
     migration_incomplete = _migration_incomplete_count(root)
     cli_version = _cli_version(root)
+    config_version_ok, config_version_message = _config_schema_version(root)
     projection_drift = 0
     try:
         from .repository import FilesystemTaskRepository
@@ -234,6 +372,7 @@ def run_doctor(repo: Path) -> DoctorReport:
         DoctorCheck("cli_version", bool(cli_version), True, f"multi-agent-collab {cli_version or 'unknown'}"),
         DoctorCheck("git_repository", _git_available(root), False, "Git repository available"),
         DoctorCheck("config", config.is_file(), True, ".agents/config.yaml exists"),
+        DoctorCheck("config_schema_version", config_version_ok, True, config_version_message),
         DoctorCheck("ownership", ownership.is_file(), True, ".agents/ownership.yaml exists"),
         DoctorCheck("workflow", workflows.is_dir() and any(workflows.glob("*.yaml")), True, "at least one workflow exists"),
         DoctorCheck("runtime_profiles", profiles.is_dir() and any(profiles.glob("*.yaml")), True, "at least one runtime profile exists"),
@@ -279,8 +418,12 @@ def repair_safe(repo: Path, *, apply: bool = False) -> RepairReport:
                 shutil.rmtree(path)
             else:
                 path.unlink()
+        removed_leases: list[Path] = []
+        repair_now = time.time()
         for path in leases:
-            path.unlink()
+            if _remove_revalidated_expired_lease(path, tasks, repository, now=repair_now):
+                removed_leases.append(path)
+        leases = removed_leases
         projections = []
         if tasks.is_dir():
             for task_dir in sorted(path for path in tasks.glob("TASK-*") if path.is_dir() and (path / "events").is_dir()):

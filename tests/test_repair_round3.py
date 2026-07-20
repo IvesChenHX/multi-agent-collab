@@ -14,6 +14,7 @@ from mac.errors import MacError
 from mac.git import GitRepository
 from mac.io import atomic_write_json, atomic_write_yaml, load_data
 from mac.repository import FilesystemTaskRepository, utc_now, validate_repository, validate_task_invariants
+from mac.schema_validation import SchemaSet, schema_lock_issues
 from mac.scope import Change, check_changes
 from mac.state_machine import DEFAULT_TRANSITIONS, parse_transitions, validate_workflow_invariants
 
@@ -235,17 +236,70 @@ def test_init_emits_complete_reachable_workflow_and_valid_repository(tmp_path: P
     actual_pairs = {(source, transition.target) for transition in parse_transitions(workflow) for source in transition.sources}
     expected_pairs = {(source, transition.target) for transition in DEFAULT_TRANSITIONS for source in transition.sources}
     assert actual_pairs == expected_pairs
-    assert not [issue for issue in validate_repository(tmp_path) if issue.severity == "error"]
+    schemas = SchemaSet(tmp_path / "schemas")
+    assert not schema_lock_issues(tmp_path)
+    assert not [issue for issue in validate_repository(tmp_path, schemas) if issue.severity == "error"]
+    ownership = load_data(tmp_path / ".agents/ownership.yaml")
+    assert not schemas.validate(ownership, "ownership.schema.json", path=".agents/ownership.yaml")
+    assert ownership["owners"]["backend"] == {
+        "priority": 100,
+        "implementation_role": "backend-implementer",
+        "include": ["src/**"],
+        "approvers": ["backend-owner"],
+    }
+    assert ownership["owners"]["governance"]["approvers"] == ["governance-owner"]
+
+
+def test_initialized_ownership_accepts_declared_source_owner_and_rejects_owner_mismatch(tmp_path: Path) -> None:
+    _initialized_repo(tmp_path)
+
+    created = TaskService(tmp_path).create(
+        title="default source owner",
+        mode="standard",
+        objective="use initialized ownership",
+        acceptance=["source task is accepted"],
+        allowed_paths=["src/**"],
+        owners=["backend"],
+        runtime_profile="local-single",
+        required_gates=["targeted_tests"],
+        actor={"id": "test", "kind": "agent"},
+        idempotency_key="default-source-owner",
+    )
+    assert created["scope"]["owners"] == ["backend"]
+    ownership = load_data(tmp_path / ".agents/ownership.yaml")
+    source_change = check_changes(
+        [Change("modify", "src/app.py")],
+        created["scope"],
+        ownership=ownership,
+    )
+    assert source_change.ok
+
+    with pytest.raises(ValueError, match="not declared by frozen ownership policy: unknown"):
+        TaskService(tmp_path).create(
+            title="unknown owner",
+            mode="standard",
+            objective="must fail closed",
+            acceptance=["unknown owner is rejected"],
+            allowed_paths=["src/**"],
+            owners=["unknown"],
+            runtime_profile="local-single",
+            required_gates=["targeted_tests"],
+            actor={"id": "test", "kind": "agent"},
+            idempotency_key="unknown-source-owner",
+        )
+
+    mismatch = check_changes(
+        [Change("modify", "AGENTS.md")],
+        {"allowed_paths": ["AGENTS.md"], "denied_paths": [], "owners": ["backend"]},
+        ownership=ownership,
+        governance_approval_level="L2",
+    )
+    assert not mismatch.ok
+    assert "SCOPE_OWNER_OUTSIDE" in {issue.code for issue in mismatch.issues}
 
 
 def test_standard_cli_lifecycle_reaches_close_with_task_metadata_present(tmp_path: Path) -> None:
     _initialized_repo(tmp_path)
-    ownership_path = tmp_path / ".agents/ownership.yaml"
-    ownership = load_data(ownership_path)
-    ownership["owners"]["backend"] = {"priority": 10, "implementation_role": "backend-implementer", "include": ["src/**"], "approvers": ["backend-owner"]}
-    atomic_write_yaml(ownership_path, ownership)
-    subprocess.run(["git", "-C", str(tmp_path), "add", ".agents/ownership.yaml"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "add backend owner"], check=True)
 
     def invoke(*args: str) -> dict[str, object]:
         completed = _run_cli(*args, "--repo", str(tmp_path), "--json")

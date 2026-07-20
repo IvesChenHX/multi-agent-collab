@@ -61,6 +61,8 @@ jobs:
         with:
           version: "0.11.16"
           python-version: "3.13"
+      - name: Verify executable schema lock
+        run: python scripts/release/verify_schema_lock.py
       - name: Build wheel and source distribution
         run: uv build
       - name: Generate CycloneDX SBOM

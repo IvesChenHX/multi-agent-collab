@@ -9,7 +9,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
-from .errors import MacIssue
+from .errors import ExitCode, MacError, MacIssue
 from .io import load_data
 
 SCHEMA_NAMES = {
@@ -71,6 +71,22 @@ def schema_lock_issues(repo_root: Path, schema_dir: Path | None = None) -> list[
     return issues
 
 
+def require_schema_lock(repo_root: Path, schema_dir: Path | None = None) -> None:
+    """Fail closed when a repository schema bundle differs from its lock."""
+    issues = schema_lock_issues(repo_root, schema_dir)
+    if not issues:
+        return
+    issue = issues[0]
+    raise MacError(
+        issue.code,
+        issue.message,
+        exit_code=ExitCode.VALIDATION,
+        path=issue.path,
+        field=issue.field,
+        details={"issues": [item.as_dict() for item in issues]},
+    )
+
+
 def _default_lock_path(schema_root: Path) -> Path | None:
     source_lock = schema_root.parent / ".agents/schemas.lock.json"
     if source_lock.is_file():
@@ -99,6 +115,20 @@ def _default_schema_dir() -> Path:
         return source_root
     packaged = resources.files("mac").joinpath("schemas")
     return Path(str(packaged))
+
+
+def require_executable_schema_lock() -> None:
+    """Verify the source/installed executable schema bundle before CLI dispatch."""
+    root = _default_schema_dir()
+    try:
+        _enforce_default_lock(root)
+    except (OSError, TypeError, ValueError) as exc:
+        raise MacError(
+            "SCHEMA_LOCK_MISMATCH",
+            str(exc),
+            exit_code=ExitCode.VALIDATION,
+            path=str(_default_lock_path(root) or "schemas.lock.json"),
+        ) from exc
 
 
 def install_schema_bundle(repo_root: Path) -> None:

@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from mac.errors import MacError
-from mac.report import build_audit_bundle, verify_audit_bundle
+from mac.application.audit import verify_audit_bundle
+from mac.report import build_audit_bundle
 
 
 TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB"
@@ -91,3 +92,25 @@ def test_audit_bundle_verify_rejects_tampering(tmp_path: Path) -> None:
         verify_audit_bundle(tampered)
 
     assert caught.value.code == "AUDIT_BUNDLE_ENTRY_DIGEST_MISMATCH"
+
+
+def test_independent_audit_verifier_rejects_unproven_verified_signature(tmp_path: Path) -> None:
+    task_dir = tmp_path / "TASK-audit"
+    task_dir.mkdir()
+    make_audit_task(task_dir)
+    bundle = tmp_path / "audit.zip"
+    build_audit_bundle(task_dir, bundle)
+    forged = tmp_path / "forged-signature.zip"
+    with zipfile.ZipFile(bundle) as source, zipfile.ZipFile(forged, "w") as target:
+        for name in source.namelist():
+            content = source.read(name)
+            if name == "manifest.json":
+                manifest = json.loads(content)
+                manifest["signature"] = {"status": "verified", "scheme": "sigstore"}
+                content = json.dumps(manifest).encode("utf-8")
+            target.writestr(name, content)
+
+    with pytest.raises(MacError) as caught:
+        verify_audit_bundle(forged)
+
+    assert caught.value.code == "AUDIT_BUNDLE_SIGNATURE_UNVERIFIED"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -29,6 +30,10 @@ PATTERN_SCHEMAS = {
     "risk-acceptances/*.json": "risk-acceptance.schema.json", "events/*.json": "event.schema.json",
 }
 V6_TASK_ENTRY_NAMES = frozenset(SCHEMA_MAP) | frozenset(pattern.partition("/")[0] for pattern in PATTERN_SCHEMAS)
+CONTROLLER_CAS_FILENAME = ".controller.lease.cas"
+CONTROLLER_CAS_LOCK_FILENAME = ".controller.lease.cas.lock"
+CONTROLLER_CAS_TTL_SECONDS = 30.0
+LEGACY_CONTROLLER_CAS_STALE_SECONDS = 300.0
 
 
 def utc_now() -> str:
@@ -37,6 +42,121 @@ def utc_now() -> str:
 
 def sha256_bytes(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def _process_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, OverflowError, ValueError) as exc:
+        # Windows reports ERROR_INVALID_PARAMETER as EINVAL for a missing PID.
+        return getattr(exc, "errno", None) not in {3, 22}
+    return True
+
+
+def _controller_cas_payload(raw: bytes) -> dict[str, Any] | None:
+    try:
+        value = json.loads(raw.decode("utf-8"))
+        created_at = str(value["created_at"])
+        datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        expires_unix = float(value["expires_unix"])
+        pid = value["pid"]
+        if (
+            not isinstance(value, dict)
+            or not isinstance(value.get("token"), str)
+            or not value["token"].startswith("CAS-")
+            or not isinstance(value.get("owner"), str)
+            or not value["owner"]
+            or not isinstance(pid, int)
+            or isinstance(pid, bool)
+            or pid <= 0
+            or not math.isfinite(expires_unix)
+        ):
+            return None
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return value
+
+
+def controller_cas_recoverable(path: Path, *, now: float | None = None) -> bool:
+    """Conservatively classify a regular CAS guard as expired or orphaned."""
+    try:
+        if path.is_symlink() or not path.is_file():
+            return False
+        raw = path.read_bytes()
+        modified = path.stat().st_mtime
+    except OSError:
+        return False
+    current = time.time() if now is None else now
+    payload = _controller_cas_payload(raw)
+    if payload is None:
+        return modified <= current - LEGACY_CONTROLLER_CAS_STALE_SECONDS
+    return float(payload["expires_unix"]) <= current or not _process_is_alive(int(payload["pid"]))
+
+
+def _lock_descriptor(descriptor: int, *, blocking: bool) -> bool:
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+    except OSError:
+        return False
+    return True
+
+
+def _unlock_descriptor(descriptor: int) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
+def controller_cas_coordination_is_active(private: Path) -> bool:
+    """Read-only active check used by doctor; absence of a lock file is inactive."""
+    lock_path = private / CONTROLLER_CAS_LOCK_FILENAME
+    try:
+        if lock_path.is_symlink():
+            return True
+        if not lock_path.exists():
+            return False
+        if not lock_path.is_file():
+            return True
+        descriptor = os.open(lock_path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return True
+    try:
+        if not _lock_descriptor(descriptor, blocking=False):
+            return True
+        opened = os.fstat(descriptor)
+        current = lock_path.stat(follow_symlinks=False)
+        if lock_path.is_symlink() or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+            _unlock_descriptor(descriptor)
+            return True
+        _unlock_descriptor(descriptor)
+        return False
+    except OSError:
+        return True
+    finally:
+        os.close(descriptor)
 
 
 def git_head(repo: Path) -> str | None:
@@ -49,14 +169,27 @@ def git_head(repo: Path) -> str | None:
 
 
 def build_policy_ref(repo: Path, relative_paths: list[str]) -> dict[str, Any]:
+    head = git_head(repo)
     rows = []
+    all_from_commit = bool(head)
     for relative in relative_paths:
         path = repo / relative
         if path.is_file():
-            rows.append({"path": Path(relative).as_posix(), "digest": sha256_bytes(path.read_bytes())})
+            raw: bytes | None = None
+            if head:
+                try:
+                    raw = subprocess.run(
+                        ["git", "-C", str(repo), "show", f"{head}:{Path(relative).as_posix()}"],
+                        check=True, capture_output=True,
+                    ).stdout
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    all_from_commit = False
+            if raw is None:
+                raw = path.read_bytes()
+            rows.append({"path": Path(relative).as_posix(), "digest": sha256_bytes(raw)})
     rows.sort(key=lambda row: row["path"])
     result: dict[str, Any] = {"combined_digest": sha256_bytes(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()), "files": rows}
-    if head := git_head(repo):
+    if head and all_from_commit:
         result["source_commit"] = head
     return result
 
@@ -149,55 +282,246 @@ class FilesystemTaskRepository:
     def _existing_idempotency(self, task_id: str, key: str) -> dict[str, Any] | None:
         return next((event for event in self.list_events(task_id) if event.get("idempotency_key") == key), None)
 
+    def _lease_private_dir(self, task_id: str) -> Path:
+        task = self.task_dir(task_id)
+        try:
+            tasks_root = self.tasks_root.resolve(strict=True)
+            tasks_root.relative_to(self.repo)
+            if self.tasks_root.is_symlink() or task.is_symlink() or not task.is_dir():
+                raise ValueError
+            task_root = task.resolve(strict=True)
+            if task_root.parent != tasks_root:
+                raise ValueError
+            private = task / "private"
+            if private.is_symlink():
+                raise ValueError
+            private.mkdir(parents=False, exist_ok=True)
+            if private.resolve(strict=True).parent != task_root:
+                raise ValueError
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise MacError(
+                "LEASE_PATH_UNSAFE", "controller lease private directory is outside the task",
+                exit_code=ExitCode.SECURITY, task_id=task_id,
+            ) from exc
+        return private
+
+    @contextmanager
+    def _lease_coordination_lock(self, task_id: str) -> Iterator[Path]:
+        private = self._lease_private_dir(task_id)
+        lock_path = private / CONTROLLER_CAS_LOCK_FILENAME
+        if lock_path.is_symlink():
+            raise MacError(
+                "LEASE_PATH_UNSAFE", "lease coordination lock must not be a symlink",
+                exit_code=ExitCode.SECURITY, task_id=task_id,
+            )
+        try:
+            descriptor = os.open(
+                lock_path,
+                os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b"\0")
+                os.fsync(descriptor)
+        except OSError as exc:
+            raise MacError(
+                "LEASE_CONFLICT", "cannot open lease coordination lock",
+                exit_code=ExitCode.CONFLICT, task_id=task_id,
+            ) from exc
+        acquired = False
+        try:
+            for _ in range(50):
+                if _lock_descriptor(descriptor, blocking=False):
+                    acquired = True
+                    break
+                time.sleep(0.002)
+            if not acquired:
+                raise MacError(
+                    "LEASE_CONFLICT", "lease compare-and-replace is busy",
+                    exit_code=ExitCode.CONFLICT, task_id=task_id,
+                )
+            opened = os.fstat(descriptor)
+            current = lock_path.stat(follow_symlinks=False)
+            if lock_path.is_symlink() or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+                raise MacError(
+                    "LEASE_PATH_UNSAFE", "lease coordination lock changed while opening",
+                    exit_code=ExitCode.SECURITY, task_id=task_id,
+                )
+            yield private
+        finally:
+            if acquired:
+                _unlock_descriptor(descriptor)
+            os.close(descriptor)
+
+    @staticmethod
+    def _guard_snapshot(path: Path) -> tuple[tuple[int, int, int, int], bytes]:
+        raw = path.read_bytes()
+        status = path.stat()
+        identity = (status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns)
+        return identity, raw
+
+    def _quarantine_recoverable_cas(self, task_id: str, path: Path, *, now: float | None = None) -> Path:
+        try:
+            observed = self._guard_snapshot(path)
+        except OSError as exc:
+            raise MacError(
+                "LEASE_CONFLICT", "lease compare-and-replace guard changed",
+                exit_code=ExitCode.CONFLICT, task_id=task_id,
+            ) from exc
+        if not controller_cas_recoverable(path, now=now):
+            raise MacError(
+                "LEASE_CONFLICT", "lease compare-and-replace guard is active or unverifiable",
+                exit_code=ExitCode.CONFLICT, task_id=task_id,
+            )
+        quarantine = path.with_name(f"{CONTROLLER_CAS_FILENAME}.{prefixed('CAS')}.expired")
+        try:
+            os.replace(path, quarantine)
+            moved = self._guard_snapshot(quarantine)
+        except OSError as exc:
+            raise MacError(
+                "LEASE_CONFLICT", "stale guard takeover lost an atomic race",
+                exit_code=ExitCode.CONFLICT, task_id=task_id,
+            ) from exc
+        if moved != observed:
+            try:
+                os.link(quarantine, path)
+                quarantine.unlink()
+            except OSError:
+                descriptor: int | None = None
+                try:
+                    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                    os.write(descriptor, moved[1])
+                    os.fsync(descriptor)
+                except OSError:
+                    pass
+                finally:
+                    if descriptor is not None:
+                        os.close(descriptor)
+            raise MacError(
+                "LEASE_CONFLICT", "stale guard changed during atomic quarantine",
+                exit_code=ExitCode.CONFLICT, task_id=task_id,
+            )
+        return quarantine
+
+    @contextmanager
+    def _lease_cas_guard(self, task_id: str, owner: str) -> Iterator[None]:
+        """Serialize lease read/replace/create as one compare-and-replace step."""
+        token = prefixed("CAS")
+        quarantine: Path | None = None
+        with self._lease_coordination_lock(task_id) as private:
+            path = private / CONTROLLER_CAS_FILENAME
+            if path.is_symlink():
+                raise MacError(
+                    "LEASE_PATH_UNSAFE", "lease compare-and-replace guard must not be a symlink",
+                    exit_code=ExitCode.SECURITY, task_id=task_id,
+                )
+            if path.exists():
+                quarantine = self._quarantine_recoverable_cas(task_id, path)
+            payload = {
+                "token": token,
+                "owner": owner,
+                "pid": os.getpid(),
+                "created_at": utc_now(),
+                "expires_unix": time.time() + CONTROLLER_CAS_TTL_SECONDS,
+            }
+            descriptor: int | None = None
+            try:
+                descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.write(descriptor, json.dumps(payload, sort_keys=True).encode("utf-8"))
+                os.fsync(descriptor)
+                os.close(descriptor)
+                descriptor = None
+                if quarantine is not None:
+                    try:
+                        quarantine.unlink()
+                    except OSError:
+                        pass
+                yield
+            except FileExistsError as exc:
+                raise MacError(
+                    "LEASE_CONFLICT", "lease compare-and-replace lost an atomic race",
+                    exit_code=ExitCode.CONFLICT, task_id=task_id,
+                ) from exc
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+                try:
+                    current = _controller_cas_payload(path.read_bytes())
+                    if current is not None and current.get("token") == token:
+                        path.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def repair_stale_cas_guard(self, task_id: str, *, now: float | None = None) -> bool:
+        """Atomically quarantine and remove one revalidated orphaned CAS guard."""
+        try:
+            with self._lease_coordination_lock(task_id) as private:
+                path = private / CONTROLLER_CAS_FILENAME
+                if path.is_symlink() or not path.exists():
+                    return False
+                try:
+                    quarantine = self._quarantine_recoverable_cas(task_id, path, now=now)
+                except MacError as exc:
+                    if exc.code == "LEASE_CONFLICT":
+                        return False
+                    raise
+                try:
+                    quarantine.unlink()
+                except OSError:
+                    pass
+                return True
+        except MacError as exc:
+            if exc.code == "LEASE_CONFLICT":
+                return False
+            raise
+
     @contextmanager
     def lease(self, task_id: str, owner: str, *, ttl_seconds: float = 30.0) -> Iterator[str]:
-        path = self.task_dir(task_id) / "private" / "controller.lease"
-        path.parent.mkdir(parents=True, exist_ok=True)
+        private = self._lease_private_dir(task_id)
+        path = private / "controller.lease"
         token = prefixed("LEASE")
         payload = {"token": token, "owner": owner, "acquired_at": utc_now(), "expires_unix": time.time() + ttl_seconds}
         quarantined: Path | None = None
-        for attempt in range(3):
+        with self._lease_cas_guard(task_id, owner):
+            if path.is_symlink():
+                raise MacError(
+                    "LEASE_PATH_UNSAFE", "controller lease must not be a symlink",
+                    exit_code=ExitCode.SECURITY, task_id=task_id,
+                )
+            if path.exists():
+                try:
+                    current = json.loads(path.read_text(encoding="utf-8"))
+                    expired = float(current.get("expires_unix", 0)) <= time.time()
+                except Exception:
+                    expired = False
+                if not expired:
+                    raise MacError("LEASE_CONFLICT", "task controller lease is active", exit_code=ExitCode.CONFLICT, task_id=task_id)
+                quarantined = path.with_name(f".{path.name}.{prefixed('LEASE')}.expired")
+                try:
+                    os.replace(path, quarantined)
+                except FileNotFoundError as exc:
+                    raise MacError("LEASE_CONFLICT", "expired lease takeover lost an atomic race", exit_code=ExitCode.CONFLICT, task_id=task_id) from exc
             try:
                 descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                     json.dump(payload, handle, sort_keys=True)
                     handle.flush()
                     os.fsync(handle.fileno())
-                break
-            except FileExistsError:
-                try:
-                    current = json.loads(path.read_text(encoding="utf-8"))
-                    expired = float(current.get("expires_unix", 0)) <= time.time()
-                except Exception:
-                    expired = False
-                if expired and attempt < 2:
-                    quarantine = path.with_name(f".{path.name}.{prefixed('LEASE')}.expired")
-                    try:
-                        os.rename(path, quarantine)
-                        quarantined = quarantine
-                    except FileNotFoundError:
-                        pass
-                    except OSError:
-                        raise MacError("LEASE_CONFLICT", "expired lease takeover lost an atomic race", exit_code=ExitCode.CONFLICT, task_id=task_id)
-                    continue
-                if quarantined is not None:
-                    try:
-                        quarantined.unlink()
-                    except FileNotFoundError:
-                        pass
-                raise MacError("LEASE_CONFLICT", "task controller lease is active", exit_code=ExitCode.CONFLICT, task_id=task_id)
-        try:
-            yield token
-        finally:
-            try:
-                current = json.loads(path.read_text(encoding="utf-8"))
-                if current.get("token") == token:
-                    path.unlink()
-            except FileNotFoundError:
-                pass
+            except FileExistsError as exc:
+                raise MacError("LEASE_CONFLICT", "lease compare-and-replace lost an atomic race", exit_code=ExitCode.CONFLICT, task_id=task_id) from exc
             if quarantined is not None:
                 try:
                     quarantined.unlink()
+                except FileNotFoundError:
+                    pass
+        try:
+            yield token
+        finally:
+            with self._lease_cas_guard(task_id, owner):
+                try:
+                    current = json.loads(path.read_text(encoding="utf-8"))
+                    if current.get("token") == token:
+                        path.unlink()
                 except FileNotFoundError:
                     pass
 
@@ -247,76 +571,182 @@ class FilesystemTaskRepository:
         fault_hook: Callable[[str], None] | None = None,
         materializations: list[tuple[Path, dict[str, Any]]] | None = None,
         replace_existing: set[Path] | None = None,
+        authority_context: Any | None = None,
     ) -> AppendResult:
         with self.lease(task_id, str(actor.get("id", "unknown"))):
-            if existing := self._existing_idempotency(task_id, idempotency_key):
-                if existing.get("event_type") != event_type:
-                    raise MacError("EVENT_IDEMPOTENCY_CONFLICT", "idempotency key belongs to another operation", exit_code=ExitCode.CONFLICT, task_id=task_id)
-                through_revision = int(existing.get("new_revision", 0))
-                original_events = [event for event in self.list_events(task_id) if int(event.get("new_revision", 0)) <= through_revision]
-                self.rebuild_task(task_id)
-                return AppendResult(existing, replay_events(original_events), True)
-            events = self.list_events(task_id)
-            projection = replay_events(events)
-            current = int(projection["revision"])
-            if current != expected_revision:
-                raise MacError("REVISION_CONFLICT", f"expected {expected_revision}, current {current}", exit_code=ExitCode.CONFLICT, task_id=task_id)
-            pending = list(materializations or [])
-            replace_targets = {path.resolve(strict=False) for path in (replace_existing or set())}
-            task_root = self.task_dir(task_id).resolve()
-            for target, _ in pending:
-                resolved_target = target.resolve(strict=False)
-                try:
-                    resolved_target.relative_to(task_root)
-                except ValueError as exc:
-                    raise MacError("ENTITY_PATH_UNSAFE", "entity target is outside the task directory", exit_code=ExitCode.SECURITY, path=str(target), task_id=task_id) from exc
-                if target.exists() and resolved_target not in replace_targets:
-                    raise MacError("ENTITY_ID_CONFLICT", "entity target already exists without a matching idempotency event", exit_code=ExitCode.CONFLICT, path=target.relative_to(self.repo).as_posix(), task_id=task_id)
-            event = {
-                "schema_version": 1, "event_id": event_id or prefixed("EVT"), "task_id": task_id,
-                "event_type": event_type, "occurred_at": utc_now(), "actor": actor, "run_id": run_id,
-                "expected_revision": current, "new_revision": current + 1,
-                "idempotency_key": idempotency_key, "payload": deepcopy(payload),
-            }
-            event_path = self.task_dir(task_id) / "events" / f"{event['event_id']}.json"
-            atomic_write_json(event_path, event)
-            if fault_hook:
-                fault_hook("after_event")
-            for target, value in pending:
-                (atomic_write_yaml if target.suffix.lower() in {".yaml", ".yml"} else atomic_write_json)(target, value)
-            projection = replay_events([*events, event])
-            atomic_write_yaml(self.task_dir(task_id) / "task.yaml", projection)
-            if fault_hook:
-                fault_hook("after_projection")
-            return AppendResult(event, projection)
+            return self._append_event_locked(
+                task_id, event_type, payload, actor=actor, expected_revision=expected_revision,
+                idempotency_key=idempotency_key, run_id=run_id, event_id=event_id,
+                fault_hook=fault_hook, materializations=materializations,
+                replace_existing=replace_existing, authority_context=authority_context,
+            )
+
+    def _append_event_locked(
+        self, task_id: str, event_type: str, payload: dict[str, Any], *, actor: dict[str, Any],
+        expected_revision: int, idempotency_key: str, run_id: str | None = None,
+        event_id: str | None = None, fault_hook: Callable[[str], None] | None = None,
+        materializations: list[tuple[Path, dict[str, Any]]] | None = None,
+        replace_existing: set[Path] | None = None,
+        authority_context: Any | None = None,
+    ) -> AppendResult:
+        """Append while the caller holds the task lease: revision, guard, event, materialization."""
+        if existing := self._existing_idempotency(task_id, idempotency_key):
+            if existing.get("event_type") != event_type:
+                raise MacError("EVENT_IDEMPOTENCY_CONFLICT", "idempotency key belongs to another operation", exit_code=ExitCode.CONFLICT, task_id=task_id)
+            through_revision = int(existing.get("new_revision", 0))
+            original_events = [event for event in self.list_events(task_id) if int(event.get("new_revision", 0)) <= through_revision]
+            self.rebuild_task(task_id)
+            return AppendResult(existing, replay_events(original_events), True)
+        events = self.list_events(task_id)
+        projection = replay_events(events)
+        current = int(projection["revision"])
+        if current != expected_revision:
+            raise MacError("REVISION_CONFLICT", f"expected {expected_revision}, current {current}", exit_code=ExitCode.CONFLICT, task_id=task_id)
+        pending = list(materializations or [])
+        replace_targets = {path.resolve(strict=False) for path in (replace_existing or set())}
+        task_root = self.task_dir(task_id).resolve()
+        for target, _ in pending:
+            resolved_target = target.resolve(strict=False)
+            try:
+                resolved_target.relative_to(task_root)
+            except ValueError as exc:
+                raise MacError("ENTITY_PATH_UNSAFE", "entity target is outside the task directory", exit_code=ExitCode.SECURITY, path=str(target), task_id=task_id) from exc
+            if target.exists() and resolved_target not in replace_targets:
+                raise MacError("ENTITY_ID_CONFLICT", "entity target already exists without a matching idempotency event", exit_code=ExitCode.CONFLICT, path=target.relative_to(self.repo).as_posix(), task_id=task_id)
+        self._authorize_governance_write(
+            task_id, event_type, payload, actor, projection,
+            materializations=pending, authority_context=authority_context,
+        )
+        event = {
+            "schema_version": 1, "event_id": event_id or prefixed("EVT"), "task_id": task_id,
+            "event_type": event_type, "occurred_at": utc_now(), "actor": actor, "run_id": run_id,
+            "expected_revision": current, "new_revision": current + 1,
+            "idempotency_key": idempotency_key, "payload": deepcopy(payload),
+        }
+        event_path = self.task_dir(task_id) / "events" / f"{event['event_id']}.json"
+        atomic_write_json(event_path, event)
+        if fault_hook:
+            fault_hook("after_event")
+        for target, value in pending:
+            (atomic_write_yaml if target.suffix.lower() in {".yaml", ".yml"} else atomic_write_json)(target, value)
+        projection = replay_events([*events, event])
+        atomic_write_yaml(self.task_dir(task_id) / "task.yaml", projection)
+        if fault_hook:
+            fault_hook("after_projection")
+        return AppendResult(event, projection)
+
+    def _authorize_governance_write(
+        self, task_id: str, event_type: str, payload: dict[str, Any], actor: dict[str, Any], task: dict[str, Any], *,
+        materializations: list[tuple[Path, dict[str, Any]]], authority_context: Any | None,
+    ) -> None:
+        """Bind privileged governance mutations to the frozen owner policy and entity actor."""
+        actor_id = str(actor.get("id", ""))
+        if not actor_id:
+            raise MacError("ACTOR_ID_REQUIRED", "governance writes require an actor id", exit_code=ExitCode.SECURITY, task_id=task_id)
+        privileged = {"scope_approved", "risk_accepted", "policy_rebased"}
+        if event_type == "state_transitioned" and payload.get("to") in {"completed", "completed_with_risk"}:
+            privileged.add(event_type)
+        controlled = {"scope_proposed", "work_unit_created", "finding_opened", "finding_resolved", "evidence_invalidated"}
+        actor_bound = {"run_started", "result_submitted"}
+        if event_type not in privileged | controlled | actor_bound:
+            return
+        compiled = compile_policy(self.repo, task=task)
+        scope_path = self.task_dir(task_id) / "scope-contract.yaml"
+        scope = load_data(scope_path) if scope_path.is_file() else {}
+        from .authority import VerifiedAuthorityContext, owner_approvers, require_external_authority
+
+        approvers = owner_approvers(scope, compiled.ownership)
+        events = self.list_events(task_id)
+        creator = str(((events[0].get("actor") or {}).get("id", ""))) if events else ""
+        if event_type in privileged:
+            if not isinstance(authority_context, VerifiedAuthorityContext):
+                require_external_authority(actor_id, None, operation=event_type)
+            context = require_external_authority(actor_id, authority_context, operation=event_type)
+            if actor_id not in approvers:
+                raise MacError("ACTOR_UNAUTHORIZED", f"{event_type} requires frozen owner approval authority", exit_code=ExitCode.SECURITY, task_id=task_id)
+            payload["verified_authority"] = context.audit_record()
+        if event_type in controlled and actor_id not in approvers | {creator}:
+            raise MacError("ACTOR_UNAUTHORIZED", f"{event_type} requires controller or frozen owner authority", exit_code=ExitCode.SECURITY, task_id=task_id)
+        entity_actor = None
+        run_entity = payload.get("run") if isinstance(payload.get("run"), dict) else None
+        if run_entity is None and event_type == "run_started":
+            run_entity = next((value for path, value in materializations if path.parent.name == "runs"), None)
+        if event_type == "run_started":
+            entity_actor = ((run_entity or {}).get("actor") or {}).get("id")
+        elif event_type == "result_submitted":
+            entity_actor = ((payload.get("run") or {}).get("actor") or {}).get("id")
+        if entity_actor is not None and str(entity_actor) != actor_id:
+            raise MacError("ACTOR_ENTITY_MISMATCH", f"{event_type} actor does not match the bound Run actor", exit_code=ExitCode.SECURITY, task_id=task_id)
+        if event_type == "run_started" and run_entity is not None:
+            level = str(run_entity.get("independence_level", "L0"))
+            runtime = run_entity.get("runtime") or {}
+            attestation = run_entity.get("independence_attestation")
+            carries_provenance = any(runtime.get(name) for name in ("provider", "model")) or attestation is not None
+            if level in {"L2", "L3"} or carries_provenance:
+                if not isinstance(authority_context, VerifiedAuthorityContext) or authority_context.runtime is None:
+                    raise MacError(
+                        "PROVENANCE_UNVERIFIED", "attested Run metadata requires an external runtime verifier",
+                        exit_code=ExitCode.EXTERNAL, task_id=task_id,
+                    )
+                context = require_external_authority(actor_id, authority_context, operation="attested Run registration")
+                verified = context.runtime
+                expected_runtime = {
+                    "profile": verified.profile,
+                    "execution_context_id": verified.execution_context_id,
+                    "provider": verified.provider,
+                    "model": verified.model,
+                }
+                expected_attestation = {
+                    "read_only": verified.read_only,
+                    "commit_participation": list(verified.commit_participation),
+                }
+                if runtime != expected_runtime or attestation != expected_attestation:
+                    raise MacError(
+                        "RUNTIME_CONTEXT_MISMATCH", "Run entity does not match externally verified provenance",
+                        exit_code=ExitCode.SECURITY, task_id=task_id,
+                    )
+                payload["verified_authority"] = context.audit_record()
 
     def transition(
         self, task_id: str, target: str, context: TransitionContext, *, actor: dict[str, Any],
-        expected_revision: int, idempotency_key: str,
+        expected_revision: int, idempotency_key: str, authority_context: Any | None = None,
     ) -> AppendResult:
-        if existing := self._existing_idempotency(task_id, idempotency_key):
-            if existing.get("event_type") != "state_transitioned" or (existing.get("payload") or {}).get("to") != target:
-                raise MacError("EVENT_IDEMPOTENCY_CONFLICT", "idempotency key belongs to another transition", exit_code=ExitCode.CONFLICT, task_id=task_id)
-            through_revision = int(existing.get("new_revision", 0))
-            original_events = [event for event in self.list_events(task_id) if int(event.get("new_revision", 0)) <= through_revision]
-            return AppendResult(existing, replay_events(original_events), True)
         with self.lease(task_id, str(actor.get("id", "unknown"))):
+            if existing := self._existing_idempotency(task_id, idempotency_key):
+                if existing.get("event_type") != "state_transitioned" or (existing.get("payload") or {}).get("to") != target:
+                    raise MacError("EVENT_IDEMPOTENCY_CONFLICT", "idempotency key belongs to another transition", exit_code=ExitCode.CONFLICT, task_id=task_id)
+                through_revision = int(existing.get("new_revision", 0))
+                original_events = [event for event in self.list_events(task_id) if int(event.get("new_revision", 0)) <= through_revision]
+                return AppendResult(existing, replay_events(original_events), True)
             task = replay_events(self.list_events(task_id))
-            compiled = compile_policy(self.repo)
-            policy_paths = [str(item.get("path")) for item in (task.get("policy_ref") or {}).get("files", [])]
-            ownership_paths = [str(item.get("path")) for item in (task.get("ownership_ref") or {}).get("files", [])]
-            if policy_paths and build_policy_ref(self.repo, policy_paths).get("combined_digest") != (task.get("policy_ref") or {}).get("combined_digest"):
-                raise MacError("POLICY_DRIFT", "task policy snapshot does not match the executable machine policy", exit_code=ExitCode.SECURITY, task_id=task_id)
-            if ownership_paths and build_policy_ref(self.repo, ownership_paths).get("combined_digest") != (task.get("ownership_ref") or {}).get("combined_digest"):
-                raise MacError("OWNERSHIP_DRIFT", "task ownership snapshot does not match the executable ownership policy", exit_code=ExitCode.SECURITY, task_id=task_id)
+            if int(task["revision"]) != expected_revision:
+                raise MacError("REVISION_CONFLICT", f"expected {expected_revision}, current {task['revision']}", exit_code=ExitCode.CONFLICT, task_id=task_id)
+            compiled = compile_policy(self.repo, task=task)
+            if target in {"completed", "completed_with_risk"}:
+                from .authority import require_external_authority
+                from .application.close import evaluate_repository_close
+
+                require_external_authority(
+                    str(actor.get("id", "")), authority_context, operation="task Close",
+                )
+                close = evaluate_repository_close(self.repo, task_id, str(actor.get("id", "")), compiled_policy=compiled)
+                if not close.ok:
+                    raise MacError("CLOSE_GATES_FAILED", "task cannot close", exit_code=ExitCode.EVIDENCE, task_id=task_id, details={"issues": [item.as_dict() for item in close.issues]})
             leased_context = replace(context, controller_lease_valid=True, lease_valid=True)
-            decision = evaluate_transition(str(task["state"]), target, leased_context, transitions=compiled.transitions)
+            decision = evaluate_transition(
+                str(task["state"]), target, leased_context, transitions=compiled.transitions,
+                states=compiled.states, terminal_states=compiled.terminal_states,
+            )
             if not decision.ok:
                 raise MacError(decision.codes[0], f"{task['state']} -> {target} rejected", exit_code=ExitCode.TRANSITION, details={"failed_guards": decision.failed_guards, "failed_conditions": decision.failed_conditions})
             payload: dict[str, Any] = {"from": task["state"], "to": target, "transition_id": decision.transition.id if decision.transition else None}
             if context.successor_task_id:
                 payload["successor_task_id"] = context.successor_task_id
-        return self.append_event(task_id, "state_transitioned", payload, actor=actor, expected_revision=expected_revision, idempotency_key=idempotency_key)
+            return self._append_event_locked(
+                task_id, "state_transitioned", payload, actor=actor,
+                expected_revision=expected_revision, idempotency_key=idempotency_key,
+                authority_context=authority_context,
+            )
 
 
 def discover_task_dirs(repo: Path) -> list[Path]:

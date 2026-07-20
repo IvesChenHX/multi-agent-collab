@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -86,3 +90,123 @@ def test_replay_rejects_revision_gap_and_rollback() -> None:
     with pytest.raises(MacError) as rollback_error:
         replay_events([base, rollback])
     assert rollback_error.value.code == "EVENT_REVISION_ROLLBACK"
+
+
+def test_controller_lease_recovers_an_old_legacy_cas_guard_but_not_a_fresh_one(tmp_path: Path) -> None:
+    task_id = "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q"
+    private = tmp_path / "tasks" / task_id / "private"
+    private.mkdir(parents=True)
+    guard = private / ".controller.lease.cas"
+    guard.write_text("12345\n", encoding="ascii")
+    old = time.time() - 301
+    os.utime(guard, (old, old))
+    repository = FilesystemTaskRepository(tmp_path)
+
+    with repository.lease(task_id, "recovery-agent"):
+        assert (private / "controller.lease").is_file()
+
+    guard.write_text("12345\n", encoding="ascii")
+    with pytest.raises(MacError) as caught:
+        with repository.lease(task_id, "competing-agent"):
+            pass
+    assert caught.value.code == "LEASE_CONFLICT"
+
+
+def test_controller_lease_recovers_a_well_formed_guard_owned_by_a_dead_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mac.repository as repository_module
+
+    monkeypatch.setattr(repository_module, "_process_is_alive", lambda pid: False)
+    task_id = "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q"
+    private = tmp_path / "tasks" / task_id / "private"
+    private.mkdir(parents=True)
+    guard = private / ".controller.lease.cas"
+    guard.write_text(json.dumps({
+        "token": "CAS-01K0W4Z36K3W5C2R0A3M8N9P7Q",
+        "owner": "crashed-agent",
+        "pid": 424242,
+        "created_at": "2026-07-20T00:00:00Z",
+        "expires_unix": time.time() + 60,
+    }), encoding="utf-8")
+    repository = FilesystemTaskRepository(tmp_path)
+
+    with repository.lease(task_id, "recovery-agent") as token:
+        payload = json.loads((private / "controller.lease").read_text(encoding="utf-8"))
+        assert payload["token"] == token
+
+    assert not guard.exists()
+
+
+def test_controller_lease_cannot_take_over_an_active_cas_guard(tmp_path: Path) -> None:
+    task_id = "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q"
+    (tmp_path / "tasks" / task_id).mkdir(parents=True)
+    repository = FilesystemTaskRepository(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def hold_guard() -> None:
+        with repository._lease_cas_guard(task_id, "active-agent"):
+            entered.set()
+            release.wait(timeout=2)
+
+    worker = threading.Thread(target=hold_guard)
+    worker.start()
+    assert entered.wait(timeout=2)
+    guard_payload = json.loads(
+        (tmp_path / "tasks" / task_id / "private" / ".controller.lease.cas").read_text(encoding="utf-8")
+    )
+    assert set(guard_payload) == {"token", "owner", "pid", "created_at", "expires_unix"}
+    assert guard_payload["owner"] == "active-agent"
+    assert guard_payload["pid"] == os.getpid()
+    assert guard_payload["expires_unix"] > time.time()
+    try:
+        with pytest.raises(MacError) as caught:
+            with repository.lease(task_id, "competing-agent"):
+                pass
+        assert caught.value.code == "LEASE_CONFLICT"
+    finally:
+        release.set()
+        worker.join(timeout=2)
+    assert not worker.is_alive()
+
+
+def test_stale_cas_takeover_fails_closed_if_the_observed_guard_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mac.repository as repository_module
+
+    monkeypatch.setattr(repository_module, "_process_is_alive", lambda pid: True)
+    task_id = "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q"
+    private = tmp_path / "tasks" / task_id / "private"
+    private.mkdir(parents=True)
+    guard = private / ".controller.lease.cas"
+    guard.write_text(json.dumps({
+        "token": "CAS-STALE",
+        "owner": "stale-agent",
+        "pid": 111,
+        "created_at": "2026-07-20T00:00:00Z",
+        "expires_unix": 0,
+    }), encoding="utf-8")
+    fresh = {
+        "token": "CAS-FRESH",
+        "owner": "fresh-agent",
+        "pid": 222,
+        "created_at": "2026-07-20T00:00:01Z",
+        "expires_unix": time.time() + 300,
+    }
+    real_replace = os.replace
+
+    def raced_replace(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
+        if Path(source) == guard:
+            guard.write_text(json.dumps(fresh), encoding="utf-8")
+        real_replace(source, target)
+
+    monkeypatch.setattr(repository_module.os, "replace", raced_replace)
+    repository = FilesystemTaskRepository(tmp_path)
+    with pytest.raises(MacError) as caught:
+        with repository.lease(task_id, "recovery-agent"):
+            pass
+
+    assert caught.value.code == "LEASE_CONFLICT"
+    assert json.loads(guard.read_text(encoding="utf-8"))["token"] == "CAS-FRESH"

@@ -11,6 +11,7 @@ from .git import GitRepository
 from .ids import is_identifier
 from .io import load_data
 from .repository import FilesystemTaskRepository, sha256_bytes
+from .policy import compile_policy
 from .schema_validation import SchemaSet
 from .scope import check_changes, check_paths, normalize_repo_path
 from .security import validate_result_security
@@ -52,9 +53,13 @@ class ResultService:
             issues.append(MacIssue("RESULT_RUN_REF_MISSING", "result run_id does not exist"))
         work_unit = load_data(work_unit_path) if work_unit_path is not None and work_unit_path.is_file() else None
         run = load_data(run_path) if run_path is not None and run_path.is_file() else None
+        if work_unit is not None and work_unit.get("task_id") != task_id:
+            issues.append(MacIssue("RESULT_WORK_UNIT_TASK_MISMATCH", "result work unit belongs to another task"))
         if work_unit is not None and work_unit.get("status") != "running":
             issues.append(MacIssue("RESULT_WORK_UNIT_NOT_RUNNING", "result work unit is not running"))
         if run is not None:
+            if run.get("task_id") != task_id:
+                issues.append(MacIssue("RESULT_RUN_TASK_MISMATCH", "result run belongs to another task"))
             if run.get("work_unit_id") != result.get("work_unit_id"):
                 issues.append(MacIssue("RESULT_RUN_WORK_UNIT_MISMATCH", "result run and work unit do not match"))
             if run.get("status") not in {"registered", "running"}:
@@ -69,20 +74,22 @@ class ResultService:
             }
             issues.extend(check_paths(list(result.get("changed_files", [])), work_unit_contract, repo_root=self.repo).issues)
         try:
-            config = load_data(self.repo / ".agents/config.yaml")
-            ownership = load_data(self.repo / str(config["paths"]["ownership"]))
-            approvals = [load_data(path) for path in (task_dir / "approvals").glob("*.json")]
             task = self.repository.load_task(task_id)
+            compiled = compile_policy(self.repo, task=task)
+            config = compiled.config
+            ownership = compiled.ownership
+            approvals = [load_data(path) for path in (task_dir / "approvals").glob("*.json")]
             valid_approvals = valid_scope_approvals(task, scope, approvals, ownership, config)
             actual_changes = GitRepository(self.repo).changes_since(scope.get("base_commit"), task_id=task_id)
             actual_result = check_changes(
                 actual_changes, scope, ownership=ownership, repo_root=self.repo, task_id=task_id,
                 governance_approval_level=max((str(item.get("independence_level", "L0")) for item in valid_approvals), default=None),
                 submodule_approved=any("submodule_change" in item.get("comment", "") for item in valid_approvals),
+                governance_sensitive_patterns=list(((config.get("security") or {}).get("governance_sensitive_paths") or [])),
             )
             issues.extend(actual_result.issues)
             if work_unit is not None:
-                work_unit_actual = check_changes(actual_changes, {**scope, "allowed_paths": list(work_unit.get("allowed_paths", [])), "owners": [str(work_unit.get("owner"))]}, ownership=ownership, repo_root=self.repo, task_id=task_id, governance_approval_level=max((str(item.get("independence_level", "L0")) for item in valid_approvals), default=None), submodule_approved=any("submodule_change" in item.get("comment", "") for item in valid_approvals))
+                work_unit_actual = check_changes(actual_changes, {**scope, "allowed_paths": list(work_unit.get("allowed_paths", [])), "owners": [str(work_unit.get("owner"))]}, ownership=ownership, repo_root=self.repo, task_id=task_id, governance_approval_level=max((str(item.get("independence_level", "L0")) for item in valid_approvals), default=None), submodule_approved=any("submodule_change" in item.get("comment", "") for item in valid_approvals), governance_sensitive_patterns=list(((config.get("security") or {}).get("governance_sensitive_paths") or [])))
                 issues.extend(work_unit_actual.issues)
             actual_paths = {
                 normalize_repo_path(path)

@@ -30,6 +30,18 @@ class GitRepository:
             raise MacError("GIT_COMMAND_FAILED", f"git {' '.join(argv)} failed", exit_code=ExitCode.EXTERNAL) from exc
         return result.stdout
 
+    def _run_match(self, *argv: str) -> bytes:
+        """Run a Git matcher where exit 1 means a valid empty result."""
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(self.root), *argv], check=False, capture_output=True
+            )
+        except FileNotFoundError as exc:
+            raise MacError("GIT_COMMAND_FAILED", f"git {' '.join(argv)} failed", exit_code=ExitCode.EXTERNAL) from exc
+        if result.returncode not in {0, 1}:
+            raise MacError("GIT_COMMAND_FAILED", f"git {' '.join(argv)} failed", exit_code=ExitCode.EXTERNAL)
+        return result.stdout
+
     @property
     def head(self) -> str:
         return str(self._run("rev-parse", "HEAD", text=True)).strip()
@@ -82,10 +94,23 @@ class GitRepository:
         return changes
 
     def changes_since(self, base: str | None, *, head: str = "HEAD", task_id: str | None = None) -> list[Change]:
-        committed = self.diff_changes(base, head) if base else []
-        current = self.workspace_changes(task_id=task_id)
+        if base and head == "HEAD":
+            # A union of base..HEAD and HEAD..workspace retains paths whose
+            # workspace content has been restored to the base tree.  Compare
+            # the base directly with the effective index/worktree instead.
+            raw = self._as_bytes(self._run(
+                "diff", "--name-status", "-z", "--find-renames", base, "--"
+            ))
+            changes = self._parse_name_status(raw, refs=(base, "HEAD"))
+            untracked_raw = self._as_bytes(self._run("ls-files", "--others", "--exclude-standard", "-z"))
+            changes.extend(
+                Change("add", normalize_repo_path(os.fsdecode(value)), display_path=os.fsdecode(value))
+                for value in untracked_raw.split(b"\0") if value
+            )
+        else:
+            changes = [*(self.diff_changes(base, head) if base else []), *self.workspace_changes()]
         combined: dict[tuple[str | None, str, str | None, str | None], Change] = {}
-        for change in [*committed, *current]:
+        for change in changes:
             if task_id and is_task_governance_metadata(change.path, task_id) and not (change.old_path and not is_task_governance_metadata(change.old_path, task_id)):
                 continue
             combined[(change.old_path, change.path, change.old_display_path, change.display_path)] = change
@@ -96,7 +121,7 @@ class GitRepository:
         return value if isinstance(value, bytes) else value.encode()
 
     def commit_subject(self, commit: str = "HEAD") -> dict[str, str]:
-        self._lfs_manifest()
+        self._lfs_manifest(commit=commit)
         commit_sha = str(self._run("rev-parse", commit, text=True)).strip()
         tree_sha = str(self._run("rev-parse", f"{commit}^{{tree}}", text=True)).strip()
         return {"type": "commit", "commit_sha": commit_sha, "tree_sha": tree_sha}
@@ -126,8 +151,11 @@ class GitRepository:
             pathspecs = (".", *(f":(exclude){pattern}" for pattern in task_governance_metadata_patterns(task_id)))
         path_args = ("--", *pathspecs) if pathspecs else ()
         index = self._as_bytes(self._run("ls-files", "--stage", "-z", *path_args))
-        lfs = self._lfs_manifest()
-        diff = self._as_bytes(self._run("diff", "--binary", *path_args)) + self._as_bytes(self._run("diff", "--cached", "--binary", *path_args))
+        lfs = self._lfs_manifest(index_rows=index)
+        # The index digest already binds staged content.  This digest represents
+        # only the overlay between index and worktree, which is the missing
+        # proof needed when promoting a pre-commit verification.
+        diff = self._as_bytes(self._run("diff", "--binary", *path_args))
         manifest: list[bytes] = []
         untracked = self._as_bytes(self._run("ls-files", "--others", "--exclude-standard", "-z"))
         for raw_path in untracked.split(b"\0"):
@@ -162,7 +190,8 @@ class GitRepository:
                 continue
             mode, _kind, object_id = metadata.split(b" ", 2)
             index_rows.append(mode + b" " + object_id + b" 0\t" + path + b"\0")
-        return _digest([b"".join(index_rows), self._lfs_manifest()])
+        encoded_rows = b"".join(index_rows)
+        return _digest([encoded_rows, self._lfs_manifest(index_rows=encoded_rows)])
 
     def review_diff_digest(self, base: str | None, *, head: str = "HEAD", task_id: str | None = None) -> str:
         pathspecs: tuple[str, ...] = ()
@@ -186,33 +215,69 @@ class GitRepository:
             return False
         return (
             source_workspace_subject.get("index_digest") == self._commit_index_digest(commit, task_id)
+            and source_workspace_subject.get("worktree_diff_digest") == _digest([b""])
             and source_workspace_subject.get("untracked_manifest_digest") == _digest([])
         )
 
-    def _lfs_manifest(self) -> bytes:
+    def _lfs_manifest(self, *, index_rows: bytes | None = None, commit: str | None = None) -> bytes:
+        """Bind LFS pointers and, when locally available, their object bytes.
+
+        The pointer blob is always part of the Git index/tree digest.  LFS
+        object availability is intentionally optional for local evidence; CI
+        may enforce fetchability as a separate gate.
+        """
         manifest: list[bytes] = []
         git_dir = Path(str(self._run("rev-parse", "--git-common-dir", text=True)).strip())
         if not git_dir.is_absolute():
             git_dir = (self.root / git_dir).resolve()
-        tracked = self._as_bytes(self._run("ls-files", "-z"))
-        for raw in tracked.split(b"\0"):
-            if not raw:
-                continue
-            relative = normalize_repo_path(os.fsdecode(raw)); path = self.root / relative
-            if not path.is_file() or path.is_symlink():
+        rows = index_rows
+        if rows is None:
+            rows = self._as_bytes(
+                self._run("ls-tree", "-r", "-z", "--full-tree", commit)
+                if commit else self._run("ls-files", "--stage", "-z")
+            )
+        row_by_path: dict[str, tuple[bytes, bytes]] = {}
+        for row in rows.split(b"\0"):
+            if not row:
                 continue
             try:
-                with path.open("rb") as handle:
-                    prefix = handle.read(256)
-            except OSError:
+                metadata, raw_path = row.split(b"\t", 1)
+                parts = metadata.split(b" ")
+                object_id = parts[2] if len(parts) >= 3 else parts[0].split(b" ")[-1]
+                # ls-tree: "mode type oid"; ls-files: "mode oid stage".
+                if len(parts) >= 3 and parts[1] in {b"blob", b"tree", b"commit"}:
+                    object_id = parts[2]
+                elif len(parts) >= 2:
+                    object_id = parts[1]
+            except (ValueError, IndexError):
                 continue
-            if not prefix.startswith(b"version https://git-lfs.github.com/spec/v1\n"):
+            if parts[0] == b"160000":
                 continue
-            oid = next((line[11:].decode("ascii") for line in prefix.splitlines() if line.startswith(b"oid sha256:")), "")
+            row_by_path[normalize_repo_path(os.fsdecode(raw_path))] = (object_id, raw_path)
+        grep_args = ["grep", "-l", "-z", "-I", "-e", "^version https://git-lfs.github.com/spec/v1$"]
+        grep_args.extend([commit, "--"] if commit else ["--cached", "--"])
+        lfs_paths: set[str] = set()
+        for raw_path in self._run_match(*grep_args).split(b"\0"):
+            if not raw_path:
+                continue
+            display = os.fsdecode(raw_path)
+            if commit and display.startswith(f"{commit}:"):
+                display = display[len(commit) + 1:]
+            lfs_paths.add(normalize_repo_path(display))
+        for relative in sorted(lfs_paths & row_by_path.keys()):
+            object_id, raw_path = row_by_path[relative]
+            try:
+                blob = self._as_bytes(self._run("cat-file", "blob", object_id.decode("ascii")))
+            except (MacError, UnicodeDecodeError):
+                continue
+            if not blob.startswith(b"version https://git-lfs.github.com/spec/v1\n"):
+                continue
+            oid = next((line[11:].decode("ascii", "strict") for line in blob.splitlines() if line.startswith(b"oid sha256:")), "")
             if len(oid) != 64:
                 raise MacError("GIT_LFS_POINTER_INVALID", f"invalid LFS pointer: {relative}", exit_code=ExitCode.CORRUPTION, path=relative)
             object_path = git_dir / "lfs" / "objects" / oid[:2] / oid[2:4] / oid
-            if not object_path.is_file():
-                raise MacError("GIT_LFS_OBJECT_MISSING", f"LFS object is unavailable for {relative}", exit_code=ExitCode.CORRUPTION, path=relative)
-            manifest.append(relative.encode("utf-8") + b"\0" + oid.encode("ascii") + b"\0" + hashlib.sha256(object_path.read_bytes()).digest())
+            record = relative.encode("utf-8") + b"\0" + oid.encode("ascii")
+            if object_path.is_file():
+                record += b"\0" + hashlib.sha256(object_path.read_bytes()).digest()
+            manifest.append(record)
         return b"".join(sorted(manifest))

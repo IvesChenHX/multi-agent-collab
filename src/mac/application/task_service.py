@@ -6,6 +6,7 @@ from typing import Any
 from mac.ids import prefixed
 from mac.io import load_data
 from mac.repository import FilesystemTaskRepository, build_policy_ref, git_head, utc_now
+from mac.policy import compile_policy
 
 
 class TaskService:
@@ -18,7 +19,9 @@ class TaskService:
         owners: list[str], runtime_profile: str, required_gates: list[str], actor: dict[str, Any],
         idempotency_key: str,
     ) -> dict[str, Any]:
-        if mode not in {"standard", "high_risk", "audit"}:
+        compiled = compile_policy(self.repo)
+        mode_policy = (compiled.config.get("modes") or {}).get(mode)
+        if not isinstance(mode_policy, dict) or not mode_policy.get("persistent"):
             raise ValueError("persistent task mode must be standard, high_risk, or audit")
         if not acceptance or not allowed_paths or not owners:
             raise ValueError("acceptance, allowed_paths, and owners are required")
@@ -26,15 +29,29 @@ class TaskService:
             existing_id, _ = existing
             return {"task": self.repository.load_task(existing_id), "scope": load_data(self.repository.task_dir(existing_id) / "scope-contract.yaml"), "idempotent_replay": True}
         task_id, scope_id, now = prefixed("TASK", title), prefixed("SCOPE"), utc_now()
-        workflow = ".agents/workflows/evidence-driven-development.yaml"
+        paths = compiled.config["paths"]
+        workflow = f"{paths['workflows']}/{compiled.workflow['name']}"
+        workflow = f"{workflow}.yaml"
+        if runtime_profile != compiled.runtime_profile.get("id"):
+            from mac.runtime import resolve_profile
+
+            resolve_profile(self.repo / str(paths["runtime_profiles"]), explicit=runtime_profile)
+        unknown_owners = sorted(set(owners) - set((compiled.ownership.get("owners") or {}).keys()))
+        if unknown_owners:
+            raise ValueError(f"scope owners are not declared by frozen ownership policy: {', '.join(unknown_owners)}")
+        resolved_gates = list(dict.fromkeys([
+            "approved_scope",
+            *mode_policy.get("required_gates", []),
+            *required_gates,
+        ]))
         task = {
             "schema_version": 6, "id": task_id, "title": title, "mode": mode, "state": "triage", "revision": 0,
             "created_at": now, "updated_at": now, "objective": objective,
             "acceptance_criteria": [{"id": f"AC-{index:03d}", "text": text, "required": True} for index, text in enumerate(acceptance, 1)],
             "policy_ref": build_policy_ref(self.repo, ["AGENTS.md", ".agents/config.yaml", workflow]),
-            "ownership_ref": build_policy_ref(self.repo, [".agents/ownership.yaml"]),
+            "ownership_ref": build_policy_ref(self.repo, [str(paths["ownership"])]),
             "scope_contract_ref": f"tasks/{task_id}/scope-contract.yaml", "runtime_profile": runtime_profile,
-            "required_gates": list(dict.fromkeys(["approved_scope", *required_gates])), "active_controller": None,
+            "required_gates": resolved_gates, "active_controller": None,
             "relationships": {"parent_task": None, "supersedes": [], "superseded_by": None}, "legacy_integrity": "full", "terminal": None,
         }
         scope = {

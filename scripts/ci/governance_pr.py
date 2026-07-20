@@ -13,6 +13,8 @@ from typing import Any
 
 import yaml
 
+from mac.git import GitRepository
+
 
 _TASK_DIRECTORY = re.compile(r"^tasks/(?P<directory>TASK-(?P<ulid>[0-9A-HJKMNP-TV-Z]{26})(?:-[^/]+)?)/")
 _TASK_ID = re.compile(r"^TASK-[0-9A-HJKMNP-TV-Z]{26}(?:-[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?)?$")
@@ -75,52 +77,16 @@ def _run(argv: list[str]) -> dict[str, Any]:
     }
 
 
-def _resolve_commit(ref: str) -> tuple[str, str]:
-    commit = subprocess.run(["git", "rev-parse", f"{ref}^{{commit}}"], check=False, text=True, encoding="utf-8", capture_output=True)
-    tree = subprocess.run(["git", "rev-parse", f"{ref}^{{tree}}"], check=False, text=True, encoding="utf-8", capture_output=True)
-    if commit.returncode or tree.returncode:
-        raise RuntimeError(f"cannot resolve Evidence target {ref}")
-    return commit.stdout.strip().lower(), tree.stdout.strip().lower()
-
-
-_TASK_METADATA_FILES = {"task.yaml", "scope-contract.yaml", "report.md"}
-_TASK_METADATA_DIRECTORIES = {"approvals", "events", "evidence", "findings", "private", "results", "risk-acceptances", "runs", "scope-history", "work-units"}
-
-
-def _is_task_metadata(path: str, task_directory: str) -> bool:
-    prefix = f"tasks/{task_directory}/"
-    if not path.startswith(prefix):
-        return False
-    relative = path[len(prefix):]
-    first, separator, remainder = relative.partition("/")
-    return relative in _TASK_METADATA_FILES or bool(separator and remainder and first in _TASK_METADATA_DIRECTORIES)
-
-
-def _current_code_commit(ref: str, task_directory: str) -> tuple[str, str]:
-    cursor, _ = _resolve_commit(ref)
-    while True:
-        ancestry = subprocess.run(["git", "rev-list", "--parents", "-n", "1", cursor], check=False, text=True, encoding="utf-8", capture_output=True)
-        values = ancestry.stdout.strip().split()
-        if ancestry.returncode or len(values) < 2:
-            return _resolve_commit(cursor)
-        parent = values[1]
-        changed = subprocess.run(["git", "diff", "--name-only", "-z", parent, cursor], check=False, capture_output=True)
-        if changed.returncode:
-            raise RuntimeError(f"cannot inspect code subject {cursor}")
-        paths = [value.decode("utf-8") for value in changed.stdout.split(b"\0") if value]
-        if any(not _is_task_metadata(path, task_directory) for path in paths):
-            return _resolve_commit(cursor)
-        cursor = parent
-
-
 def check_current_evidence(repo: Path, task_directory: str, head: str) -> dict[str, Any]:
-    """Fail unless valid Evidence covers every required claim at the exact PR head."""
+    """Fail unless Evidence covers claims at the PR head's current code subject."""
     task_dir = repo / "tasks" / task_directory
     task_path = task_dir / "task.yaml"
     if not task_path.is_file():
         return {"argv": ["evidence-gate", task_directory], "exit_code": 7, "output": {"ok": False, "error": "task.yaml is missing"}, "stdout": None, "stderr": None}
     task = yaml.safe_load(task_path.read_text(encoding="utf-8"))
-    commit_sha, tree_sha = _current_code_commit(head, task_directory)
+    subject = GitRepository(repo).current_code_subject(task_directory, head)
+    commit_sha = subject["commit_sha"].lower()
+    tree_sha = subject["tree_sha"].lower()
     required = {str(value) for value in task.get("required_gates", [])}
     required.update(str(item["id"]) for item in task.get("acceptance_criteria", []) if item.get("required"))
     policy_digest = str((task.get("policy_ref") or {}).get("combined_digest", ""))
@@ -138,7 +104,7 @@ def check_current_evidence(repo: Path, task_directory: str, head: str) -> dict[s
         if value.get("validity", {}).get("status") != "valid" or value.get("validity", {}).get("invalidated_by"):
             reasons.append("invalid status")
         if subject != {"type": "commit", "commit_sha": commit_sha, "tree_sha": tree_sha}:
-            reasons.append("not bound to PR head commit/tree")
+            reasons.append("not bound to PR head current code subject")
         if value.get("policy_digest") != policy_digest:
             reasons.append("policy digest mismatch")
         run_id = value.get("run_id")

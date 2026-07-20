@@ -20,14 +20,83 @@ _SECRET_PATTERNS = [
 _SENSITIVE_KEYS = {"password", "passwd", "secret", "token", "api_key", "apikey", "authorization", "private_key", "raw_log"}
 
 
-def parse_yaml_safely(source: str | bytes, *, max_bytes: int = 1_048_576) -> dict[str, Any]:
+class _YamlDuplicateKey(ValueError):
+    pass
+
+
+class _YamlComplexityLimit(ValueError):
+    pass
+
+
+class _RestrictedSafeLoader(yaml.SafeLoader):
+    """SafeLoader with deterministic structural limits and duplicate-key rejection."""
+
+    def __init__(self, stream: str, *, max_nodes: int, max_depth: int) -> None:
+        super().__init__(stream)
+        self._max_nodes = max_nodes
+        self._max_depth = max_depth
+        self._node_count = 0
+        self._compose_depth = 0
+
+    def compose_node(self, parent: Any, index: Any) -> yaml.Node:
+        self._node_count += 1
+        self._compose_depth += 1
+        try:
+            if self._node_count > self._max_nodes or self._compose_depth > self._max_depth:
+                raise _YamlComplexityLimit(
+                    f"YAML exceeds node/depth limit ({self._max_nodes}/{self._max_depth})"
+                )
+            return super().compose_node(parent, index)
+        finally:
+            self._compose_depth -= 1
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+        if not isinstance(node, yaml.MappingNode):
+            raise yaml.constructor.ConstructorError(
+                None, None, f"expected a mapping node, got {node.id}", node.start_mark
+            )
+        seen: set[Any] = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=False)
+            try:
+                duplicate = key in seen
+            except TypeError as exc:
+                raise _YamlDuplicateKey("YAML mapping keys must be scalar/hashable") from exc
+            if duplicate:
+                raise _YamlDuplicateKey(f"duplicate YAML mapping key: {key!r}")
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+def parse_yaml_safely(
+    source: str | bytes, *, max_bytes: int = 1_048_576,
+    max_nodes: int = 10_000, max_depth: int = 100,
+) -> dict[str, Any]:
     raw = source if isinstance(source, bytes) else source.encode("utf-8")
     if len(raw) > max_bytes:
         raise MacError("INPUT_TOO_LARGE", "YAML input exceeds configured byte limit", exit_code=ExitCode.SECURITY)
-    text = raw.decode("utf-8")
-    if any(isinstance(token, AliasToken) for token in yaml.scan(text)):
-        raise MacError("YAML_ALIAS_FORBIDDEN", "YAML aliases are forbidden", exit_code=ExitCode.SECURITY)
-    value = yaml.safe_load(text)
+    if max_nodes < 1 or max_depth < 1:
+        raise ValueError("YAML structural limits must be positive")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise MacError("YAML_INVALID_UTF8", "YAML input must be valid UTF-8", exit_code=ExitCode.SECURITY) from exc
+    try:
+        if any(isinstance(token, AliasToken) for token in yaml.scan(text)):
+            raise MacError("YAML_ALIAS_FORBIDDEN", "YAML aliases are forbidden", exit_code=ExitCode.SECURITY)
+        loader = _RestrictedSafeLoader(text, max_nodes=max_nodes, max_depth=max_depth)
+        try:
+            value = loader.get_single_data()
+        finally:
+            loader.dispose()
+    except MacError:
+        raise
+    except _YamlDuplicateKey as exc:
+        raise MacError("YAML_DUPLICATE_KEY", str(exc), exit_code=ExitCode.SECURITY) from exc
+    except _YamlComplexityLimit as exc:
+        raise MacError("YAML_COMPLEXITY_LIMIT", str(exc), exit_code=ExitCode.SECURITY) from exc
+    except (yaml.YAMLError, RecursionError) as exc:
+        raise MacError("YAML_INVALID", "YAML input is malformed or too complex", exit_code=ExitCode.SECURITY) from exc
     if not isinstance(value, dict):
         raise MacError("YAML_OBJECT_REQUIRED", "YAML document must be an object", exit_code=ExitCode.VALIDATION)
     return value

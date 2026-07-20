@@ -139,10 +139,16 @@ def find_transition(source: str, target: str, transitions: Iterable[Transition] 
     return next((item for item in transitions if source in item.sources and target == item.target), None)
 
 
-def evaluate_transition(source: str, target: str, context: TransitionContext, transitions: Iterable[Transition] = DEFAULT_TRANSITIONS) -> TransitionDecision:
-    if source not in TASK_STATES or target not in TASK_STATES:
+def evaluate_transition(
+    source: str, target: str, context: TransitionContext,
+    transitions: Iterable[Transition] = DEFAULT_TRANSITIONS, *,
+    states: Iterable[str] = TASK_STATES, terminal_states: Iterable[str] = TERMINAL_STATES,
+) -> TransitionDecision:
+    declared_states = set(states)
+    declared_terminal_states = set(terminal_states)
+    if source not in declared_states or target not in declared_states:
         return TransitionDecision(False, ("STATE_UNKNOWN",))
-    if source in TERMINAL_STATES:
+    if source in declared_terminal_states:
         return TransitionDecision(False, ("TERMINAL_STATE_IMMUTABLE",))
     transition = find_transition(source, target, transitions)
     if transition is None:

@@ -56,3 +56,13 @@ def test_hash_manifest_is_sorted_and_does_not_hash_itself(tmp_path):
     assert manifest.read_text(encoding="utf-8") == first
     assert first.splitlines()[0].endswith("  a.tar.gz")
     assert "SHA256SUMS" not in first
+
+
+def test_ci_and_release_builds_verify_schema_lock_first():
+    root = Path(__file__).parents[2]
+    for relative in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
+        workflow = (root / relative).read_text(encoding="utf-8")
+        lock_check = workflow.find("scripts/release/verify_schema_lock.py")
+        build = workflow.find("uv build")
+        assert lock_check >= 0, relative
+        assert lock_check < build, relative
