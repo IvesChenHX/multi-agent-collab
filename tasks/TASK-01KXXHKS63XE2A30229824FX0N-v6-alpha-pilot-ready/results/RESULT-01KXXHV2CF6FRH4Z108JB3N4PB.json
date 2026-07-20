@@ -1,0 +1,115 @@
+{
+  "assumptions": [
+    "The next Gate 2 session will obtain three real project owners, at least 30 real tasks, trusted runtime identities and hosted cross-platform CI before any Pilot pass claim."
+  ],
+  "blockers": [],
+  "changed_files": [
+    "docs/pilot/alpha-close-report.md",
+    "src/mac/cli.py",
+    "tests/security/test_authority_commands.py",
+    "tests/test_cli_integration.py",
+    "tests/test_repair_round3.py",
+    "tests/test_repair_round4.py"
+  ],
+  "commands": [
+    {
+      "argv": [
+        "pytest",
+        "integration-targeted",
+        "--no-cov"
+      ],
+      "exit_code": 0,
+      "summary": "39 passed"
+    },
+    {
+      "argv": [
+        "pytest"
+      ],
+      "exit_code": 0,
+      "summary": "190 passed, 3 skipped; 92.92% coverage exceeds the 90% gate"
+    },
+    {
+      "argv": [
+        "mac",
+        "validate",
+        "--json"
+      ],
+      "exit_code": 0,
+      "summary": "repository valid; five legacy v5 tasks remain explicitly unverifiable warnings"
+    },
+    {
+      "argv": [
+        "mac",
+        "doctor",
+        "--json"
+      ],
+      "exit_code": 0,
+      "summary": "required checks pass; optional CRLF-era digest presentation and legacy migration remain visible"
+    },
+    {
+      "argv": [
+        "python",
+        "scripts/release/check_schema_lock.py"
+      ],
+      "exit_code": 0,
+      "summary": "schema bundle matches lock"
+    },
+    {
+      "argv": [
+        "mac",
+        "scope",
+        "check",
+        "--workspace",
+        "--json"
+      ],
+      "exit_code": 0,
+      "summary": "all current changes are inside approved Scope v3"
+    },
+    {
+      "argv": [
+        "credential-pattern-scan",
+        "--changed-files",
+        "117",
+        "--reviewed-fixtures",
+        "5"
+      ],
+      "exit_code": 0,
+      "summary": "zero unexpected credential-pattern hits"
+    },
+    {
+      "argv": [
+        "python",
+        "-m",
+        "build",
+        "--no-isolation",
+        "--outdir",
+        "TEMP_OUTPUT_DIR"
+      ],
+      "exit_code": 0,
+      "summary": "wheel and sdist built successfully with recorded SHA-256 digests"
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "summary": "clean; Windows LF/CRLF notices only"
+    }
+  ],
+  "id": "RESULT-01KXXHV2CF6FRH4Z108JB3N4PB",
+  "new_risks": [
+    "Three real symlink fixtures remain skipped on this Windows host and require external Linux/macOS or privileged Windows CI.",
+    "The runtime cannot prove native read-only L2 reviewer permissions; formal high-risk review remains an external gate.",
+    "Doctor's optional policy_drift presentation compares CRLF-era frozen row digests with canonical HEAD digests even though executable-equivalence validation succeeds."
+  ],
+  "outcome": "succeeded",
+  "run_id": "RUN-01KXXNFJP8QRTACVMQJ10M2TX6",
+  "schema_version": 1,
+  "scope_amendment_request": null,
+  "submitted_at": "2026-07-19T17:32:16Z",
+  "summary": "Integrated the CLI with frozen runtime policy, authority checks, immutable Run baselines, structured Result/Evidence proofs, Doctor plan digests and external audit trust anchors; completed the local Alpha verification and Pilot-ready report.",
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+  "work_unit_id": "WU-01KXXHV2CF6FRH4Z108JB3N4PA"
+}

@@ -237,3 +237,38 @@ def test_review_becomes_stale_when_diff_changes_after_review_started() -> None:
 
     assert not decision.ok
     assert "REVIEW_DIFF_STALE" in decision.codes
+
+
+def test_review_evidence_cannot_upgrade_the_run_level() -> None:
+    reviewer = independent_reviewer("L1")
+
+    decision = evaluate_review_independence(
+        review_evidence(run_id=str(reviewer["id"]), level="L2"),
+        reviewer_run=reviewer,
+        implementer_runs=[implementer_run()],
+        current_diff_digest=DIFF_A,
+        minimum_level="L2",
+        runtime_profiles=RUNTIME_PROFILES,
+    )
+
+    assert not decision.ok
+    assert "REVIEW_LEVEL_ATTESTATION_MISMATCH" in decision.codes
+
+
+def test_l2_reviewer_must_be_distinct_from_every_implementer_runtime() -> None:
+    reviewer = independent_reviewer("L2")
+    same_runtime = implementer_run()
+    same_runtime["runtime"] = dict(reviewer["runtime"])
+    same_runtime["runtime"]["execution_context_id"] = "another-context"
+
+    decision = evaluate_review_independence(
+        review_evidence(run_id=str(reviewer["id"]), level="L2"),
+        reviewer_run=reviewer,
+        implementer_runs=[implementer_run(), same_runtime],
+        current_diff_digest=DIFF_A,
+        minimum_level="L2",
+        runtime_profiles=RUNTIME_PROFILES,
+    )
+
+    assert not decision.ok
+    assert "REVIEW_RUNTIME_NOT_INDEPENDENT" in decision.codes

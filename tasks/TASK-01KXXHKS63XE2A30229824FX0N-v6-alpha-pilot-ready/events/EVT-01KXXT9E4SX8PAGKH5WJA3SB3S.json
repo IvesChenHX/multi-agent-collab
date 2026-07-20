@@ -1,0 +1,70 @@
+{
+  "actor": {
+    "id": "root-controller",
+    "kind": "agent"
+  },
+  "event_id": "EVT-01KXXT9E4SX8PAGKH5WJA3SB3S",
+  "event_type": "run_finished",
+  "expected_revision": 34,
+  "idempotency_key": "alpha-run-finish-snapshot-compensation",
+  "new_revision": 35,
+  "occurred_at": "2026-07-19T18:30:20.569651Z",
+  "payload": {
+    "run": {
+      "actor": {
+        "id": "root-controller",
+        "kind": "agent"
+      },
+      "exit_code": null,
+      "finished_at": "2026-07-19T18:24:59.378781Z",
+      "id": "RUN-01KXXQKEA1P9CCF7PBE0HB1TBZ",
+      "independence_level": "L0",
+      "runtime": {
+        "branch": "codex/v6-alpha-pilot-ready",
+        "execution_context_id": "alpha-review-repairs-999b694",
+        "model": "gpt-5.6-sol",
+        "profile": "local-multi",
+        "provider": "openai",
+        "worktree": "C:\\Users\\hanxian.chen\\.codex\\visualizations\\2026\\07\\19\\019f7b03-224c-7fa0-a030-fd771e2b008e\\worktrees\\v6-alpha-pilot-ready"
+      },
+      "schema_version": 1,
+      "started_at": "2026-07-19T17:43:22.689512Z",
+      "status": "cancelled",
+      "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+      "work_unit_id": "WU-01KXXQJNPW1BHBSSN49TGMT6EH"
+    },
+    "run_id": "RUN-01KXXQKEA1P9CCF7PBE0HB1TBZ",
+    "status": "cancelled",
+    "work_unit": {
+      "acceptance_criteria": [],
+      "allowed_paths": [
+        "src/mac/authority.py",
+        "src/mac/cli.py",
+        "src/mac/result.py",
+        "src/mac/git.py",
+        "src/mac/migration.py",
+        "src/mac/events.py",
+        "src/mac/doctor.py",
+        "src/mac/repository.py",
+        "tests/security/test_authority_commands.py",
+        "tests/test_cli_integration.py",
+        "tests/test_result_intake.py",
+        "tests/test_migration_and_services.py",
+        "tests/test_event_projection_variants.py",
+        "tests/operations/test_doctor.py"
+      ],
+      "depends_on": [],
+      "expected_result": "tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/results/RESULT-01KXXQJNPW1BHBSSN49TGMT6EJ.json",
+      "id": "WU-01KXXQJNPW1BHBSSN49TGMT6EH",
+      "owner": "platform",
+      "schema_version": 1,
+      "status": "cancelled",
+      "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+      "title": "Frozen review blocker repairs"
+    },
+    "work_unit_id": "WU-01KXXQJNPW1BHBSSN49TGMT6EH"
+  },
+  "run_id": "RUN-01KXXQKEA1P9CCF7PBE0HB1TBZ",
+  "schema_version": 1,
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready"
+}

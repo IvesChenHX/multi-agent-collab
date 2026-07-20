@@ -5,11 +5,13 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from .errors import ExitCode, MacError
 from .ids import prefixed
 from .io import atomic_write_json, atomic_write_yaml, load_data
 from .repository import build_policy_ref, sha256_bytes, utc_now
@@ -19,6 +21,10 @@ from .ownership import OwnershipResolver
 
 
 _V5_TASK_ID = re.compile(r"^TASK-[0-9]{4,}(?:-[a-z0-9][a-z0-9-]*)?$")
+_REFERENCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_INVALID_SOURCE_PROBLEMS = {
+    "invalid_entry", "missing_id", "illegal_id", "duplicate_id", "detail_path_unsafe",
+}
 
 
 def _digest(path: Path) -> str | None:
@@ -26,24 +32,93 @@ def _digest(path: Path) -> str | None:
 
 
 def _entity_digest(value: Any) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return sha256_bytes(encoded)
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return sha256_bytes(payload)
 
 
-def _reference_record(
-    root: Path, *, kind: str, identifier: str, candidates: list[Path], referenced_by: str,
-) -> dict[str, Any]:
-    existing = next((path for path in candidates if path.is_file()), None)
-    selected = existing or candidates[0]
+def _source_record(root: Path, path: Path, *, kind: str) -> dict[str, Any]:
     return {
+        "path": path.relative_to(root).as_posix(),
         "kind": kind,
-        "id": identifier,
-        "reference": f"{kind}:{identifier}",
-        "path": selected.relative_to(root).as_posix(),
-        "exists": existing is not None,
-        "digest": _digest(existing) if existing else None,
-        "referenced_by": referenced_by,
+        "digest": _digest(path),
+        "status": "present" if path.is_file() else "missing",
     }
+
+
+def _directory_digest(path: Path) -> str | None:
+    if not path.is_dir():
+        return None
+    manifest = []
+    for child in sorted(item for item in path.rglob("*") if item.is_file()):
+        manifest.append({
+            "path": child.relative_to(path).as_posix(),
+            "digest": _digest(child),
+        })
+    return _entity_digest(manifest)
+
+
+def _verify_sources(root: Path, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    matrix: list[dict[str, Any]] = []
+    for item in records:
+        path = root / str(item["path"])
+        actual = _digest(path)
+        expected = item.get("digest")
+        matrix.append({
+            "check": "source_unchanged",
+            "path": item["path"],
+            "expected_digest": expected,
+            "actual_digest": actual,
+            "status": "verified" if expected is not None and actual == expected else "mismatch",
+        })
+    return matrix
+
+
+def _resolve_git_ref(root: Path, ref: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--verify", f"{ref}^{{commit}}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip() or None
+
+
+def _safe_reference_path(root: Path, directory: str, reference: str, suffix: str) -> Path | None:
+    if not _REFERENCE_ID.fullmatch(reference):
+        return None
+    return root / directory / f"{reference}{suffix}"
+
+
+def _is_link_like(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(os.path, "isjunction", None)
+        return bool(is_junction is not None and is_junction(path))
+    except OSError:
+        return True
+
+
+def _safe_legacy_detail(root: Path, legacy_id: str) -> Path | None:
+    if not _V5_TASK_ID.fullmatch(legacy_id):
+        return None
+    tasks = root / "tasks"
+    if _is_link_like(tasks):
+        return None
+    task_dir = tasks / legacy_id
+    detail = task_dir / "task.md"
+    if _is_link_like(task_dir) or _is_link_like(detail):
+        return None
+    try:
+        resolved_tasks = tasks.resolve(strict=False)
+        resolved_detail = detail.resolve(strict=False)
+        resolved_detail.relative_to(resolved_tasks)
+    except (OSError, ValueError):
+        return None
+    return detail
 
 
 def map_v5_state(status: str, *, blocked_kind: str | None = None) -> str:
@@ -65,13 +140,16 @@ def scan_v5(repo: Path) -> dict[str, Any]:
     entries = raw.get("tasks", []) if isinstance(raw, dict) else []
     seen: set[str] = set()
     rows = []
+    status_matrix: list[dict[str, Any]] = []
     warnings = []
     known_statuses = {"complete", "archived", "accepted_risk", "triage", "ready", "executing", "verifying", "reviewing", "fixing", "repairing", "blocked", "cancelled", "superseded", "failed"}
-    terminal_statuses = {"complete", "archived", "accepted_risk", "cancelled", "superseded", "failed"}
-    for entry_index, entry in enumerate(entries):
+    registry_digest = _digest(registry)
+    for entry_index, source_entry in enumerate(entries):
+        entry = source_entry if isinstance(source_entry, dict) else {}
         legacy_id = str(entry.get("id", ""))
-        detail = root / "tasks" / legacy_id / "task.md"
         problems = []
+        if not isinstance(source_entry, dict):
+            problems.append("invalid_entry")
         if not legacy_id:
             problems.append("missing_id")
         elif not _V5_TASK_ID.fullmatch(legacy_id):
@@ -79,151 +157,245 @@ def scan_v5(repo: Path) -> dict[str, Any]:
         elif legacy_id in seen:
             problems.append("duplicate_id")
         seen.add(legacy_id)
+        detail = _safe_legacy_detail(root, legacy_id)
+        if legacy_id and _V5_TASK_ID.fullmatch(legacy_id) and detail is None:
+            problems.append("detail_path_unsafe")
         if entry.get("status") == "blocked":
             problems.append("blocked_requires_manual_classification")
         if str(entry.get("status", "")) not in known_statuses:
             problems.append("unknown_status")
-        legacy_status = str(entry.get("status", ""))
-        if legacy_status in terminal_statuses and not entry.get("archived_at"):
+        if str(entry.get("status", "")) in {"complete", "archived", "accepted_risk"} and not entry.get("archived_at"):
             problems.append("terminal_timestamp_missing")
-        if legacy_status not in terminal_statuses and entry.get("archived_at"):
+        if str(entry.get("status", "")) not in {"complete", "archived", "accepted_risk", "cancelled", "superseded", "failed"} and entry.get("archived_at"):
             problems.append("active_has_terminal_timestamp")
-        registry_source = {
-            "kind": "registry_entry", "path": "tasks/index.yaml",
-            "pointer": f"/tasks/{entry_index}", "digest": _entity_digest(entry),
-        }
-        sources = [registry_source]
-        if detail.is_file():
-            sources.append({
-                "kind": "task_detail", "path": detail.relative_to(root).as_posix(),
-                "digest": _digest(detail),
+        source_refs = [{
+            "path": "tasks/index.yaml",
+            "selector": f"tasks[{entry_index}]",
+            "document_digest": registry_digest,
+            "entity_digest": _entity_digest(source_entry),
+        }]
+        detail_present = detail is not None and detail.is_file()
+        detail_digest = _digest(detail) if detail_present and detail is not None else None
+        if detail_present and detail is not None:
+            source_refs.append({
+                "path": detail.relative_to(root).as_posix(),
+                "selector": None,
+                "document_digest": detail_digest,
+                "entity_digest": detail_digest,
             })
-        primary_source = sources[-1]
+        mapped_state = map_v5_state(str(entry.get("status", "")))
+        status_matrix.append({
+            "legacy_id": legacy_id,
+            "source_status": entry.get("status"),
+            "mapped_state": mapped_state,
+            "recognized": str(entry.get("status", "")) in known_statuses,
+            "manual_classification_required": entry.get("status") == "blocked",
+            "problems": list(problems),
+        })
         rows.append({
             "legacy_id": legacy_id, "title": entry.get("title"), "status": entry.get("status"),
-            "mapped_state": map_v5_state(legacy_status),
-            "status_class": "terminal" if legacy_status in terminal_statuses else ("manual" if legacy_status == "blocked" else "active" if legacy_status in known_statuses else "unknown"),
-            "detail_present": detail.is_file(), "detail_digest": _digest(detail),
-            "integrity": "partial" if detail.is_file() else "metadata_only",
+            "detail_present": detail_present, "detail_digest": detail_digest,
+            "integrity": "partial" if detail_present else "metadata_only",
             "verification_status": "unverifiable", "problems": problems,
-            "source_path": primary_source["path"], "source_digest": primary_source["digest"],
-            "sources": sources,
+            "source_path": detail.relative_to(root).as_posix() if detail_present and detail is not None else "tasks/index.yaml",
+            "source_digest": detail_digest or _entity_digest(source_entry),
+            "source_refs": source_refs,
         })
     if not registry.is_file():
         warnings.append("tasks/index.yaml is missing")
-    detail_directories = sorted(path.relative_to(root).as_posix() for path in (root / "tasks").glob("TASK-*") if path.is_dir()) if (root / "tasks").is_dir() else []
+    detail_directories = sorted(
+        path.relative_to(root).as_posix()
+        for path in (root / "tasks").glob("TASK-*")
+        if not _is_link_like(path) and path.is_dir()
+    ) if not _is_link_like(root / "tasks") and (root / "tasks").is_dir() else []
     config_path = root / ".agents/config.yaml"
     ownership_path = root / ".agents/ownership.yaml"
-    reference_checks: dict[str, dict[str, Any]] = {}
-    ownership_ambiguities: dict[str, dict[str, Any]] = {}
+    missing_references: list[str] = []
+    reference_checks: list[dict[str, Any]] = []
+    ownership_ambiguities: list[dict[str, Any]] = []
+    source_documents = [_source_record(root, registry, kind="registry")]
+    source_documents.extend(
+        _source_record(root, root / reference["path"], kind="task_detail")
+        for row in rows
+        for reference in row["source_refs"]
+        if reference["selector"] is None
+    )
     try:
         config = load_data(config_path)
         workflow_id = config.get("default_workflow") or config.get("workflow")
         if workflow_id:
-            record = _reference_record(
-                root, kind="workflow", identifier=str(workflow_id),
-                candidates=[
-                    root / ".agents/workflows" / f"{workflow_id}.yaml",
-                    root / ".agents/legacy/workflows" / f"{workflow_id}.yaml",
-                ], referenced_by=".agents/config.yaml#default_workflow",
-            )
-            reference_checks[f"{record['reference']}@{record['referenced_by']}"] = record
-    except Exception:
+            workflow_ref = str(workflow_id)
+            target = _safe_reference_path(root, ".agents/workflows", workflow_ref, ".yaml")
+            status = "invalid" if target is None else ("resolved" if target.is_file() else "missing")
+            target_path = f".agents/workflows/{workflow_ref}.yaml" if target is not None else None
+            reference_checks.append({
+                "kind": "workflow",
+                "reference": workflow_ref,
+                "source_path": ".agents/config.yaml",
+                "source_digest": _digest(config_path),
+                "target_path": target_path,
+                "target_digest": _digest(target) if target is not None else None,
+                "status": status,
+            })
+            if status != "resolved":
+                missing_references.append(f"workflow:{workflow_ref}")
+            elif target is not None:
+                source_documents.append(_source_record(root, target, kind="workflow"))
+    except Exception as exc:
         config = {}
+        warnings.append(f".agents/config.yaml is invalid: {type(exc).__name__}")
+    source_documents.append(_source_record(root, config_path, kind="config"))
     try:
         ownership_data = load_data(ownership_path)
         for owner, definition in (ownership_data.get("owners") or {}).items():
             role = definition.get("implementation_role")
             if role:
-                record = _reference_record(
-                    root, kind="role", identifier=str(role),
-                    candidates=[root / ".agents/agents" / f"{role}.md"],
-                    referenced_by=f".agents/ownership.yaml#owners/{owner}/implementation_role",
-                )
-                reference_checks[f"{record['reference']}@{record['referenced_by']}"] = record
+                role_ref = str(role)
+                target = _safe_reference_path(root, ".agents/agents", role_ref, ".md")
+                status = "invalid" if target is None else ("resolved" if target.is_file() else "missing")
+                target_path = f".agents/agents/{role_ref}.md" if target is not None else None
+                reference_checks.append({
+                    "kind": "role",
+                    "owner": str(owner),
+                    "reference": role_ref,
+                    "source_path": ".agents/ownership.yaml",
+                    "source_digest": _digest(ownership_path),
+                    "target_path": target_path,
+                    "target_digest": _digest(target) if target is not None else None,
+                    "status": status,
+                })
+                if status != "resolved":
+                    missing_references.append(f"role:{role_ref}")
+                elif target is not None:
+                    source_documents.append(_source_record(root, target, kind="role"))
             for pattern in definition.get("include", []):
                 probe = str(pattern).replace("**", "probe").replace("*", "probe").rstrip("/") or "probe"
-                match = OwnershipResolver(ownership_data).resolve(probe)
+                try:
+                    match = OwnershipResolver(ownership_data).resolve(probe)
+                except Exception as exc:
+                    ownership_ambiguities.append({
+                        "path": probe, "owners": [], "status": "invalid_pattern", "error": type(exc).__name__,
+                    })
+                    continue
                 if match.status == "ambiguous":
-                    ownership_ambiguities[probe] = {"path": probe, "owners": list(match.owners)}
-    except Exception:
+                    ownership_ambiguities.append({
+                        "path": probe, "owners": list(match.owners), "status": "ambiguous",
+                    })
+    except Exception as exc:
         ownership_data = {}
-    for entry_index, entry in enumerate(entries):
-        workflow = entry.get("workflow") or entry.get("workflow_id")
-        if workflow:
-            record = _reference_record(
-                root, kind="workflow", identifier=str(workflow),
-                candidates=[
-                    root / ".agents/workflows" / f"{workflow}.yaml",
-                    root / ".agents/legacy/workflows" / f"{workflow}.yaml",
-                ], referenced_by=f"tasks/index.yaml#/tasks/{entry_index}",
-            )
-            reference_checks[f"{record['reference']}@{record['referenced_by']}"] = record
-        role_values = entry.get("roles", entry.get("role", []))
-        if isinstance(role_values, str):
-            role_values = [role_values]
-        for role in role_values if isinstance(role_values, list) else []:
-            record = _reference_record(
-                root, kind="role", identifier=str(role),
-                candidates=[root / ".agents/agents" / f"{role}.md"],
-                referenced_by=f"tasks/index.yaml#/tasks/{entry_index}",
-            )
-            reference_checks[f"{record['reference']}@{record['referenced_by']}"] = record
-    sources = [{"path": "tasks/index.yaml", "digest": _digest(registry), "kind": "registry"}]
+        warnings.append(f".agents/ownership.yaml is invalid: {type(exc).__name__}")
+    source_documents.append(_source_record(root, ownership_path, kind="ownership"))
+    deduplicated_documents = {
+        (item["path"], item["kind"]): item for item in source_documents
+    }
+    source_documents = sorted(deduplicated_documents.values(), key=lambda item: (item["path"], item["kind"]))
+    sources = []
     for row in rows:
-        sources.extend({**source, "legacy_id": row["legacy_id"]} for source in row["sources"])
-    for record in reference_checks.values():
-        sources.append({
-            "path": record["path"], "digest": record["digest"],
-            "kind": f"{record['kind']}_reference", "reference": record["reference"],
-        })
-    missing_references = sorted(set(record["reference"] for record in reference_checks.values() if not record["exists"]))
-    status_inventory: dict[str, int] = {}
-    for row in rows:
-        key = str(row["status"])
-        status_inventory[key] = status_inventory.get(key, 0) + 1
+        for reference in row["source_refs"]:
+            sources.append({
+                "path": reference["path"],
+                "selector": reference["selector"],
+                "digest": reference["document_digest"],
+                "entity_digest": reference["entity_digest"],
+                "kind": "task_detail" if reference["selector"] is None else "registry_entry",
+                "legacy_id": row["legacy_id"],
+            })
+    pre_migration_commit = _resolve_git_ref(root, "refs/tags/pre-v6-migration")
+    rollback_matrix = [{
+        "check": "pre_migration_ref",
+        "ref": "refs/tags/pre-v6-migration",
+        "expected_commit": pre_migration_commit,
+        "status": "verified" if pre_migration_commit else "missing",
+    }]
+    rollback_matrix.extend({
+        "check": "source_unchanged",
+        "path": item["path"],
+        "expected_digest": item["digest"],
+        "status": "captured" if item["digest"] else "missing",
+    } for item in source_documents)
     warnings.extend(["Legacy completion metadata is not v6 Evidence.", "No Evidence is generated by migration."])
-    rollback_matrix = [
-        {
-            "mutation": "create v6 task directories",
-            "rollback_action": "git revert the migration commit or remove only paths listed in generated_paths before commit",
-            "verification": "every v5 source path and digest in source_entities remains unchanged",
-        },
-        {
-            "mutation": "update governance configuration during cutover",
-            "rollback_action": "git revert the cutover commit or switch to pre-v6-migration",
-            "verification": "policy/config digests equal the pre-migration manifest",
-        },
-        {
-            "mutation": "stop writing the v5 registry after cutover",
-            "rollback_action": "restore the pre-v6-migration tag and resume the v5 writer",
-            "verification": "v5 task count and per-entry digests equal this scan report",
-        },
-    ]
     return {
         "schema_version": 1, "repository": str(root), "registry": "tasks/index.yaml",
         "registry_schema_version": raw.get("schema_version"), "policy_schema_version": config.get("schema_version"),
-        "registry_digest": _digest(registry), "task_count": len(rows), "tasks": rows, "visible_task_directories": detail_directories,
-        "status_inventory": dict(sorted(status_inventory.items())),
-        "missing_references": missing_references,
-        "reference_checks": sorted(reference_checks.values(), key=lambda item: item["reference"]),
-        "ownership_ambiguities": sorted(ownership_ambiguities.values(), key=lambda item: item["path"]),
-        "source_entities": sources, "warnings": warnings,
+        "registry_digest": registry_digest, "task_count": len(rows), "tasks": rows, "visible_task_directories": detail_directories,
+        "status_matrix": status_matrix, "reference_checks": reference_checks,
+        "missing_references": sorted(set(missing_references)), "ownership_ambiguities": ownership_ambiguities,
+        "source_documents": source_documents, "source_entities": sources, "warnings": warnings,
         "scan_matrix": ["schema_version", "status_consistency", "terminal_timestamp", "detail_reference", "duplicate_or_illegal_id", "blocked_classification", "role_reference", "workflow_reference", "ownership_ambiguity", "source_path_and_digest"],
-        "rollback": {"pre_migration_tag": "pre-v6-migration", "precondition": "create the tag before apply", "method": "git revert the migration commit or switch to pre-v6-migration; v5 inputs are never deleted", "v5_inputs_preserved": True, "matrix": rollback_matrix},
+        "rollback": {
+            "pre_migration_tag": "pre-v6-migration",
+            "precondition": "create the tag before apply",
+            "precondition_satisfied": pre_migration_commit is not None,
+            "method": "git revert the migration commit or switch to pre-v6-migration; v5 inputs are never deleted",
+            "v5_inputs_preserved": True,
+            "verification_matrix": rollback_matrix,
+        },
     }
 
 
-def _existing_legacy(output: Path) -> dict[str, str]:
-    result = {}
+def _existing_legacy(output: Path) -> dict[str, Path]:
+    result: dict[str, Path] = {}
     for path in output.glob("TASK-*/task.yaml") if output.is_dir() else []:
         try:
             item = load_data(path)
         except Exception:
             continue
         if item.get("legacy_id"):
-            result[str(item["legacy_id"])] = str(item["id"])
+            result[str(item["legacy_id"])] = path.parent
     return result
+
+
+def _existing_output_matches_source(task_dir: Path, scanned: dict[str, Any]) -> bool:
+    """Accept an idempotent migration output only when its source is still bound.
+
+    A failed conversion can leave a published directory only when a process dies
+    after a per-directory rename.  Never treat its legacy_id alone as proof that
+    it is a valid prior conversion: the immutable import event must bind the
+    exact source path and digest observed by the current scan.
+    """
+    if _is_link_like(task_dir) or not task_dir.is_dir():
+        return False
+    task_path = task_dir / "task.yaml"
+    events = task_dir / "events"
+    if _is_link_like(task_path) or _is_link_like(events) or not task_path.is_file() or not events.is_dir():
+        return False
+    try:
+        task = load_data(task_path)
+    except Exception:
+        return False
+    imported: list[dict[str, Any]] = []
+    for event_path in events.glob("*.json"):
+        if _is_link_like(event_path) or not event_path.is_file():
+            return False
+        try:
+            event = load_data(event_path)
+        except Exception:
+            return False
+        if event.get("event_type") == "legacy_imported":
+            imported.append(event)
+    if len(imported) != 1:
+        return False
+    payload = imported[0].get("payload") or {}
+    return (
+        task.get("legacy_id") == scanned["legacy_id"]
+        and imported[0].get("task_id") == task.get("id")
+        and payload.get("legacy_id") == scanned["legacy_id"]
+        and payload.get("source_path") == scanned["source_path"]
+        and payload.get("source_digest") == scanned["source_digest"]
+    )
+
+
+def _remove_published_outputs(paths: list[tuple[Path, str]], target: Path) -> None:
+    """Best-effort rollback of only directories atomically published by this call."""
+    for path, digest in reversed(paths):
+        try:
+            if path.parent != target or _is_link_like(path) or not path.is_dir():
+                continue
+            if _directory_digest(path) != digest:
+                continue
+            shutil.rmtree(path)
+        except OSError:
+            continue
 
 
 def convert_v5(
@@ -232,18 +404,70 @@ def convert_v5(
 ) -> dict[str, Any]:
     root = repo.resolve()
     target = (output or (root / "tasks-v6")).resolve()
+    try:
+        target_path = target.relative_to(root)
+    except ValueError as exc:
+        raise MacError(
+            "MIGRATION_OUTPUT_OUTSIDE_REPOSITORY",
+            "migration output must be contained within the repository",
+            exit_code=ExitCode.SECURITY,
+            path=str(target),
+        ) from exc
+    if target_path == Path("."):
+        raise MacError(
+            "MIGRATION_OUTPUT_INVALID",
+            "migration output must be a repository subdirectory",
+            exit_code=ExitCode.VALIDATION,
+            path=str(target),
+        )
+    target_relative = target_path.as_posix()
     report = scan_v5(root)
+    invalid_rows = [
+        {
+            "legacy_id": row["legacy_id"],
+            "problems": sorted(_INVALID_SOURCE_PROBLEMS.intersection(row["problems"])),
+        }
+        for row in report["tasks"]
+        if _INVALID_SOURCE_PROBLEMS.intersection(row["problems"])
+    ]
+    if invalid_rows:
+        raise MacError(
+            "MIGRATION_SOURCE_INVALID",
+            "legacy migration source contains invalid or duplicate task rows",
+            exit_code=ExitCode.SECURITY,
+            path="tasks/index.yaml",
+            details={"rows": invalid_rows},
+        )
+    source_verification = _verify_sources(root, report["source_documents"])
+    if any(item["status"] != "verified" for item in source_verification):
+        raise RuntimeError("legacy migration source changed or is missing")
     registry = load_data(root / "tasks/index.yaml")
     by_id = {str(item.get("id")): item for item in registry.get("tasks", [])}
+    if target.exists() and (_is_link_like(target) or not target.is_dir()):
+        raise MacError(
+            "MIGRATION_OUTPUT_UNSAFE",
+            "migration output root must be a real directory",
+            exit_code=ExitCode.SECURITY,
+            path=str(target),
+        )
     existing = _existing_legacy(target)
     policy = build_policy_ref(root, ["AGENTS.md", ".agents/config.yaml", ".agents/workflows/evidence-driven-development.yaml"])
     ownership = build_policy_ref(root, [".agents/ownership.yaml"])
     actions = []
-    generated_entities: list[dict[str, Any]] = []
+    candidates: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]] = []
     for scanned in report["tasks"]:
         legacy_id = scanned["legacy_id"]
         if legacy_id in existing:
-            actions.append({"legacy_id": legacy_id, "task_id": existing[legacy_id], "action": "unchanged"})
+            task_dir = existing[legacy_id]
+            if not _existing_output_matches_source(task_dir, scanned):
+                raise MacError(
+                    "MIGRATION_EXISTING_PROVENANCE_MISMATCH",
+                    "existing migration output is not bound to the current legacy source",
+                    exit_code=ExitCode.CORRUPTION,
+                    path=task_dir.relative_to(root).as_posix(),
+                    details={"legacy_id": legacy_id, "source_path": scanned["source_path"], "source_digest": scanned["source_digest"]},
+                )
+            actions.append({"legacy_id": legacy_id, "task_id": task_dir.name, "action": "unchanged"})
             continue
         entry = by_id[legacy_id]
         task_id, scope_id, event_id = prefixed("TASK", str(entry.get("title") or legacy_id)), prefixed("SCOPE"), prefixed("EVT")
@@ -254,7 +478,7 @@ def convert_v5(
             "mode": "standard", "state": state, "revision": 0, "created_at": timestamp, "updated_at": timestamp,
             "objective": str(entry.get("summary") or "Imported legacy task metadata; historical verification is unverifiable."),
             "acceptance_criteria": [{"id": "AC-001", "text": "Preserve legacy metadata without claiming historical verification.", "required": False}],
-            "policy_ref": policy, "ownership_ref": ownership, "scope_contract_ref": f"{target.relative_to(root).as_posix()}/{task_id}/scope-contract.yaml",
+            "policy_ref": policy, "ownership_ref": ownership, "scope_contract_ref": f"{target_relative}/{task_id}/scope-contract.yaml",
             "runtime_profile": "legacy-import", "required_gates": [], "active_controller": None,
             "relationships": {"parent_task": None, "supersedes": [], "superseded_by": None},
             "legacy_integrity": scanned["integrity"],
@@ -282,48 +506,87 @@ def convert_v5(
         ]
         if validation:
             raise ValueError(f"migration output is invalid: {validation[0].message}")
-        actions.append({
-            "legacy_id": legacy_id, "task_id": task_id,
-            "action": "would_create" if dry_run else "created",
-            "source_path": scanned["source_path"], "source_digest": scanned["source_digest"],
-            "source_entities": scanned["sources"],
+        action = {"legacy_id": legacy_id, "task_id": task_id, "action": "would_create", "source_path": scanned["source_path"], "source_digest": scanned["source_digest"]}
+        actions.append(action)
+        candidates.append((action, event, scope, projection))
+
+    if dry_run:
+        source_verification = _verify_sources(root, report["source_documents"])
+        if any(item["status"] != "verified" for item in source_verification):
+            raise RuntimeError("legacy migration source changed during conversion")
+    elif candidates:
+        staging_root = target.parent / f".{target.name}.{prefixed('TXN')}.tmp"
+        staging_root.mkdir(parents=True, exist_ok=False)
+        published: list[tuple[Path, str]] = []
+        published_root = False
+        try:
+            for action, event, scope, projection in candidates:
+                staged_task = staging_root / str(action["task_id"])
+                staged_task.mkdir()
+                atomic_write_json(staged_task / "events" / f"{event['event_id']}.json", event)
+                atomic_write_yaml(staged_task / "scope-contract.yaml", scope)
+                atomic_write_yaml(staged_task / "task.yaml", projection)
+            source_verification = _verify_sources(root, report["source_documents"])
+            if any(item["status"] != "verified" for item in source_verification):
+                raise RuntimeError("legacy migration source changed before publication")
+            if not target.exists():
+                os.replace(staging_root, target)
+                published_root = True
+                for action, _event, _scope, _projection in candidates:
+                    task_dir = target / str(action["task_id"])
+                    published.append((task_dir, _directory_digest(task_dir) or ""))
+            else:
+                for action, _event, _scope, _projection in candidates:
+                    task_dir = target / str(action["task_id"])
+                    if task_dir.exists() or _is_link_like(task_dir):
+                        raise MacError("MIGRATION_OUTPUT_CONFLICT", "migration output appeared during publication", exit_code=ExitCode.CONFLICT, path=str(task_dir))
+                    os.replace(staging_root / str(action["task_id"]), task_dir)
+                    published.append((task_dir, _directory_digest(task_dir) or ""))
+            source_verification = _verify_sources(root, report["source_documents"])
+            if any(item["status"] != "verified" for item in source_verification):
+                raise RuntimeError("legacy migration source changed during publication")
+            for action, _event, _scope, _projection in candidates:
+                action["action"] = "created"
+        except BaseException:
+            _remove_published_outputs(published, target)
+            if published_root:
+                try:
+                    if target.exists() and not _is_link_like(target) and target.is_dir() and not any(target.iterdir()):
+                        target.rmdir()
+                except OSError:
+                    pass
+            raise
+        finally:
+            if staging_root.is_dir() and not _is_link_like(staging_root):
+                shutil.rmtree(staging_root)
+    source_verification = _verify_sources(root, report["source_documents"])
+    if any(item["status"] != "verified" for item in source_verification):
+        raise RuntimeError("legacy migration source changed during conversion")
+    generated_outputs = []
+    for item in actions:
+        if item["action"] not in {"created", "would_create"}:
+            continue
+        relative = f"{target_relative}/{item['task_id']}"
+        generated_outputs.append({
+            "path": relative,
+            "action": item["action"],
+            "digest": _directory_digest(root / relative) if item["action"] == "created" else None,
+            "rollback_action": "revert the migration commit; never delete v5 inputs",
+            "status": "materialized" if item["action"] == "created" else "planned",
         })
-        if not dry_run:
-            task_dir = target / task_id
-            staging = target / f".{task_id}.{prefixed('TXN')}.tmp"
-            staging.mkdir(parents=True, exist_ok=False)
-            try:
-                atomic_write_json(staging / "events" / f"{event_id}.json", event)
-                atomic_write_yaml(staging / "scope-contract.yaml", scope)
-                atomic_write_yaml(staging / "task.yaml", projection)
-                os.replace(staging, task_dir)
-            except BaseException:
-                if staging.is_dir(): shutil.rmtree(staging)
-                raise
-            for generated in sorted(path for path in task_dir.rglob("*") if path.is_file()):
-                generated_entities.append({
-                    "path": generated.relative_to(root).as_posix(),
-                    "digest": _digest(generated),
-                    "task_id": task_id,
-                })
+    pre_ref = report["rollback"]["verification_matrix"][0]
     rollback = {
         **report["rollback"],
-        "generated_paths": [f"{target.relative_to(root).as_posix()}/{item['task_id']}" for item in actions if item["action"] in {"created", "would_create"}],
-        "generated_entities": generated_entities,
-        "source_entities": report["source_entities"],
+        "verification_matrix": [pre_ref, *source_verification],
+        "generated_outputs": generated_outputs,
+        "generated_paths": [item["path"] for item in generated_outputs],
         "verification": [
-            "confirm every source_entities path still has its recorded digest",
+            "confirm every source_unchanged row is verified",
             "run mac validate against the v6 output",
             "compare migrated task count and legacy_id coverage",
-            "after rollback confirm every generated_entities path is absent or restored to its pre-migration digest",
         ],
     }
-    return {
-        "ok": True, "dry_run": dry_run, "output": str(target), "actions": actions,
-        "created": sum(item["action"] == "created" for item in actions),
-        "unverifiable_evidence_created": 0, "generated_entities": generated_entities,
-        "rollback": rollback,
-    }
+    return {"ok": True, "dry_run": dry_run, "output": str(target), "actions": actions, "created": sum(item["action"] == "created" for item in actions), "unverifiable_evidence_created": 0, "rollback": rollback}
 
 
 def list_tasks_dual(repo: Path, *, v6_root: Path | None = None) -> list[dict[str, Any]]:

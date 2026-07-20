@@ -2,17 +2,48 @@ from __future__ import annotations
 
 import json
 import os
-import threading
+import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
+from mac.application.task_service import TaskService
+from mac.cli import init_command, scope_amend, scope_approve
 from mac.doctor import repair_safe, run_doctor
-from mac.repository import FilesystemTaskRepository
+from mac.errors import MacError
+from mac.io import load_data
+from tests.security.test_authority_commands import configure_test_authority
 
 
 TASK_ID = "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q"
+
+
+@pytest.fixture(autouse=True)
+def _host_authority_broker(monkeypatch: pytest.MonkeyPatch) -> None:
+    configure_test_authority(monkeypatch)
+
+
+def _signed_task(root: Path) -> str:
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "test"], check=True)
+    init_command(repo=root, project="doctor-recovery", json_output=True)
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "freeze governance"], check=True)
+    created = TaskService(root).create(
+        title="doctor",
+        mode="standard",
+        objective="Prove safe recovery.",
+        acceptance=["Recover"],
+        allowed_paths=["src/**"],
+        owners=["governance"],
+        runtime_profile="local-single",
+        required_gates=["targeted_tests"],
+        actor={"id": "proposer", "kind": "human"},
+        idempotency_key="doctor-fixture",
+    )
+    return str(created["task"]["id"])
 
 
 def _snapshot(root: Path) -> dict[str, bytes]:
@@ -55,6 +86,27 @@ def _task_event() -> dict[str, object]:
     }
 
 
+def _scope_event(
+    revision: int,
+    scope: dict[str, object],
+    *,
+    event_type: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "event_id": f"EVT-{revision:026d}",
+        "task_id": TASK_ID,
+        "event_type": event_type,
+        "occurred_at": f"2026-07-17T00:00:0{revision}Z",
+        "actor": {"id": "tester", "type": "human"},
+        "run_id": None,
+        "expected_revision": revision - 1,
+        "new_revision": revision,
+        "idempotency_key": f"scope-{revision}",
+        "payload": {"scope": scope},
+    }
+
+
 def test_doctor_is_read_only(tmp_path):
     config = tmp_path / ".agents" / "config.yaml"
     config.parent.mkdir(parents=True)
@@ -67,175 +119,188 @@ def test_doctor_is_read_only(tmp_path):
 
 
 def test_repair_safe_only_repairs_derived_or_temporary_state(tmp_path):
-    task_dir = tmp_path / "tasks" / TASK_ID
-    events = task_dir / "events"
-    events.mkdir(parents=True)
-    (events / "EVT-01K0W4Z36K3W5C2R0A3M8N9P81.json").write_text(
-        json.dumps(_task_event()), encoding="utf-8"
-    )
+    task_id = _signed_task(tmp_path)
+    task_dir = tmp_path / "tasks" / task_id
+    (task_dir / "task.yaml").unlink()
     scope = task_dir / "scope-contract.yaml"
-    scope.write_text("status: approved\nallowed_paths:\n  - src/**\n", encoding="utf-8")
+    expected_scope = load_data(scope)
+    scope.unlink()
     risk = task_dir / "risk-acceptance.json"
     risk.write_text('{"status":"active"}\n', encoding="utf-8")
     approval = task_dir / "approvals" / "APR.json"
     approval.parent.mkdir()
     approval.write_text('{"decision":"approved"}\n', encoding="utf-8")
-    temporary = task_dir / ".task.yaml.interrupted.tmp"
+    temporary = task_dir / ".task.yaml.abcd1234.tmp"
     temporary.write_text("partial", encoding="utf-8")
     arbitrary = task_dir / "artifact.tmp"
     arbitrary.write_text("business artifact", encoding="utf-8")
+    lookalike = task_dir / ".task.yaml.interrupted.tmp"
+    lookalike.write_text("business artifact", encoding="utf-8")
     old = time.time() - 120
     os.utime(temporary, (old, old))
     lease = task_dir / "private" / "controller.lease"
     lease.parent.mkdir()
-    lease.write_text('{"token":"old","expires_unix":0}\n', encoding="utf-8")
-    protected = {path: path.read_bytes() for path in (scope, risk, approval)}
+    lease.write_text(
+        json.dumps(
+            {
+                "token": "LEASE-01K0W4Z36K3W5C2R0A3M8N9P82",
+                "owner": "tester",
+                "acquired_at": "2026-07-17T00:00:00Z",
+                "expires_unix": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    protected = {path: path.read_bytes() for path in (risk, approval)}
 
     preview = repair_safe(tmp_path)
 
     assert preview.applied is False
+    assert preview.plan_digest.startswith("sha256:")
     assert temporary.exists() and lease.exists()
 
-    repair_safe(tmp_path, apply=True)
+    repair_safe(tmp_path, apply=True, expected_plan_digest=preview.plan_digest)
 
     assert not temporary.exists()
     assert not lease.exists()
     assert arbitrary.exists()
+    assert lookalike.exists()
     assert (task_dir / "task.yaml").is_file()
+    assert load_data(scope) == expected_scope
     assert (tmp_path / "tasks" / "INDEX.generated.json").is_file()
     assert {path: path.read_bytes() for path in protected} == protected
 
 
-def test_repair_safe_never_classifies_hidden_business_tmp_as_atomic_output(tmp_path):
+def test_repair_safe_refuses_a_changed_preview_plan(tmp_path):
     task_dir = tmp_path / "tasks" / TASK_ID
     task_dir.mkdir(parents=True)
-    known_atomic = task_dir / ".task.yaml.interrupted.tmp"
-    known_atomic.write_text("partial projection", encoding="utf-8")
-    business_file = task_dir / ".customer.invoice.ABCDEF.tmp"
-    business_file.write_text("business data", encoding="utf-8")
+    temporary = task_dir / ".task.yaml.abcd1234.tmp"
+    temporary.write_text("partial", encoding="utf-8")
     old = time.time() - 120
-    os.utime(known_atomic, (old, old))
-    os.utime(business_file, (old, old))
+    os.utime(temporary, (old, old))
+    preview = repair_safe(tmp_path)
+    temporary.write_text("changed", encoding="utf-8")
+    os.utime(temporary, (old, old))
 
-    report = repair_safe(tmp_path)
+    with pytest.raises(MacError) as caught:
+        repair_safe(tmp_path, apply=True, expected_plan_digest=preview.plan_digest)
 
-    assert known_atomic.relative_to(tmp_path).as_posix() in report.temporary_files
-    assert business_file.relative_to(tmp_path).as_posix() not in report.temporary_files
-
-
-def test_doctor_reports_config_schema_version_as_an_explicit_check(tmp_path):
-    agents = tmp_path / ".agents"
-    agents.mkdir()
-    (agents / "config.yaml").write_text("schema_version: 5\n", encoding="utf-8")
-
-    report = run_doctor(tmp_path)
-    checks = {check.name: check for check in report.checks}
-
-    assert "config_schema_version" in checks
-    assert checks["config_schema_version"].required is True
-    assert checks["config_schema_version"].ok is False
+    assert caught.value.code == "DOCTOR_REPAIR_PLAN_CHANGED"
+    assert temporary.exists()
 
 
-def _cas_payload(*, expires_unix: float, pid: int = 424242) -> str:
-    return json.dumps({
-        "token": "CAS-01K0W4Z36K3W5C2R0A3M8N9P7Q",
-        "owner": "controller",
-        "pid": pid,
-        "created_at": "2026-07-20T00:00:00Z",
-        "expires_unix": expires_unix,
-    })
+def test_repair_safe_apply_requires_the_preview_plan_digest(tmp_path):
+    with pytest.raises(MacError) as caught:
+        repair_safe(tmp_path, apply=True)
+
+    assert caught.value.code == "DOCTOR_REPAIR_PLAN_DIGEST_REQUIRED"
 
 
-def test_repair_safe_only_recovers_stale_cas_in_the_exact_task_private_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import mac.repository as repository_module
+def test_repair_safe_rejects_non_replayable_event_inputs(tmp_path):
+    task_dir = tmp_path / "tasks" / TASK_ID
+    events = task_dir / "events"
+    events.mkdir(parents=True)
+    event = _task_event()
+    event["task_id"] = "TASK-01K0W4Z36K3W5C2R0A3M8N9P99"
+    (events / "EVT-01K0W4Z36K3W5C2R0A3M8N9P81.json").write_text(
+        json.dumps(event), encoding="utf-8"
+    )
 
-    monkeypatch.setattr(repository_module, "_process_is_alive", lambda pid: True)
-    task_private = tmp_path / "tasks" / TASK_ID / "private"
-    task_private.mkdir(parents=True)
-    stale = task_private / ".controller.lease.cas"
-    stale.write_text(_cas_payload(expires_unix=0), encoding="utf-8")
-    nested = task_private / "business" / ".controller.lease.cas"
-    nested.parent.mkdir()
-    nested.write_text(_cas_payload(expires_unix=0), encoding="utf-8")
+    with pytest.raises(MacError) as caught:
+        repair_safe(tmp_path)
+
+    assert caught.value.code == "DOCTOR_REPLAY_INPUT_INVALID"
+
+
+def test_repair_safe_rejects_unsigned_modern_event_stream(tmp_path: Path) -> None:
+    task_dir = tmp_path / "tasks" / TASK_ID
+    events = task_dir / "events"
+    events.mkdir(parents=True)
+    event = _task_event()
+    event["actor"] = {"id": "tester", "kind": "human"}
+    (events / f"{event['event_id']}.json").write_text(json.dumps(event), encoding="utf-8")
+
+    with pytest.raises(MacError) as caught:
+        repair_safe(tmp_path)
+
+    assert caught.value.code == "DOCTOR_REPLAY_INPUT_INVALID"
+    assert (caught.value.issue.details or {})["cause"] == "EVENT_AUTHORITY_MISSING"
+
+
+def test_repair_safe_rejects_event_replacement_during_plan_capture(tmp_path, monkeypatch):
+    task_dir = tmp_path / "tasks" / TASK_ID
+    events = task_dir / "events"
+    events.mkdir(parents=True)
+    event_path = events / "EVT-01K0W4Z36K3W5C2R0A3M8N9P81.json"
+    event_path.write_text(json.dumps(_task_event()), encoding="utf-8")
+    original_read_bytes = Path.read_bytes
+    replaced = False
+
+    def racing_read(path: Path) -> bytes:
+        nonlocal replaced
+        content = original_read_bytes(path)
+        if path == event_path and not replaced:
+            replaced = True
+            changed = _task_event()
+            changed["payload"]["task"]["title"] = "replacement with a different size"
+            path.write_text(json.dumps(changed), encoding="utf-8")
+        return content
+
+    monkeypatch.setattr(Path, "read_bytes", racing_read)
+
+    with pytest.raises(MacError) as caught:
+        repair_safe(tmp_path)
+
+    assert replaced is True
+    assert caught.value.code == "DOCTOR_REPLAY_INPUT_INVALID"
+
+
+def test_repair_safe_restores_scope_contract_and_history_from_events(tmp_path: Path) -> None:
+    task_id = _signed_task(tmp_path)
+    task_dir = tmp_path / "tasks" / task_id
+    scope_approve(
+        task_id,
+        expected_revision=0,
+        idempotency_key="doctor-scope-v1",
+        actor="governance-owner",
+        independence_level="L1",
+        repo=tmp_path,
+        json_output=True,
+    )
+    scope_amend(
+        task_id,
+        add=["tests/**"],
+        add_operation=[],
+        expected_revision=1,
+        idempotency_key="doctor-scope-amend",
+        actor="proposer",
+        approver=["governance-owner"],
+        risk_tag=[],
+        independent=False,
+        repo=tmp_path,
+        json_output=True,
+    )
+    scope_approve(
+        task_id,
+        expected_revision=2,
+        idempotency_key="doctor-scope-v2",
+        actor="governance-owner",
+        independence_level="L1",
+        repo=tmp_path,
+        json_output=True,
+    )
+    scope_path = task_dir / "scope-contract.yaml"
+    history_path = task_dir / "scope-history" / "scope-contract.v1.yaml"
+    approved = load_data(scope_path)
+    base = load_data(history_path)
+    scope_path.unlink()
+    history_path.unlink()
 
     preview = repair_safe(tmp_path)
 
-    assert stale.relative_to(tmp_path).as_posix() in preview.expired_leases
-    assert nested.relative_to(tmp_path).as_posix() not in preview.expired_leases
-    applied = repair_safe(tmp_path, apply=True)
-    assert stale.relative_to(tmp_path).as_posix() in applied.expired_leases
-    assert not stale.exists()
-    assert nested.exists()
+    assert f"tasks/{task_id}/scope-contract.yaml" in preview.projections
+    assert f"tasks/{task_id}/scope-history/scope-contract.v1.yaml" in preview.projections
+    repair_safe(tmp_path, apply=True, expected_plan_digest=preview.plan_digest)
 
-
-def test_repair_safe_does_not_list_an_expired_cas_guard_while_its_owner_is_active(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import mac.doctor as doctor_module
-
-    task_dir = tmp_path / "tasks" / TASK_ID
-    task_dir.mkdir(parents=True)
-    repository = FilesystemTaskRepository(tmp_path)
-    entered = threading.Event()
-    release = threading.Event()
-
-    def hold_guard() -> None:
-        with repository._lease_cas_guard(TASK_ID, "active-controller"):
-            entered.set()
-            release.wait(timeout=2)
-
-    worker = threading.Thread(target=hold_guard)
-    worker.start()
-    assert entered.wait(timeout=2)
-    real_time = time.time
-    monkeypatch.setattr(doctor_module.time, "time", lambda: real_time() + 3600)
-    try:
-        report = repair_safe(tmp_path)
-        assert not any(path.endswith("/.controller.lease.cas") for path in report.expired_leases)
-    finally:
-        release.set()
-        worker.join(timeout=2)
-    assert not worker.is_alive()
-
-
-def test_repair_safe_apply_revalidates_a_cas_candidate_before_removing_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import mac.doctor as doctor_module
-    import mac.repository as repository_module
-
-    monkeypatch.setattr(repository_module, "_process_is_alive", lambda pid: True)
-    private = tmp_path / "tasks" / TASK_ID / "private"
-    private.mkdir(parents=True)
-    guard = private / ".controller.lease.cas"
-    guard.write_text(_cas_payload(expires_unix=0), encoding="utf-8")
-
-    def raced_candidates(tasks: Path, *, now: float | None = None) -> list[Path]:
-        guard.write_text(_cas_payload(expires_unix=time.time() + 300), encoding="utf-8")
-        return [guard]
-
-    monkeypatch.setattr(doctor_module, "_expired_leases", raced_candidates)
-    report = repair_safe(tmp_path, apply=True)
-
-    assert guard.exists()
-    assert guard.relative_to(tmp_path).as_posix() not in report.expired_leases
-
-
-def test_repair_safe_uses_a_conservative_age_threshold_for_legacy_cas_guards(tmp_path: Path) -> None:
-    old_private = tmp_path / "tasks" / TASK_ID / "private"
-    fresh_private = tmp_path / "tasks" / "TASK-01K0W4Z36K3W5C2R0A3M8N9P80" / "private"
-    old_private.mkdir(parents=True)
-    fresh_private.mkdir(parents=True)
-    old_guard = old_private / ".controller.lease.cas"
-    fresh_guard = fresh_private / ".controller.lease.cas"
-    old_guard.write_text("legacy-pid-only\n", encoding="utf-8")
-    fresh_guard.write_text("legacy-pid-only\n", encoding="utf-8")
-    old = time.time() - 301
-    os.utime(old_guard, (old, old))
-
-    report = repair_safe(tmp_path)
-
-    assert old_guard.relative_to(tmp_path).as_posix() in report.expired_leases
-    assert fresh_guard.relative_to(tmp_path).as_posix() not in report.expired_leases
+    assert load_data(task_dir / "scope-contract.yaml") == approved
+    assert load_data(task_dir / "scope-history" / "scope-contract.v1.yaml") == base

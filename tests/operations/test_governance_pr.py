@@ -1,88 +1,107 @@
-from __future__ import annotations
-
-import importlib.util
 import json
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import yaml
 
-
-SCRIPT = Path(__file__).parents[2] / "scripts" / "ci" / "governance_pr.py"
-SPEC = importlib.util.spec_from_file_location("governance_pr", SCRIPT)
-assert SPEC and SPEC.loader
-governance_pr = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(governance_pr)
-
-TASK_ID = "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-legal-slug"
+from scripts.ci import governance_pr
+from scripts.ci.governance_pr import check_current_evidence, discover_task_ids, evaluate
 
 
-def _git(root: Path, *arguments: str) -> str:
-    completed = subprocess.run(
-        ["git", "-C", str(root), *arguments],
-        check=True,
-        text=True,
-        encoding="utf-8",
-        capture_output=True,
-    )
-    return completed.stdout.strip()
+TASK_ID = "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q"
 
 
-def test_pr_gate_preserves_slug_and_tracks_the_head_current_code_subject(
-    tmp_path: Path, monkeypatch
-) -> None:
-    _git(tmp_path, "init", "-q")
-    _git(tmp_path, "config", "user.email", "ci@example.test")
-    _git(tmp_path, "config", "user.name", "CI")
-    task_dir = tmp_path / "tasks" / TASK_ID
+def test_discover_task_ids_from_changed_v6_task_metadata():
+    paths = [f"tasks/{TASK_ID}-refund-auth/events/EVT-example.json", "src/mac/domain/task.py"]
+
+    assert discover_task_ids(paths, []) == [f"{TASK_ID}-refund-auth"]
+
+
+def test_explicit_task_id_covers_pr_without_changed_task_metadata():
+    assert discover_task_ids(["src/mac/domain/task.py"], [TASK_ID]) == [TASK_ID]
+
+
+def test_advisory_reports_but_does_not_block():
+    ok, exit_code = evaluate("advisory", [{"exit_code": 6}], [])
+
+    assert ok is True
+    assert exit_code == 0
+
+
+def test_enforced_fails_closed_without_task_context():
+    ok, exit_code = evaluate("enforced", [{"exit_code": 0}], [])
+
+    assert ok is False
+    assert exit_code == 7
+
+
+def test_enforced_preserves_stable_scope_exit_code():
+    ok, exit_code = evaluate("enforced", [{"exit_code": 0}, {"exit_code": 6}], [TASK_ID])
+
+    assert ok is False
+    assert exit_code == 6
+
+
+def test_evidence_gate_accepts_metadata_only_successor_commit_and_rejects_new_code(tmp_path: Path, monkeypatch):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "test"], check=True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("v1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "src/app.py"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "code"], check=True)
+    commit = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
+    tree = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD^{tree}"], check=True, text=True, capture_output=True).stdout.strip()
+    task_directory = f"{TASK_ID}-refund-auth"
+    task_dir = tmp_path / "tasks" / task_directory
     (task_dir / "runs").mkdir(parents=True)
     (task_dir / "evidence").mkdir()
-    (tmp_path / "src.py").write_text("VALUE = 1\n", encoding="utf-8")
-    task = {
-        "id": TASK_ID,
-        "required_gates": ["targeted_tests"],
-        "acceptance_criteria": [],
-        "policy_ref": {"combined_digest": "sha256:" + "a" * 64},
-    }
+    policy = "sha256:" + "a" * 64
+    task = {"id": TASK_ID, "required_gates": ["targeted_tests"], "acceptance_criteria": [{"id": "AC-001", "required": True}], "policy_ref": {"combined_digest": policy}}
     (task_dir / "task.yaml").write_text(yaml.safe_dump(task), encoding="utf-8")
-    run = {"id": "RUN-01K0W4Z36K3W5C2R0A3M8N9P7T", "status": "succeeded"}
-    (task_dir / "runs" / f"{run['id']}.json").write_text(json.dumps(run), encoding="utf-8")
-    _git(tmp_path, "add", ".")
-    _git(tmp_path, "commit", "-qm", "code subject")
-    old_commit = _git(tmp_path, "rev-parse", "HEAD")
-    old_tree = _git(tmp_path, "rev-parse", "HEAD^{tree}")
-    evidence = {
-        "id": "EVD-01K0W4Z36K3W5C2R0A3M8N9P7X",
-        "kind": "command",
-        "run_id": run["id"],
-        "claims": [{"gate": "targeted_tests"}],
-        "subject": {"type": "commit", "commit_sha": old_commit, "tree_sha": old_tree},
-        "policy_digest": task["policy_ref"]["combined_digest"],
-        "execution": {"exit_code": 0},
-        "validity": {"status": "valid", "invalidated_by": []},
-    }
-    (task_dir / "evidence" / f"{evidence['id']}.json").write_text(
-        json.dumps(evidence), encoding="utf-8"
-    )
-    _git(tmp_path, "add", ".")
-    _git(tmp_path, "commit", "-qm", "record old evidence")
-    head = _git(tmp_path, "rev-parse", "HEAD")
-
-    assert governance_pr.discover_task_ids(
-        [f"tasks/{TASK_ID}/task.yaml"], []
-    ) == [TASK_ID]
+    run_id = "RUN-01K0W4Z36K3W5C2R0A3M8N9P7T"
+    (task_dir / "runs" / f"{run_id}.json").write_text(json.dumps({"id": run_id, "status": "succeeded"}), encoding="utf-8")
+    evidence = {"id": "EVD-01K0W4Z36K3W5C2R0A3M8N9P7X", "kind": "command", "run_id": run_id, "subject": {"type": "commit", "commit_sha": commit, "tree_sha": tree}, "policy_digest": policy, "claims": [{"gate": "targeted_tests"}, {"acceptance_criterion": "AC-001"}], "execution": {"exit_code": 0}, "validity": {"status": "valid", "invalidated_by": []}}
+    (task_dir / "evidence" / f"{evidence['id']}.json").write_text(json.dumps(evidence), encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", f"tasks/{task_directory}"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "evidence metadata"], check=True)
     monkeypatch.chdir(tmp_path)
-    metadata_only_check = governance_pr.check_current_evidence(tmp_path, TASK_ID, head)
 
-    assert metadata_only_check["exit_code"] == 0
-    assert metadata_only_check["output"]["accepted_evidence"] == [evidence["id"]]
+    accepted = check_current_evidence(Path("."), task_directory, "HEAD")
+    assert accepted["exit_code"] == 0
 
-    (tmp_path / "src.py").write_text("VALUE = 2\n", encoding="utf-8")
-    _git(tmp_path, "add", "src.py")
-    _git(tmp_path, "commit", "-qm", "new business subject")
-    newer_head = _git(tmp_path, "rev-parse", "HEAD")
-    check = governance_pr.check_current_evidence(tmp_path, TASK_ID, newer_head)
+    (tmp_path / "src/app.py").write_text("v2\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "src/app.py"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "new code"], check=True)
+    rejected = check_current_evidence(Path("."), task_directory, "HEAD")
+    assert rejected["exit_code"] == 7
 
-    assert check["exit_code"] == 7
-    assert check["output"]["accepted_evidence"] == []
-    assert "not bound to PR head current code subject" in check["output"]["rejected_evidence"][evidence["id"]]
+
+def test_enforced_main_executes_and_blocks_on_current_evidence_gate(tmp_path: Path, monkeypatch):
+    config = tmp_path / "config.yaml"
+    config.write_text("governance_level: enforced\n", encoding="utf-8")
+    task_directory = f"{TASK_ID}-refund-auth"
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        governance_pr,
+        "_git_changed_paths",
+        lambda base, head: [f"tasks/{task_directory}/events/EVT-example.json"],
+    )
+    monkeypatch.setattr(
+        governance_pr,
+        "_run",
+        lambda argv: {"argv": argv, "exit_code": 0, "output": {"ok": True}, "stdout": None, "stderr": None},
+    )
+
+    def reject_current_evidence(repo: Path, directory: str, head: str):
+        calls.append((directory, head))
+        return {"argv": ["evidence-gate", directory, head], "exit_code": 7, "output": {"ok": False}, "stdout": None, "stderr": None}
+
+    monkeypatch.setattr(governance_pr, "check_current_evidence", reject_current_evidence)
+
+    exit_code = governance_pr.main(
+        ["--base", "base", "--head", "head", "--config", str(config), "--json"]
+    )
+
+    assert exit_code == 7
+    assert calls == [(task_directory, "head")]

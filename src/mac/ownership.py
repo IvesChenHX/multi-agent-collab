@@ -4,13 +4,13 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
-from pathspec import PathSpec
+from pathspec import GitIgnoreSpec
 
 from .errors import MacIssue
 
 
-def _pattern_spec(patterns: list[str]) -> PathSpec:
-    return PathSpec.from_lines("gitwildmatch", patterns)
+def _pattern_spec(patterns: list[str]) -> GitIgnoreSpec:
+    return GitIgnoreSpec.from_lines(patterns)
 
 
 def pattern_specificity(pattern: str) -> tuple[int, int]:

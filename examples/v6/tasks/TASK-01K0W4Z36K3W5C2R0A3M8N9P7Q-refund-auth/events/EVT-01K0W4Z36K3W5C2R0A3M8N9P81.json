@@ -4,16 +4,62 @@
   "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
   "event_type": "task_created",
   "occurred_at": "2026-07-17T10:00:00Z",
-  "actor": {
-    "id": "agent-main",
-    "kind": "agent",
-    "display_name": "Main Controller"
-  },
+  "actor": {"id": "agent-main", "kind": "agent", "display_name": "Main Controller"},
   "run_id": null,
   "expected_revision": -1,
   "new_revision": 0,
   "idempotency_key": "example-0",
   "payload": {
-    "state": "triage"
+    "task": {
+      "schema_version": 6,
+      "id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+      "title": "Add refund authorization checks",
+      "mode": "high_risk",
+      "state": "triage",
+      "revision": 0,
+      "created_at": "2026-07-17T10:00:00Z",
+      "updated_at": "2026-07-17T10:00:00Z",
+      "objective": "Unauthorized users cannot issue refunds, while existing authorized behavior remains compatible.",
+      "acceptance_criteria": [
+        {
+          "id": "AC-001",
+          "text": "An unauthorized refund request returns a permission error and creates no funds movement.",
+          "required": true
+        },
+        {
+          "id": "AC-002",
+          "text": "Existing refund flows for authorized users continue to pass.",
+          "required": true
+        }
+      ],
+      "policy_ref": {
+        "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "combined_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "files": [
+          {"path": "AGENTS.md", "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"},
+          {"path": ".agents/config.yaml", "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"}
+        ]
+      },
+      "ownership_ref": {
+        "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "combined_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "files": [
+          {"path": ".agents/ownership.yaml", "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"}
+        ]
+      },
+      "scope_contract_ref": "tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/scope-contract.yaml",
+      "runtime_profile": "local-single",
+      "required_gates": [
+        "approved_scope",
+        "targeted_tests",
+        "negative_security_tests",
+        "independent_review",
+        "rollback_plan"
+      ],
+      "active_controller": null,
+      "relationships": {"parent_task": null, "supersedes": [], "superseded_by": null},
+      "legacy_integrity": "full",
+      "terminal": null
+    }
   }
 }

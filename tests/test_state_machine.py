@@ -5,6 +5,7 @@ from mac.state_machine import (
     TASK_STATES,
     TERMINAL_STATES,
     TransitionContext,
+    Transition,
     evaluate_transition,
 )
 
@@ -81,3 +82,18 @@ def test_terminal_states_are_immutable() -> None:
     result = evaluate_transition("completed", "executing", context())
     assert not result.ok
     assert result.codes == ("TERMINAL_STATE_IMMUTABLE",)
+
+
+def test_runtime_state_and_terminal_semantics_come_from_compiled_workflow() -> None:
+    transition = Transition("workflow_override", ("failed",), "triage")
+
+    allowed = evaluate_transition(
+        "failed",
+        "triage",
+        context(),
+        transitions=(transition,),
+        states={"failed", "triage"},
+        terminal_states=set(),
+    )
+
+    assert allowed.ok

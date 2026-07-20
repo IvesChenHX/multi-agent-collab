@@ -1,0 +1,14 @@
+{
+  "actor": {
+    "id": "governance-owner",
+    "kind": "human"
+  },
+  "decision": "approved",
+  "id": "APR-01KXXHRPB04R4B8NK57P9QA0Z5",
+  "independence_level": "L2",
+  "kind": "scope",
+  "recorded_at": "2026-07-19T16:01:23.296038Z",
+  "schema_version": 1,
+  "subject_ref": "tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/scope-contract.yaml",
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready"
+}

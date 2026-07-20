@@ -2,20 +2,26 @@
   "schema_version": 1,
   "event_id": "EVT-01K0W4Z36K3W5C2R0A3M8N9P86",
   "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
-  "event_type": "state_transitioned",
-  "occurred_at": "2026-07-17T10:05:00Z",
-  "actor": {
-    "id": "agent-main",
-    "kind": "agent",
-    "display_name": "Main Controller"
-  },
+  "event_type": "work_unit_created",
+  "occurred_at": "2026-07-17T10:10:00Z",
+  "actor": {"id": "agent-main", "kind": "agent", "display_name": "Main Controller"},
   "run_id": null,
   "expected_revision": 4,
   "new_revision": 5,
   "idempotency_key": "example-5",
   "payload": {
-    "from": "executing",
-    "to": "reviewing",
-    "via": "verifying"
+    "work_unit": {
+      "schema_version": 1,
+      "id": "WU-01K0W4Z36K3W5C2R0A3M8N9P7S",
+      "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+      "title": "Implement refund authorization checks and tests",
+      "status": "pending",
+      "owner": "backend",
+      "executor_role": "backend-implementer",
+      "allowed_paths": ["backend/payments/**", "tests/payments/**"],
+      "depends_on": [],
+      "acceptance_criteria": ["AC-001", "AC-002"],
+      "expected_result": "tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/results/RESULT-01K0W4Z36K3W5C2R0A3M8N9P7W.json"
+    }
   }
 }

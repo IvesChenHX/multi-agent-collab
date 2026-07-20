@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
-from pathspec import PathSpec
+from pathspec import GitIgnoreSpec
 
 from .errors import MacIssue
 from .ownership import OwnershipResolver
@@ -94,9 +95,9 @@ def validate_patterns(patterns: Iterable[str]) -> list[MacIssue]:
     for raw in patterns:
         try:
             normalized = normalize_repo_path(raw)
-            if raw.startswith("!") or normalized.startswith("!"):
-                raise ValueError("negated patterns are unsafe in separated allow/deny lists")
-            PathSpec.from_lines("gitwildmatch", [normalized])
+            if raw.startswith(("!", "#")) or normalized.startswith(("!", "#")):
+                raise ValueError("negated and comment patterns are unsafe in separated allow/deny lists")
+            GitIgnoreSpec.from_lines([normalized])
         except (ValueError, TypeError) as exc:
             issues.append(MacIssue("SCOPE_PATTERN_UNSAFE", str(exc), str(raw)))
     return issues
@@ -110,71 +111,67 @@ def _is_within(root: Path, target: Path) -> bool:
         return False
 
 
-def _existing_path_collision_issues(root: Path, display_path: str) -> list[MacIssue]:
-    """Compare every raw path segment with existing siblings.
-
-    Checking only the current diff misses a new spelling that collides with a
-    tracked path on case-insensitive or Unicode-normalizing filesystems.  The
-    walk deliberately stays inside the repository and never follows an
-    escaping symlink/junction while enumerating siblings.
-    """
-    issues: list[MacIssue] = []
-    parent = root
-    raw_parts = PurePosixPath(display_path.replace("\\", "/")).parts
-    for index, segment in enumerate(raw_parts):
-        try:
-            resolved_parent = parent.resolve(strict=False)
-        except OSError:
-            break
-        if not _is_within(root, resolved_parent) or not parent.is_dir():
-            break
-        try:
-            sibling_names = [entry.name for entry in parent.iterdir()]
-        except OSError:
-            break
-        normalized_segment = unicodedata.normalize("NFC", segment)
-        for sibling in sibling_names:
-            if sibling == segment:
+def _existing_repo_paths(root: Path) -> Iterable[str]:
+    """Yield index and filesystem spellings, including paths omitted by sparse checkout."""
+    seen: set[str] = set()
+    if (root / ".git").exists():
+        tracked = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            check=True,
+            capture_output=True,
+        ).stdout
+        for raw in tracked.split(b"\0"):
+            if not raw:
                 continue
-            normalized_sibling = unicodedata.normalize("NFC", sibling)
-            relative = "/".join((*raw_parts[:index], segment))
-            if normalized_sibling == normalized_segment:
-                issues.append(MacIssue(
-                    "SCOPE_UNICODE_COLLISION",
-                    f"existing path segment {sibling!r} normalizes to {segment!r}",
-                    relative,
-                ))
-            elif normalized_sibling.casefold() == normalized_segment.casefold():
-                issues.append(MacIssue(
-                    "SCOPE_CASE_COLLISION",
-                    f"existing path segment {sibling!r} collides with {segment!r}",
-                    relative,
-                ))
-        parent = parent / segment
-    return issues
+            display = os.fsdecode(raw).replace("\\", "/")
+            if display not in seen:
+                seen.add(display)
+                yield display
+    for current, directories, files in os.walk(root, topdown=True, followlinks=False):
+        directories[:] = [name for name in directories if name != ".git"]
+        if Path(current) == root:
+            files = [name for name in files if name != ".git"]
+        relative_root = Path(current).relative_to(root)
+        for name in [*directories, *files]:
+            display = (relative_root / name).as_posix()
+            if display not in seen:
+                seen.add(display)
+                yield display
 
 
 def check_changes(
     changes: Iterable[Change], contract: dict[str, Any], *, ownership: dict[str, Any] | None = None,
     repo_root: Path | None = None, task_id: str | None = None,
     governance_approval_level: str | None = None, submodule_approved: bool = False,
-    governance_sensitive_patterns: Iterable[str] | None = None,
 ) -> ScopeCheckResult:
     raw_changes = list(changes)
     issues = validate_patterns([*contract.get("allowed_paths", []), *contract.get("denied_paths", [])])
     if issues:
         return ScopeCheckResult(issues, [], raw_changes)
-    allow_spec = PathSpec.from_lines("gitwildmatch", contract.get("allowed_paths", []))
-    deny_spec = PathSpec.from_lines("gitwildmatch", contract.get("denied_paths", []))
+    allow_spec = GitIgnoreSpec.from_lines(contract.get("allowed_paths", []))
+    deny_spec = GitIgnoreSpec.from_lines(contract.get("denied_paths", []))
     resolver = OwnershipResolver(ownership) if ownership else None
     contract_owners = set(str(value) for value in contract.get("owners", []))
+    raw_allowed_operations = contract.get("allowed_operations")
+    allowed_operations = (
+        {str(value) for value in raw_allowed_operations}
+        if isinstance(raw_allowed_operations, list)
+        else {"read", "write"}
+    )
     allowed: list[str] = []
     normalized_changes: list[Change] = []
     root = repo_root.resolve() if repo_root else None
     path_keys: dict[str, str] = {}
     unicode_keys: dict[str, str] = {}
-    governance_patterns = list(governance_sensitive_patterns or ["AGENTS.md", ".agents/**", ".github/workflows/*governance*", "schemas/**"])
-    governance_spec = PathSpec.from_lines("gitwildmatch", governance_patterns)
+    if root is not None:
+        try:
+            for existing in _existing_repo_paths(root):
+                path_keys.setdefault(unicodedata.normalize("NFC", existing).casefold(), existing)
+                unicode_keys.setdefault(unicodedata.normalize("NFC", existing), existing)
+        except (OSError, subprocess.SubprocessError) as exc:
+            issues.append(MacIssue("SCOPE_REPOSITORY_SCAN_FAILED", str(exc), str(root)))
+    governance_patterns = ["AGENTS.md", ".agents/**", ".github/workflows/*governance*", "schemas/**"]
+    governance_spec = GitIgnoreSpec.from_lines(governance_patterns)
     for change in raw_changes:
         paths = [change.old_path, change.path] if change.old_path else [change.path]
         displays = [change.old_display_path or change.old_path, change.display_path or change.path] if change.old_path else [change.display_path or change.path]
@@ -204,7 +201,6 @@ def check_changes(
             else:
                 unicode_keys[unicode_key] = display_path
             if root is not None:
-                issues.extend(_existing_path_collision_issues(root, display_path))
                 candidate = root / path
                 if not _is_within(root, candidate.resolve(strict=False)):
                     issues.append(MacIssue("SCOPE_SYMLINK_ESCAPE", "symlink resolves outside repository", path))
@@ -226,6 +222,21 @@ def check_changes(
                     issues.append(MacIssue("SCOPE_OWNER_OUTSIDE", f"owner {match.owners[0]} is not approved by scope", path))
         if normalized:
             normalized_changes.append(Change(change.operation, normalized[-1], normalized[0] if change.old_path and len(normalized) > 1 else None, change.submodule, change.display_path, change.old_display_path))
+            required_operations = {
+                "add": (("write", normalized[-1]),),
+                "modify": (("write", normalized[-1]),),
+                "copy": (("read", normalized[0]), ("write", normalized[-1])),
+                "rename": (("delete", normalized[0]), ("write", normalized[-1])),
+                "delete": (("delete", normalized[-1]),),
+            }.get(change.operation, ((change.operation, normalized[-1]),))
+            for required_operation, operation_path in required_operations:
+                if required_operation not in allowed_operations:
+                    issues.append(MacIssue(
+                        "SCOPE_OPERATION_DENIED",
+                        f"change operation {change.operation!r} requires Scope operation {required_operation!r}",
+                        operation_path,
+                        details={"operation": change.operation, "required_operation": required_operation},
+                    ))
         if change.operation == "rename" and len(normalized) == 2 and resolver:
             old_owner, new_owner = resolver.resolve(normalized[0]), resolver.resolve(normalized[1])
             if old_owner.status == new_owner.status == "resolved" and old_owner.owners != new_owner.owners:
@@ -240,6 +251,7 @@ def check_paths(changed_paths: list[str], contract: dict[str, Any], *, repo_root
 def amend_scope(
     contract: dict[str, Any], *, add_paths: list[str], actor: str, approvers: list[str],
     added_risk_tags: list[str] | None = None, independent_approval: bool = False,
+    add_operations: list[str] | None = None,
 ) -> dict[str, Any]:
     policy = contract.get("amendment_policy", {})
     amendment_count = max(0, int(contract.get("version", 1)) - 1)
@@ -251,6 +263,15 @@ def amend_scope(
     if pattern_issues:
         raise ValueError(pattern_issues[0].message)
     risk_tags = set(str(value) for value in contract.get("risk_tags", [])) | set(added_risk_tags or [])
+    operations = list(dict.fromkeys([
+        *[str(value) for value in contract.get("allowed_operations", [])],
+        *[str(value) for value in (add_operations or [])],
+    ]))
+    supported_operations = {
+        "read", "write", "delete", "execute_tests", "generate_artifacts", "network", "use_secrets",
+    }
+    if not operations or any(value not in supported_operations for value in operations):
+        raise ValueError("scope amendment contains an unsupported operation")
     result = {**contract}
     result["id"] = contract["id"].split("-")[0] + "-" + contract["id"].split("-", 1)[1]
     result["version"] = int(contract["version"]) + 1
@@ -258,5 +279,6 @@ def amend_scope(
     result["proposed_by"] = actor
     result["approved_by"] = []
     result["allowed_paths"] = list(dict.fromkeys([*contract.get("allowed_paths", []), *add_paths]))
+    result["allowed_operations"] = operations
     result["risk_tags"] = sorted(risk_tags)
     return result

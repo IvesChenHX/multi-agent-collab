@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "event_id": "EVT-01K0W4Z36K3W5C2R0A3M8N9P8A",
+  "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+  "event_type": "evidence_recorded",
+  "occurred_at": "2026-07-17T11:02:00Z",
+  "actor": {"id": "agent-backend-01", "kind": "agent", "display_name": "Backend Implementer"},
+  "run_id": "RUN-01K0W4Z36K3W5C2R0A3M8N9P7T",
+  "expected_revision": 8,
+  "new_revision": 9,
+  "idempotency_key": "example-9",
+  "payload": {
+    "evidence_id": "EVD-01K0W4Z36K3W5C2R0A3M8N9P7X",
+    "evidence": {
+      "schema_version": 1,
+      "id": "EVD-01K0W4Z36K3W5C2R0A3M8N9P7X",
+      "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+      "kind": "command",
+      "subject": {
+        "type": "commit",
+        "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "policy_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "run_id": "RUN-01K0W4Z36K3W5C2R0A3M8N9P7T",
+      "claims": [
+        {"gate": "targeted_tests"},
+        {"gate": "negative_security_tests"},
+        {"acceptance_criterion": "AC-001"},
+        {"acceptance_criterion": "AC-002"}
+      ],
+      "execution": {
+        "argv": ["pytest", "tests/payments/test_refund_permissions.py"],
+        "exit_code": 0,
+        "started_at": "2026-07-17T10:55:00Z",
+        "finished_at": "2026-07-17T10:56:00Z"
+      },
+      "environment": {
+        "os": "linux",
+        "architecture": "x86_64",
+        "tool_versions": {"python": "3.12.4", "pytest": "8.3.2"}
+      },
+      "artifacts": [
+        {
+          "path": "tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/private/test.log",
+          "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        }
+      ],
+      "recorded_at": "2026-07-17T11:00:00Z",
+      "validity": {"status": "valid", "invalidated_by": []}
+    }
+  }
+}

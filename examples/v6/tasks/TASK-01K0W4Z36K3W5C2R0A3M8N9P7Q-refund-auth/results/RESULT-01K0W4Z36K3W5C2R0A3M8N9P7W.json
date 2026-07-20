@@ -5,25 +5,20 @@
   "work_unit_id": "WU-01K0W4Z36K3W5C2R0A3M8N9P7S",
   "run_id": "RUN-01K0W4Z36K3W5C2R0A3M8N9P7T",
   "outcome": "succeeded",
-  "summary": "在退款服务入口增加权限检查，并补充授权与未授权测试。",
+  "summary": "Added permission checks at the refund service boundary with authorized and unauthorized tests.",
   "changed_files": [
     "backend/payments/refund_service.py",
     "tests/payments/test_refund_permissions.py"
   ],
   "commands": [
     {
-      "argv": [
-        "pytest",
-        "tests/payments/test_refund_permissions.py"
-      ],
+      "argv": ["pytest", "tests/payments/test_refund_permissions.py"],
       "exit_code": 0,
       "summary": "8 passed"
     }
   ],
   "new_risks": [],
-  "assumptions": [
-    "权限服务返回值在本次 scope 内保持稳定。"
-  ],
+  "assumptions": ["The permission service return contract remains stable within this scope."],
   "blockers": [],
   "scope_amendment_request": null,
   "raw_log_ref": {

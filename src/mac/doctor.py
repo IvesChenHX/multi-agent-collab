@@ -1,35 +1,41 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import re
+import shutil
+import stat
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from .io import atomic_write_json, load_data
+from .errors import ExitCode, MacError
+from .events import replay_entity_snapshots, replay_events, replay_scope_snapshots
+from .ids import is_identifier
+from .io import atomic_write_json, atomic_write_yaml, load_data, normalize_data
 from .policy import compile_policy
-from .report import build_index
+from .repository import _validate_loaded_event_stream
 from .schema_validation import SchemaSet, schema_lock_issues
 
 
-_ATOMIC_FILE = re.compile(r"^\.(?P<target>.+)\.[A-Za-z0-9_-]{6,}\.tmp$")
-_TASK_STAGING = re.compile(r"^\.TASK-[^.]+\.TXN-[A-Z0-9]+\.tmp$")
-_LEASE_QUARANTINE = re.compile(r"^\.controller\.lease\.LEASE-[A-Z0-9]+\.expired$")
-_CAS_QUARANTINE = re.compile(r"^\.controller\.lease\.cas\.CAS-[A-Z0-9]+\.expired$")
+_ATOMIC_FILE = re.compile(r"^\.(?P<target>.+)\.(?P<token>[a-z0-9_]{8})\.tmp$")
+_LEASE_QUARANTINE = re.compile(r"^\.controller\.lease\.(?P<token>LEASE-[0-9A-HJKMNP-TV-Z]{26})\.expired$")
+_SCOPE_HISTORY = re.compile(r"^scope-contract\.v[1-9][0-9]*\.yaml$")
 _MINIMUM_TEMP_AGE_SECONDS = 60.0
-_TASK_ROOT_ATOMIC_TARGETS = frozenset({"task.yaml", "scope-contract.yaml", "report.md"})
-_TASK_ENTITY_ATOMIC_TARGETS = {
-    "approvals": re.compile(r"^APR-[A-Z0-9-]+\.json$"),
-    "events": re.compile(r"^EVT-[A-Z0-9-]+\.json$"),
-    "evidence": re.compile(r"^EVD-[A-Z0-9-]+\.json$"),
-    "findings": re.compile(r"^FND-[A-Z0-9-]+\.json$"),
-    "results": re.compile(r"^RESULT-[A-Z0-9-]+\.json$"),
-    "risk-acceptances": re.compile(r"^(?:RISK|RA)-[A-Z0-9-]+\.json$"),
-    "runs": re.compile(r"^RUN-[A-Z0-9-]+\.json$"),
-    "scope-history": re.compile(r"^[A-Za-z0-9._-]+\.ya?ml$"),
-    "work-units": re.compile(r"^WU-[A-Z0-9-]+\.ya?ml$"),
+_MAX_RECOVERY_ARTIFACT_BYTES = 16 * 1_048_576
+_ENTITY_LAYOUT = {
+    "events": ("EVT", ".json"),
+    "work-units": ("WU", ".yaml"),
+    "runs": ("RUN", ".json"),
+    "results": ("RESULT", ".json"),
+    "findings": ("FND", ".json"),
+    "evidence": ("EVD", ".json"),
+    "approvals": ("APR", ".json"),
+    "risk-acceptances": ("RISK", ".json"),
 }
 
 
@@ -53,6 +59,7 @@ class DoctorReport:
 @dataclass(frozen=True, slots=True)
 class RepairReport:
     applied: bool
+    plan_digest: str
     temporary_files: tuple[str, ...]
     expired_leases: tuple[str, ...]
     projections: tuple[str, ...]
@@ -63,6 +70,7 @@ class RepairReport:
         return {
             "ok": True,
             "applied": self.applied,
+            "plan_digest": self.plan_digest,
             f"{action}_temporary_files": list(self.temporary_files),
             f"{action}_expired_leases": list(self.expired_leases),
             f"{action}_projections": list(self.projections),
@@ -171,166 +179,408 @@ def _migration_incomplete_count(repo: Path) -> int:
     return len(legacy - imported)
 
 
-def _known_atomic_file(path: Path, tasks: Path) -> bool:
-    """Recognize only temp files emitted by MAC atomic writers in known locations."""
+@dataclass(frozen=True, slots=True)
+class _PathSnapshot:
+    relative: str
+    kind: str
+    fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ProjectionPlan:
+    task_id: str
+    replay_inputs: tuple[_PathSnapshot, ...]
+    task_projection: dict[str, Any]
+    outputs: tuple[tuple[str, str, dict[str, Any]], ...]
+    drift: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _RepairPlan:
+    temporary: tuple[_PathSnapshot, ...]
+    leases: tuple[_PathSnapshot, ...]
+    projections: tuple[_ProjectionPlan, ...]
+    index_inputs: tuple[_PathSnapshot, ...]
+    index_rows: tuple[dict[str, Any], ...]
+    digest: str
+
+
+def _capture_regular_file(path: Path, root: Path) -> tuple[_PathSnapshot, bytes]:
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise MacError("DOCTOR_REPAIR_PLAN_CHANGED", f"repair candidate disappeared: {path}", exit_code=ExitCode.CONFLICT) from exc
+    relative = path.relative_to(root).as_posix()
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise MacError("DOCTOR_REPAIR_ARTIFACT_UNSAFE", f"repair input is not a regular file: {relative}", exit_code=ExitCode.SECURITY, path=relative)
+    if before.st_size > _MAX_RECOVERY_ARTIFACT_BYTES:
+        raise MacError("DOCTOR_REPAIR_ARTIFACT_TOO_LARGE", f"repair input exceeds size limit: {relative}", exit_code=ExitCode.SECURITY, path=relative)
+    content = path.read_bytes()
+    try:
+        after = path.lstat()
+    except OSError as exc:
+        raise MacError("DOCTOR_REPAIR_PLAN_CHANGED", f"repair input disappeared while being frozen: {relative}", exit_code=ExitCode.CONFLICT, path=relative) from exc
+    identity_before = (before.st_dev, before.st_ino, before.st_mode, before.st_size, before.st_mtime_ns)
+    identity_after = (after.st_dev, after.st_ino, after.st_mode, after.st_size, after.st_mtime_ns)
+    if identity_before != identity_after or len(content) != before.st_size:
+        raise MacError("DOCTOR_REPAIR_PLAN_CHANGED", f"repair input changed while being frozen: {relative}", exit_code=ExitCode.CONFLICT, path=relative)
+    payload = ["file", *identity_after, hashlib.sha256(content).hexdigest()]
+    fingerprint = "sha256:" + hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return _PathSnapshot(relative, "file", fingerprint), content
+
+
+def _snapshot(path: Path, root: Path) -> _PathSnapshot:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise MacError("DOCTOR_REPAIR_PLAN_CHANGED", f"repair candidate disappeared: {path}", exit_code=ExitCode.CONFLICT) from exc
+    relative = path.relative_to(root).as_posix()
+    if stat.S_ISLNK(metadata.st_mode):
+        raise MacError("DOCTOR_REPAIR_ARTIFACT_UNSAFE", f"repair candidate is a symlink: {relative}", exit_code=ExitCode.SECURITY, path=relative)
+    if stat.S_ISREG(metadata.st_mode):
+        return _capture_regular_file(path, root)[0]
+    elif stat.S_ISDIR(metadata.st_mode):
+        before_identity = (metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_mtime_ns)
+        rows: list[object] = [[".", "dir", *before_identity]]
+        total = 0
+        for child in sorted(path.rglob("*"), key=lambda value: value.as_posix()):
+            child_metadata = child.lstat()
+            child_relative = child.relative_to(path).as_posix()
+            if stat.S_ISLNK(child_metadata.st_mode):
+                raise MacError("DOCTOR_REPAIR_ARTIFACT_UNSAFE", f"repair directory contains a symlink: {relative}/{child_relative}", exit_code=ExitCode.SECURITY, path=relative)
+            if stat.S_ISDIR(child_metadata.st_mode):
+                rows.append([child_relative, "dir", child_metadata.st_mtime_ns])
+                continue
+            if not stat.S_ISREG(child_metadata.st_mode):
+                raise MacError("DOCTOR_REPAIR_ARTIFACT_UNSAFE", f"repair directory contains a special file: {relative}/{child_relative}", exit_code=ExitCode.SECURITY, path=relative)
+            total += child_metadata.st_size
+            if total > _MAX_RECOVERY_ARTIFACT_BYTES:
+                raise MacError("DOCTOR_REPAIR_ARTIFACT_TOO_LARGE", f"repair directory exceeds size limit: {relative}", exit_code=ExitCode.SECURITY, path=relative)
+            child_snapshot, _ = _capture_regular_file(child, root)
+            rows.append([child_relative, child_snapshot.fingerprint])
+        after = path.lstat()
+        after_identity = (after.st_dev, after.st_ino, after.st_mode, after.st_mtime_ns)
+        if before_identity != after_identity:
+            raise MacError("DOCTOR_REPAIR_PLAN_CHANGED", f"repair directory changed while being frozen: {relative}", exit_code=ExitCode.CONFLICT, path=relative)
+        payload = rows
+        kind = "directory"
+    else:
+        raise MacError("DOCTOR_REPAIR_ARTIFACT_UNSAFE", f"repair candidate is not a regular file or directory: {relative}", exit_code=ExitCode.SECURITY, path=relative)
+    fingerprint = "sha256:" + hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return _PathSnapshot(relative, kind, fingerprint)
+
+
+def _load_frozen_data(path: Path, root: Path) -> tuple[dict[str, Any], _PathSnapshot]:
+    snapshot, content = _capture_regular_file(path, root)
+    if len(content) > 1_048_576:
+        raise MacError("DOCTOR_REPLAY_INPUT_INVALID", f"replay input exceeds 1 MiB: {snapshot.relative}", exit_code=ExitCode.SECURITY, path=snapshot.relative)
+    try:
+        if path.suffix.lower() == ".json":
+            value = json.loads(content.decode("utf-8"))
+        else:
+            from .security import parse_yaml_safely
+
+            value = parse_yaml_safely(content)
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise MacError("DOCTOR_REPLAY_INPUT_INVALID", f"cannot parse frozen input {snapshot.relative}: {exc}", exit_code=ExitCode.CORRUPTION, path=snapshot.relative) from exc
+    if not isinstance(value, dict):
+        raise MacError("DOCTOR_REPLAY_INPUT_INVALID", f"frozen input is not an object: {snapshot.relative}", exit_code=ExitCode.CORRUPTION, path=snapshot.relative)
+    return normalize_data(value), snapshot
+
+
+def _validate_snapshot(snapshot: _PathSnapshot, root: Path) -> None:
+    current = _snapshot(root / snapshot.relative, root)
+    if current != snapshot:
+        raise MacError("DOCTOR_REPAIR_PLAN_CHANGED", f"repair candidate changed after preview: {snapshot.relative}", exit_code=ExitCode.CONFLICT, path=snapshot.relative)
+
+
+def _known_materialization(parts: tuple[str, ...]) -> bool:
+    if parts == ("INDEX.generated.json",):
+        return True
+    if len(parts) < 2 or not is_identifier(parts[0], "TASK"):
+        return False
+    if len(parts) == 2:
+        return parts[1] in {"task.yaml", "scope-contract.yaml"}
+    if len(parts) != 3:
+        return False
+    directory, name = parts[1], parts[2]
+    if directory == "scope-history":
+        return bool(_SCOPE_HISTORY.fullmatch(name))
+    layout = _ENTITY_LAYOUT.get(directory)
+    if layout is None:
+        return False
+    prefix, suffix = layout
+    return name.endswith(suffix) and is_identifier(name[: -len(suffix)], prefix)
+
+
+def _known_atomic_file(tasks: Path, path: Path) -> bool:
+    if path.is_symlink() or not path.is_file():
+        return False
     match = _ATOMIC_FILE.fullmatch(path.name)
-    if not path.is_file() or match is None:
+    if match is None:
         return False
+    destination = path.with_name(match.group("target"))
     try:
-        relative = path.resolve(strict=True).relative_to(tasks.resolve(strict=True))
-    except (OSError, ValueError):
+        parts = destination.relative_to(tasks).parts
+    except ValueError:
         return False
-    parts = relative.parts
-    target = match.group("target")
-    if len(parts) == 1:
-        return target == "INDEX.generated.json"
-    if len(parts) == 2 and parts[0].startswith("TASK-"):
-        return target in _TASK_ROOT_ATOMIC_TARGETS
-    if len(parts) == 3 and parts[0].startswith("TASK-"):
-        pattern = _TASK_ENTITY_ATOMIC_TARGETS.get(parts[1])
-        return bool(pattern and pattern.fullmatch(target))
-    return False
+    return _known_materialization(parts)
 
 
-def _config_schema_version(repo: Path) -> tuple[bool, str]:
-    path = repo / ".agents/config.yaml"
-    if not path.is_file():
-        return False, ".agents/config.yaml is missing"
-    try:
-        version = load_data(path).get("schema_version")
-    except Exception as exc:
-        return False, f"cannot read config schema version: {exc}"
-    return version == 6, f"config schema_version is {version!r}; expected 6"
+def _known_staging_directory(tasks: Path, path: Path) -> bool:
+    if path.parent != tasks or path.is_symlink() or not path.is_dir():
+        return False
+    parts = path.name.split(".")
+    if len(parts) != 4 or parts[0] or parts[3] != "tmp":
+        return False
+    task_id, transaction_id = parts[1], parts[2]
+    if not is_identifier(task_id, "TASK") or not is_identifier(transaction_id, "TXN"):
+        return False
+    for child in path.rglob("*"):
+        if child.is_symlink():
+            return False
+        relative = child.relative_to(path)
+        if child.is_dir():
+            if len(relative.parts) != 1 or relative.parts[0] not in {*_ENTITY_LAYOUT, "scope-history"}:
+                return False
+            continue
+        if not child.is_file():
+            return False
+        candidate_parts = (task_id, *relative.parts)
+        if _known_materialization(candidate_parts):
+            continue
+        match = _ATOMIC_FILE.fullmatch(child.name)
+        if match is None:
+            return False
+        destination_parts = (task_id, *relative.parent.parts, match.group("target"))
+        if not _known_materialization(destination_parts):
+            return False
+    return True
 
 
 def _known_temporary_files(tasks: Path, *, now: float | None = None) -> list[Path]:
     if not tasks.is_dir():
         return []
     cutoff = (now if now is not None else time.time()) - _MINIMUM_TEMP_AGE_SECONDS
+    staging = [path for path in tasks.glob(".*.tmp") if _known_staging_directory(tasks, path)]
     candidates: list[Path] = []
-    for path in tasks.rglob("*.tmp"):
+    for path in sorted([*staging, *(item for item in tasks.rglob("*.tmp") if item.is_file())]):
+        if any(parent in staging for parent in path.parents):
+            continue
         try:
-            staging = (
-                path.is_dir()
-                and path.parent.resolve(strict=True) == tasks.resolve(strict=True)
-                and _TASK_STAGING.fullmatch(path.name)
-            )
-        except OSError:
-            staging = False
-        known = _known_atomic_file(path, tasks) or bool(staging)
-        try:
-            old_enough = path.stat().st_mtime <= cutoff
+            old_enough = path.lstat().st_mtime <= cutoff
         except OSError:
             old_enough = False
-        if known and old_enough:
+        if old_enough and (path in staging or _known_atomic_file(tasks, path)):
             candidates.append(path)
-    return sorted(candidates)
+    return candidates
 
 
-def _safe_task_private_dirs(tasks: Path) -> list[Path]:
-    """Return only direct, non-link private directories contained by this tasks root."""
-    if not tasks.is_dir() or tasks.is_symlink():
-        return []
+def _lease_payload(path: Path) -> dict[str, Any] | None:
     try:
-        tasks_root = tasks.resolve(strict=True)
-    except OSError:
-        return []
-    result: list[Path] = []
-    for task in sorted(tasks.glob("TASK-*")):
-        try:
-            if task.is_symlink() or not task.is_dir() or task.resolve(strict=True).parent != tasks_root:
-                continue
-            private = task / "private"
-            if private.is_symlink() or not private.is_dir():
-                continue
-            if private.resolve(strict=True).parent != task.resolve(strict=True):
-                continue
-        except OSError:
-            continue
-        result.append(private)
-    return result
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 65_536:
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        expires = float(data["expires_unix"])
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or not is_identifier(str(data.get("token", "")), "LEASE"):
+        return None
+    if not isinstance(data.get("owner"), str) or not data["owner"] or not isinstance(data.get("acquired_at"), str) or not data["acquired_at"]:
+        return None
+    if expires != expires or expires in {float("inf"), float("-inf")}:
+        return None
+    return data
+
+
+def _lease_artifacts(tasks: Path, *, now: float | None = None) -> tuple[list[Path], int]:
+    current = now if now is not None else time.time()
+    expired: list[Path] = []
+    recognized: set[Path] = set()
+    if not tasks.is_dir():
+        return expired, 0
+    for task_dir in sorted(path for path in tasks.iterdir() if path.is_dir() and is_identifier(path.name, "TASK")):
+        private = task_dir / "private"
+        active = private / "controller.lease"
+        if active.exists():
+            data = _lease_payload(active)
+            if data is not None:
+                recognized.add(active)
+                if float(data["expires_unix"]) <= current:
+                    expired.append(active)
+        if private.is_dir():
+            for path in private.glob(".controller.lease.*.expired"):
+                match = _LEASE_QUARANTINE.fullmatch(path.name)
+                data = _lease_payload(path)
+                if match is None or data is None:
+                    continue
+                recognized.add(path)
+                try:
+                    if float(data["expires_unix"]) <= current and path.stat().st_mtime <= current - _MINIMUM_TEMP_AGE_SECONDS:
+                        expired.append(path)
+                except OSError:
+                    continue
+    lookalikes = set(tasks.rglob("controller.lease")) | set(tasks.rglob(".controller.lease.*.expired"))
+    return sorted(expired), len(lookalikes - recognized)
 
 
 def _expired_leases(tasks: Path, *, now: float | None = None) -> list[Path]:
-    from .repository import (
-        CONTROLLER_CAS_FILENAME,
-        controller_cas_coordination_is_active,
-        controller_cas_recoverable,
+    return _lease_artifacts(tasks, now=now)[0]
+
+
+def _replay_error(task_id: str, exc: BaseException) -> MacError:
+    code = exc.code if isinstance(exc, MacError) else type(exc).__name__
+    return MacError(
+        "DOCTOR_REPLAY_INPUT_INVALID",
+        f"{task_id} cannot be deterministically replayed ({code}): {exc}",
+        exit_code=ExitCode.CORRUPTION,
+        task_id=task_id,
+        details={"cause": code},
     )
 
-    current = now if now is not None else time.time()
-    result: list[Path] = []
-    for private in _safe_task_private_dirs(tasks):
-        path = private / "controller.lease"
-        try:
-            if path.is_file() and not path.is_symlink():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if float(data["expires_unix"]) <= current:
-                    result.append(path)
-        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-            pass
-        cas = private / CONTROLLER_CAS_FILENAME
-        if (
-            controller_cas_recoverable(cas, now=current)
-            and not controller_cas_coordination_is_active(private)
-        ):
-            result.append(cas)
-        cutoff = current - _MINIMUM_TEMP_AGE_SECONDS
-        for quarantine in sorted(private.glob(".*.expired")):
+
+def _projection_plan(root: Path, task_dir: Path) -> _ProjectionPlan:
+    task_id = task_dir.name
+    if not is_identifier(task_id, "TASK") or task_dir.is_symlink():
+        raise _replay_error(task_id, ValueError("task directory identity is invalid"))
+    events_dir = task_dir / "events"
+    try:
+        if events_dir.is_symlink() or not events_dir.is_dir():
+            raise ValueError("events directory is missing or unsafe")
+        event_paths: list[Path] = []
+        for path in sorted(events_dir.iterdir()):
+            if _known_atomic_file(root / "tasks", path):
+                try:
+                    if path.stat().st_mtime <= time.time() - _MINIMUM_TEMP_AGE_SECONDS:
+                        continue
+                except OSError:
+                    pass
+                raise ValueError(f"atomic event write is still in progress: {path.name}")
+            if path.is_symlink() or not path.is_file() or path.suffix != ".json" or not is_identifier(path.stem, "EVT"):
+                raise ValueError(f"unexpected replay input: {path.name}")
+            event_paths.append(path)
+        if not event_paths:
+            raise ValueError("no committed event inputs")
+        events: list[dict[str, Any]] = []
+        inputs: list[_PathSnapshot] = []
+        for path in event_paths:
+            event, frozen = _load_frozen_data(path, root)
+            if event.get("event_id") != path.stem or event.get("task_id") != task_id:
+                raise ValueError(f"event identity does not match path: {path.name}")
+            events.append(event)
+            inputs.append(frozen)
+        events = _validate_loaded_event_stream(
+            root,
+            task_id,
+            events,
+            frozen_policy_cache={},
+        )
+        projection = replay_events(events)
+        if projection.get("id") != task_id:
+            raise ValueError("replayed task identity does not match directory")
+        snapshots = replay_entity_snapshots(events)
+        current_scope, scope_history = replay_scope_snapshots(events)
+        expected_outputs: list[tuple[str, str, dict[str, Any]]] = [
+            ((task_dir / "task.yaml").relative_to(root).as_posix(), "yaml", projection)
+        ]
+        if current_scope is not None:
+            expected_outputs.append(
+                ((task_dir / "scope-contract.yaml").relative_to(root).as_posix(), "yaml", current_scope)
+            )
+            for version, scope_snapshot in sorted(scope_history.items()):
+                expected_outputs.append(
+                    (
+                        (task_dir / "scope-history" / f"scope-contract.v{version}.yaml").relative_to(root).as_posix(),
+                        "yaml",
+                        scope_snapshot,
+                    )
+                )
+        for directory, entities in snapshots.items():
+            prefix, extension = _ENTITY_LAYOUT[directory]
+            for entity_id, entity in sorted(entities.items()):
+                if not is_identifier(entity_id, prefix) or entity.get("id") != entity_id or entity.get("task_id") != task_id:
+                    raise ValueError(f"unsafe replayed {directory} identity: {entity_id}")
+                relative = (task_dir / directory / f"{entity_id}{extension}").relative_to(root).as_posix()
+                expected_outputs.append((relative, "yaml" if extension == ".yaml" else "json", entity))
+        outputs: list[tuple[str, str, dict[str, Any]]] = []
+        drift: list[str] = []
+        for relative, encoding, expected in expected_outputs:
             try:
-                if (
-                    quarantine.is_file()
-                    and not quarantine.is_symlink()
-                    and (_LEASE_QUARANTINE.fullmatch(quarantine.name) or _CAS_QUARANTINE.fullmatch(quarantine.name))
-                    and quarantine.stat().st_mtime <= cutoff
-                ):
-                    result.append(quarantine)
-            except OSError:
-                continue
-    return sorted(result)
+                actual = load_data(root / relative)
+            except Exception:
+                actual = None
+            if actual != expected:
+                drift.append(relative)
+                outputs.append((relative, encoding, expected))
+        return _ProjectionPlan(task_id, tuple(inputs), projection, tuple(outputs), tuple(sorted(drift)))
+    except MacError as exc:
+        if exc.code == "DOCTOR_REPLAY_INPUT_INVALID":
+            raise
+        raise _replay_error(task_id, exc) from exc
+    except Exception as exc:
+        raise _replay_error(task_id, exc) from exc
 
 
-def _remove_revalidated_expired_lease(path: Path, tasks: Path, repository: object, *, now: float) -> bool:
-    from .errors import MacError
-    from .repository import CONTROLLER_CAS_FILENAME, controller_cas_recoverable
+def _index_row(task: dict[str, Any]) -> dict[str, Any]:
+    return {key: task.get(key) for key in ("id", "title", "mode", "state", "revision", "updated_at", "legacy_id") if task.get(key) is not None}
 
-    private_dirs: set[Path] = set()
-    for item in _safe_task_private_dirs(tasks):
-        try:
-            private_dirs.add(item.resolve(strict=True))
-        except OSError:
-            continue
-    try:
-        private = path.parent.resolve(strict=True)
-    except OSError:
-        return False
-    if private not in private_dirs or path.is_symlink() or not path.is_file():
-        return False
-    if path.name == CONTROLLER_CAS_FILENAME:
-        if not controller_cas_recoverable(path, now=now):
-            return False
-        try:
-            return bool(repository.repair_stale_cas_guard(path.parent.parent.name, now=now))
-        except MacError:
-            return False
-    if _LEASE_QUARANTINE.fullmatch(path.name) or _CAS_QUARANTINE.fullmatch(path.name):
-        try:
-            if path.stat().st_mtime > now - _MINIMUM_TEMP_AGE_SECONDS:
-                return False
-            path.unlink()
-            return True
-        except OSError:
-            return False
-    if path.name != "controller.lease":
-        return False
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if float(data["expires_unix"]) <= now:
-            path.unlink()
-            return True
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-        return False
-    return False
+
+def _repair_plan(root: Path) -> _RepairPlan:
+    tasks = root / "tasks"
+    temporary_paths = _known_temporary_files(tasks)
+    lease_paths = _expired_leases(tasks)
+    temporary = tuple(_snapshot(path, root) for path in temporary_paths)
+    leases = tuple(_snapshot(path, root) for path in lease_paths)
+    all_projection_plans: list[_ProjectionPlan] = []
+    if tasks.is_dir():
+        for task_dir in sorted(path for path in tasks.iterdir() if path.is_dir() and (path / "events").exists()):
+            all_projection_plans.append(_projection_plan(root, task_dir))
+    # Every replay stream feeds the generated index, even when its materialized
+    # task projection is already current, so all event inputs stay frozen.
+    projections = tuple(all_projection_plans)
+    projected = {plan.task_id: plan.task_projection for plan in all_projection_plans}
+    index_inputs: list[_PathSnapshot] = []
+    rows: list[dict[str, Any]] = []
+    if tasks.is_dir():
+        for task_path in sorted(tasks.glob("TASK-*/task.yaml")):
+            task_id = task_path.parent.name
+            if not is_identifier(task_id, "TASK"):
+                raise MacError("DOCTOR_INDEX_INPUT_INVALID", f"invalid task directory in index: {task_id}", exit_code=ExitCode.CORRUPTION)
+            if task_id in projected:
+                task = projected[task_id]
+            else:
+                try:
+                    task, frozen = _load_frozen_data(task_path, root)
+                    index_inputs.append(frozen)
+                except Exception as exc:
+                    raise MacError("DOCTOR_INDEX_INPUT_INVALID", f"cannot freeze index input {task_id}: {exc}", exit_code=ExitCode.CORRUPTION) from exc
+            rows.append(_index_row(task))
+    rows.sort(key=lambda row: str(row.get("id", "")))
+    plan_payload = {
+        "temporary": [[snapshot.relative, snapshot.kind, snapshot.fingerprint] for snapshot in temporary],
+        "leases": [[snapshot.relative, snapshot.kind, snapshot.fingerprint] for snapshot in leases],
+        "projections": [
+            {
+                "task_id": plan.task_id,
+                "inputs": [[item.relative, item.kind, item.fingerprint] for item in plan.replay_inputs],
+                "drift": list(plan.drift),
+                "outputs": [[relative, encoding, value] for relative, encoding, value in plan.outputs],
+            }
+            for plan in projections
+        ],
+        "index_inputs": [[item.relative, item.kind, item.fingerprint] for item in index_inputs],
+        "index_rows": rows,
+    }
+    digest = "sha256:" + hashlib.sha256(json.dumps(plan_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return _RepairPlan(temporary, leases, projections, tuple(index_inputs), tuple(rows), digest)
+
+
+def _validate_repair_plan(plan: _RepairPlan, root: Path) -> None:
+    for snapshot in (*plan.temporary, *plan.leases, *plan.index_inputs):
+        _validate_snapshot(snapshot, root)
+    for projection in plan.projections:
+        for snapshot in projection.replay_inputs:
+            _validate_snapshot(snapshot, root)
 
 
 def run_doctor(repo: Path) -> DoctorReport:
@@ -342,101 +592,121 @@ def run_doctor(repo: Path) -> DoctorReport:
     workflows = root / ".agents/workflows"
     profiles = root / ".agents/runtime-profiles"
     temporary = _known_temporary_files(tasks)
-    leases = _expired_leases(tasks)
+    leases, unsafe_leases = _lease_artifacts(tasks)
+    temp_lookalikes = 0
+    if tasks.is_dir():
+        known_temporary = set(temporary)
+        temp_lookalikes = sum(1 for path in tasks.rglob("*.tmp") if path not in known_temporary and not any(parent in known_temporary for parent in path.parents))
     tracked_private = _tracked_private_files(root)
     untracked_logs = _untracked_sensitive_log_count(root)
     path_risks = _path_risk_count(root)
     policy_drift = _policy_drift_count(root)
     migration_incomplete = _migration_incomplete_count(root)
     cli_version = _cli_version(root)
-    config_version_ok, config_version_message = _config_schema_version(root)
     projection_drift = 0
-    try:
-        from .repository import FilesystemTaskRepository
-
-        repository = FilesystemTaskRepository(root)
-        projection_drift = sum(len(repository.projection_drift(path.parent.name)) for path in (root / "tasks").glob("TASK-*/task.yaml"))
-    except Exception:
-        projection_drift = 1
+    replay_errors: list[str] = []
+    if tasks.is_dir():
+        for task_dir in sorted(path for path in tasks.iterdir() if path.is_dir() and (path / "events").exists()):
+            try:
+                projection_drift += len(_projection_plan(root, task_dir).drift)
+            except MacError as exc:
+                replay_errors.append(f"{task_dir.name}: {exc}")
     local_schema_bundle = (root / "schemas").is_dir() or (root / ".agents/schemas.lock.json").is_file()
     lock_issues = schema_lock_issues(root, root / "schemas") if local_schema_bundle else []
     schema_message = ("schema lock matches" if local_schema_bundle else "using the executable's locked schema bundle") if not lock_issues else "; ".join(item.message for item in lock_issues)
     try:
         schemas = SchemaSet()
+        executable_schema_ok, executable_schema_message = True, "executable schema bundle matches its lock"
+    except Exception as exc:
+        schemas = None
+        executable_schema_ok, executable_schema_message = False, str(exc)
+    try:
+        if schemas is None:
+            raise ValueError(executable_schema_message)
         policy = compile_policy(root, schemas=schemas)
         policy_ok, policy_message = True, f"compiled {policy.workflow.get('name')} with {policy.runtime_profile.get('id')}"
     except Exception as exc:
         policy_ok, policy_message = False, str(exc)
+    repository_errors = 0
+    repository_message = "repository entities validate"
+    try:
+        from .repository import validate_repository
+
+        validation = validate_repository(root, schemas) if schemas is not None else []
+        repository_errors = sum(1 for issue in validation if issue.severity == "error")
+        if repository_errors:
+            first = next(issue for issue in validation if issue.severity == "error")
+            repository_message = f"{repository_errors} validation errors; first={first.code} at {first.path or '<root>'}"
+    except Exception as exc:
+        repository_errors = 1
+        repository_message = f"repository validation failed: {exc}"
     checks = (
         DoctorCheck("python_runtime", sys.version_info >= (3, 11), True, f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"),
         DoctorCheck("cli_version", bool(cli_version), True, f"multi-agent-collab {cli_version or 'unknown'}"),
         DoctorCheck("git_repository", _git_available(root), False, "Git repository available"),
         DoctorCheck("config", config.is_file(), True, ".agents/config.yaml exists"),
-        DoctorCheck("config_schema_version", config_version_ok, True, config_version_message),
         DoctorCheck("ownership", ownership.is_file(), True, ".agents/ownership.yaml exists"),
         DoctorCheck("workflow", workflows.is_dir() and any(workflows.glob("*.yaml")), True, "at least one workflow exists"),
         DoctorCheck("runtime_profiles", profiles.is_dir() and any(profiles.glob("*.yaml")), True, "at least one runtime profile exists"),
+        DoctorCheck("executable_schema_lock", executable_schema_ok, True, executable_schema_message),
         DoctorCheck("schema_lock", not lock_issues, True, schema_message),
         DoctorCheck("compiled_policy", policy_ok, True, policy_message),
+        DoctorCheck("repository_validation", repository_errors == 0, True, repository_message),
+        DoctorCheck("event_replay_integrity", not replay_errors, True, "all event streams replay deterministically" if not replay_errors else replay_errors[0]),
         DoctorCheck("tracked_private_artifacts", not tracked_private, True, f"{len(tracked_private)} private artifact files are tracked"),
         DoctorCheck("path_case_and_symlink_risk", path_risks == 0, True, f"{path_risks} path collision or symlink escape risks"),
         DoctorCheck("untracked_sensitive_logs", untracked_logs == 0, False, f"{untracked_logs} untracked private/log artifacts"),
         DoctorCheck("policy_drift", policy_drift == 0, False, f"{policy_drift} frozen policy references differ from the current policy"),
         DoctorCheck("projection_drift", projection_drift == 0, False, f"{projection_drift} derived projections require rebuild"),
         DoctorCheck("migration_completion", migration_incomplete == 0, False, f"{migration_incomplete} legacy tasks are not represented in tasks-v6"),
-        DoctorCheck("recoverable_temporary_files", not temporary, False, f"{len(temporary)} known, old interrupted writes"),
-        DoctorCheck("expired_controller_leases", not leases, False, f"{len(leases)} expired controller leases"),
+        DoctorCheck("recoverable_temporary_files", not temporary, False, f"{len(temporary)} proven, old interrupted atomic writes"),
+        DoctorCheck("expired_controller_leases", not leases, False, f"{len(leases)} proven expired controller lease artifacts"),
+        DoctorCheck("unrecognized_recovery_artifacts", temp_lookalikes + unsafe_leases == 0, False, f"{temp_lookalikes} unrecognized temp and {unsafe_leases} invalid lease lookalikes were left untouched"),
     )
     return DoctorReport(all(item.ok for item in checks if item.required), checks)
 
 
-def repair_safe(repo: Path, *, apply: bool = False) -> RepairReport:
-    """List or repair only known derived-state failures; never alter business state."""
+def repair_safe(repo: Path, *, apply: bool = False, expected_plan_digest: str | None = None) -> RepairReport:
+    """Preview or apply a frozen, fingerprinted repair plan for derived state only."""
     from .repository import FilesystemTaskRepository
 
     root = repo.resolve()
     tasks = root / "tasks"
-    temporary = _known_temporary_files(tasks)
-    leases = _expired_leases(tasks)
-    projections: list[str] = []
-    repository = FilesystemTaskRepository(root)
-    if tasks.is_dir():
-        for task_dir in sorted(path for path in tasks.glob("TASK-*") if path.is_dir()):
-            if not (task_dir / "events").is_dir():
-                continue
-            try:
-                rebuilt = repository.projection_drift(task_dir.name)
-            except Exception:
-                continue
-            if rebuilt:
-                projections.extend(str(path) for path in rebuilt)
+    plan = _repair_plan(root)
+    if apply and expected_plan_digest is None:
+        raise MacError(
+            "DOCTOR_REPAIR_PLAN_DIGEST_REQUIRED",
+            "applying repair-safe requires the exact digest returned by preview",
+            exit_code=ExitCode.CLI_USAGE,
+        )
+    if expected_plan_digest is not None and plan.digest != expected_plan_digest:
+        raise MacError("DOCTOR_REPAIR_PLAN_CHANGED", "repair candidate set changed after preview", exit_code=ExitCode.CONFLICT, details={"expected": expected_plan_digest, "actual": plan.digest})
     if apply:
-        import shutil
-
-        for path in temporary:
-            if path.is_dir():
+        _validate_repair_plan(plan, root)
+        for snapshot in plan.temporary:
+            path = root / snapshot.relative
+            if snapshot.kind == "directory":
                 shutil.rmtree(path)
             else:
                 path.unlink()
-        removed_leases: list[Path] = []
-        repair_now = time.time()
-        for path in leases:
-            if _remove_revalidated_expired_lease(path, tasks, repository, now=repair_now):
-                removed_leases.append(path)
-        leases = removed_leases
-        projections = []
-        if tasks.is_dir():
-            for task_dir in sorted(path for path in tasks.glob("TASK-*") if path.is_dir() and (path / "events").is_dir()):
-                drift = repository.projection_drift(task_dir.name)
-                repository.rebuild_task(task_dir.name)
-                projections.extend(drift)
-        index_path = tasks / "INDEX.generated.json"
-        atomic_write_json(index_path, {"schema_version": 1, "tasks": build_index(root)})
+        for snapshot in plan.leases:
+            (root / snapshot.relative).unlink()
+        repository = FilesystemTaskRepository(root)
+        for projection in plan.projections:
+            with repository.lease(projection.task_id, "doctor-repair-safe"):
+                for snapshot in projection.replay_inputs:
+                    _validate_snapshot(snapshot, root)
+                for relative, encoding, value in projection.outputs:
+                    writer = atomic_write_yaml if encoding == "yaml" else atomic_write_json
+                    writer(root / relative, value)
+        atomic_write_json(tasks / "INDEX.generated.json", {"schema_version": 1, "tasks": list(plan.index_rows)})
+    projection_paths = tuple(path for projection in plan.projections for path in projection.drift)
     index_path = tasks / "INDEX.generated.json"
     return RepairReport(
         apply,
-        tuple(path.relative_to(root).as_posix() for path in temporary),
-        tuple(path.relative_to(root).as_posix() for path in leases),
-        tuple(projections),
+        plan.digest,
+        tuple(snapshot.relative for snapshot in plan.temporary),
+        tuple(snapshot.relative for snapshot in plan.leases),
+        projection_paths,
         index_path.relative_to(root).as_posix(),
     )

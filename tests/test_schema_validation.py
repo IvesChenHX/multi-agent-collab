@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 from typing import Any
 
 from jsonschema import Draft202012Validator
+import pytest
 import yaml
 
 from mac.repository import validate_repository
@@ -108,3 +110,68 @@ def test_schema_lock_detects_executable_schema_drift(tmp_path: Path) -> None:
     issues = schema_lock_issues(tmp_path)
 
     assert {issue.code for issue in issues} == {"SCHEMA_LOCK_MISMATCH"}
+
+
+def test_schema_lock_digest_is_stable_across_git_line_ending_checkout(tmp_path: Path) -> None:
+    init_command(repo=tmp_path, project="schema-lock-crlf", json_output=True)
+    schema = tmp_path / "schemas/task.schema.json"
+    canonical = schema.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    schema.write_bytes(canonical.replace(b"\n", b"\r\n"))
+
+    assert schema_lock_issues(tmp_path) == []
+
+
+def test_explicit_schema_set_fails_closed_on_semantic_lock_drift(tmp_path: Path) -> None:
+    schemas = tmp_path / "schemas"
+    shutil.copytree(DESIGN_SCHEMAS, schemas)
+    agents = tmp_path / ".agents"
+    agents.mkdir()
+    shutil.copy2(DESIGN_SCHEMAS.parent / ".agents/schemas.lock.json", agents / "schemas.lock.json")
+    schema = schemas / "task.schema.json"
+    canonical = schema.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    schema.write_bytes(canonical.replace(b"\n", b"\r\n"))
+    first = SchemaSet(schemas)
+    second = SchemaSet(schemas)
+    assert second.validators is first.validators
+    schema.write_text(schema.read_text(encoding="utf-8") + " ", encoding="utf-8", newline="\n")
+
+    with pytest.raises(ValueError, match="schema lock mismatch"):
+        SchemaSet(schemas)
+
+
+def test_schema_lock_rejects_schema_directory_symlink_outside_repository(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    agents = repo / ".agents"
+    agents.mkdir(parents=True)
+    shutil.copy2(DESIGN_SCHEMAS.parent / ".agents/schemas.lock.json", agents / "schemas.lock.json")
+    outside = tmp_path / "outside-schemas"
+    shutil.copytree(DESIGN_SCHEMAS, outside)
+    try:
+        (repo / "schemas").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+    issues = schema_lock_issues(repo)
+
+    assert {issue.code for issue in issues} == {"SCHEMA_PATH_UNSAFE_LINK"}
+
+
+def test_schema_lock_rejects_schema_file_symlink_even_when_content_matches(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    schemas = repo / "schemas"
+    shutil.copytree(DESIGN_SCHEMAS, schemas)
+    agents = repo / ".agents"
+    agents.mkdir()
+    shutil.copy2(DESIGN_SCHEMAS.parent / ".agents/schemas.lock.json", agents / "schemas.lock.json")
+    target = schemas / "task.schema.json"
+    outside = tmp_path / "task.schema.json"
+    shutil.copy2(target, outside)
+    target.unlink()
+    try:
+        target.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"file symlinks are unavailable: {exc}")
+
+    issues = schema_lock_issues(repo)
+
+    assert {issue.code for issue in issues} == {"SCHEMA_PATH_UNSAFE_LINK"}
