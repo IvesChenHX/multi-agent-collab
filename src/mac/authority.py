@@ -485,6 +485,7 @@ class SubprocessAuthorityAdapter:
             )
         try:
             safe_environment_names = {
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
                 "COMSPEC", "HOME", "LANG", "LOCALAPPDATA", "PATH", "PATHEXT",
                 "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "WINDIR",
                 BROKER_MANIFEST_ENV, EXPECTED_ISSUER_ENV, PUBLIC_KEYRING_ENV,

@@ -85,6 +85,13 @@ def _broker_main() -> int:
         return 2
 
     mode = os.environ.get(_BROKER_MODE_ENV, "allow")
+    if mode == "require_oidc_environment" and (
+        os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL")
+        != "https://pipelines.actions.githubusercontent.com/oidc?job=trusted"
+        or os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN") != "github-oidc-request-token"
+        or os.environ.get("GITHUB_TOKEN") is not None
+    ):
+        return 2
     bound_request = _mismatched_request(request, mode)
     now = datetime.now(timezone.utc)
     issued = now - timedelta(seconds=5)
@@ -248,6 +255,22 @@ def test_broker_command_must_match_host_pinned_manifest(monkeypatch: pytest.Monk
     assert captured.value.code == "AUTHORITY_BROKER_MANIFEST_MISMATCH"
     assert str(_BROKER) not in str(captured.value)
     assert sys.executable not in str(captured.value)
+
+
+def test_broker_receives_only_the_required_github_oidc_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "https://pipelines.actions.githubusercontent.com/oidc?job=trusted",
+    )
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "github-oidc-request-token")
+    monkeypatch.setenv("GITHUB_TOKEN", "must-not-cross-the-broker-seam")
+    monkeypatch.setenv(_BROKER_MODE_ENV, "require_oidc_environment")
+
+    fact = _configured_adapter(monkeypatch).authorize(request=_authority_request())
+
+    assert fact.allowed is True
 
 
 def test_successful_response_creates_a_sealed_verified_fact(monkeypatch: pytest.MonkeyPatch) -> None:
