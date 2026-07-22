@@ -582,6 +582,39 @@ def test_attested_scope_plan_round_trips_one_exact_approval_command(
     assert json.loads(stdout.getvalue())["operation"] == "scope.approve"
 
 
+def test_github_validation_trust_requires_exact_actions_repository(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    for name in (
+        governance_pr.AUTHORITY_REPOSITORY_IDENTITY_ENV,
+        governance_pr.SIGSTORE_REPOSITORY_ENV,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        governance_pr,
+        "_sigstore_trust_environment",
+        lambda: {governance_pr.SIGSTORE_REPOSITORY_ENV: "trusted"},
+    )
+    wrong = {
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_REPOSITORY": "attacker/fork",
+        "GITHUB_REPOSITORY_ID": "1",
+    }
+    governance_pr._configure_github_validation_trust(wrong)
+    assert governance_pr.AUTHORITY_REPOSITORY_IDENTITY_ENV not in governance_pr.os.environ
+
+    exact = {
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_REPOSITORY": "IvesChenHX/multi-agent-collab",
+        "GITHUB_REPOSITORY_ID": "1290429577",
+    }
+    governance_pr._configure_github_validation_trust(exact)
+    assert governance_pr.os.environ[governance_pr.AUTHORITY_REPOSITORY_IDENTITY_ENV] == (
+        "github:repository-id:1290429577"
+    )
+    assert governance_pr.os.environ[governance_pr.SIGSTORE_REPOSITORY_ENV] == "trusted"
+
+
 def test_attested_task_apply_revalidates_plan_before_atomic_execution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

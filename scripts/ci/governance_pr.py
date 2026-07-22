@@ -1031,6 +1031,21 @@ def _sigstore_trust_environment() -> dict[str, str]:
     }
 
 
+def _configure_github_validation_trust(values: Mapping[str, str]) -> None:
+    """Promote the stable repository identity only on the exact GitHub host."""
+
+    if (
+        values.get("GITHUB_ACTIONS", "").lower() != "true"
+        or values.get("GITHUB_REPOSITORY") != _EXPECTED_GITHUB_REPOSITORY
+        or values.get("GITHUB_REPOSITORY_ID") != _EXPECTED_GITHUB_REPOSITORY_ID
+    ):
+        return
+    os.environ[AUTHORITY_REPOSITORY_IDENTITY_ENV] = (
+        f"github:repository-id:{_EXPECTED_GITHUB_REPOSITORY_ID}"
+    )
+    os.environ.update(_sigstore_trust_environment())
+
+
 def _write_attested_mutation_plan(
     command: CreateTask | AppendEvent,
     *,
@@ -1421,6 +1436,7 @@ def main(argv: list[str] | None = None) -> int:
             predicate_path=mutation_args.predicate,
             bundle_path=mutation_args.bundle,
         )
+    _configure_github_validation_trust(os.environ)
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
     parser.add_argument("--head", required=True)
