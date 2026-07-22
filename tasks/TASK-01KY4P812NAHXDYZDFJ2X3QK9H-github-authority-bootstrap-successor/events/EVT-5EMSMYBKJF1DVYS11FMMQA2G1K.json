@@ -1,0 +1,437 @@
+{
+  "actor": {
+    "id": "governance-owner",
+    "kind": "human"
+  },
+  "event_id": "EVT-5EMSMYBKJF1DVYS11FMMQA2G1K",
+  "event_type": "scope_approved",
+  "expected_revision": 4,
+  "idempotency_key": "github-sigstore-scope-approve:29932228685:1",
+  "new_revision": 5,
+  "occurred_at": "2026-07-22T15:12:57.498976Z",
+  "payload": {
+    "approval": {
+      "actor": {
+        "id": "governance-owner",
+        "kind": "human"
+      },
+      "decision": "approved",
+      "id": "APR-01KY565WD7TTCD6DSKMTZFDFR5",
+      "independence_level": "L2",
+      "kind": "scope",
+      "recorded_at": "2026-07-22T15:12:57.498976Z",
+      "schema_version": 1,
+      "subject_ref": "tasks/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/scope-contract.yaml#scope=SCOPE-01KY4P812NAHXDYZDFJ2X3QK9J;version=3;digest=sha256:7ac7b4a3c2553c21d501b862cf9461d16e1e52fde915196869cdc5ec9b09fbb7",
+      "task_id": "TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor"
+    },
+    "approval_id": "APR-01KY565WD7TTCD6DSKMTZFDFR5",
+    "authority": {
+      "actor_id": "governance-owner",
+      "actor_kind": "human",
+      "allowed": true,
+      "attestation_id": "sigstore:sha256:34e10b8b6f22fe7c6e7388440aba519adc381bae48d4bfd6cdd3a8d5bce1c1fe",
+      "audience": "mac-mutation-gateway/v1",
+      "authenticated": true,
+      "authorized_intent": {
+        "event_id": null,
+        "event_type": "scope_approved",
+        "expected_revision": 4,
+        "idempotency_key": "github-sigstore-scope-approve:29932228685:1",
+        "materializations": [
+          [
+            "tasks/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/approvals/APR-01KY565WD7TTCD6DSKMTZFDFR5.json",
+            {
+              "actor": {
+                "id": "governance-owner",
+                "kind": "human"
+              },
+              "decision": "approved",
+              "id": "APR-01KY565WD7TTCD6DSKMTZFDFR5",
+              "independence_level": "L2",
+              "kind": "scope",
+              "recorded_at": "2026-07-22T15:12:48.039841Z",
+              "schema_version": 1,
+              "subject_ref": "tasks/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/scope-contract.yaml#scope=SCOPE-01KY4P812NAHXDYZDFJ2X3QK9J;version=3;digest=sha256:7ac7b4a3c2553c21d501b862cf9461d16e1e52fde915196869cdc5ec9b09fbb7",
+              "task_id": "TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor"
+            }
+          ],
+          [
+            "tasks/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/scope-contract.yaml",
+            {
+              "allowed_operations": [
+                "read",
+                "write",
+                "execute_tests",
+                "generate_artifacts"
+              ],
+              "allowed_paths": [
+                "src/mac/authority.py",
+                "src/mac/repository.py",
+                "src/mac/application/task_service.py",
+                "src/mac/cli.py",
+                "scripts/ci/governance_pr.py",
+                ".github/workflows/governance-pr.yml",
+                "tests/operations/test_governance_pr.py",
+                "tests/security/test_authority_commands.py",
+                "docs/pilot/alpha-close-report.md",
+                "tasks/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/**",
+                "tasks/private/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/**",
+                "src/mac/migration.py",
+                "tests/test_authorityless_v6_migration.py",
+                "migration/v6-authorityless/**",
+                "tasks-v6/**",
+                ".github/workflows/ci.yml"
+              ],
+              "amendment_policy": {
+                "max_amendments": 2,
+                "max_paths_per_amendment": 4,
+                "require_independent_approval_for": [
+                  "auth_security",
+                  "production_deploy"
+                ]
+              },
+              "approved_by": [
+                "governance-owner"
+              ],
+              "base_commit": "a5eafdf308401a3b659e8d8f7e49f36c06a83592",
+              "denied_paths": [],
+              "id": "SCOPE-01KY4P812NAHXDYZDFJ2X3QK9J",
+              "network_access": "none",
+              "owners": [
+                "governance",
+                "platform",
+                "security",
+                "devex",
+                "tests",
+                "docs"
+              ],
+              "proposed_by": "repo-owner",
+              "required_gates": [
+                "targeted_tests",
+                "negative_security_tests",
+                "secret_scan",
+                "scope_guard",
+                "compatibility_review",
+                "independent_review",
+                "rollback_plan",
+                "rollback_verification",
+                "evidence_matches_current_commit"
+              ],
+              "risk_tags": [
+                "auth_security",
+                "data_migration"
+              ],
+              "schema_version": 1,
+              "secret_access": [],
+              "status": "approved",
+              "task_id": "TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor",
+              "version": 3
+            }
+          ]
+        ],
+        "minimum_independence": "L2",
+        "operation": "scope.approve",
+        "payload": {
+          "approval": {
+            "actor": {
+              "id": "governance-owner",
+              "kind": "human"
+            },
+            "decision": "approved",
+            "id": "APR-01KY565WD7TTCD6DSKMTZFDFR5",
+            "independence_level": "L2",
+            "kind": "scope",
+            "recorded_at": "2026-07-22T15:12:48.039841Z",
+            "schema_version": 1,
+            "subject_ref": "tasks/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/scope-contract.yaml#scope=SCOPE-01KY4P812NAHXDYZDFJ2X3QK9J;version=3;digest=sha256:7ac7b4a3c2553c21d501b862cf9461d16e1e52fde915196869cdc5ec9b09fbb7",
+            "task_id": "TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor"
+          },
+          "approval_id": "APR-01KY565WD7TTCD6DSKMTZFDFR5",
+          "scope": {
+            "allowed_operations": [
+              "read",
+              "write",
+              "execute_tests",
+              "generate_artifacts"
+            ],
+            "allowed_paths": [
+              "src/mac/authority.py",
+              "src/mac/repository.py",
+              "src/mac/application/task_service.py",
+              "src/mac/cli.py",
+              "scripts/ci/governance_pr.py",
+              ".github/workflows/governance-pr.yml",
+              "tests/operations/test_governance_pr.py",
+              "tests/security/test_authority_commands.py",
+              "docs/pilot/alpha-close-report.md",
+              "tasks/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/**",
+              "tasks/private/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/**",
+              "src/mac/migration.py",
+              "tests/test_authorityless_v6_migration.py",
+              "migration/v6-authorityless/**",
+              "tasks-v6/**",
+              ".github/workflows/ci.yml"
+            ],
+            "amendment_policy": {
+              "max_amendments": 2,
+              "max_paths_per_amendment": 4,
+              "require_independent_approval_for": [
+                "auth_security",
+                "production_deploy"
+              ]
+            },
+            "approved_by": [
+              "governance-owner"
+            ],
+            "base_commit": "a5eafdf308401a3b659e8d8f7e49f36c06a83592",
+            "denied_paths": [],
+            "id": "SCOPE-01KY4P812NAHXDYZDFJ2X3QK9J",
+            "network_access": "none",
+            "owners": [
+              "governance",
+              "platform",
+              "security",
+              "devex",
+              "tests",
+              "docs"
+            ],
+            "proposed_by": "repo-owner",
+            "required_gates": [
+              "targeted_tests",
+              "negative_security_tests",
+              "secret_scan",
+              "scope_guard",
+              "compatibility_review",
+              "independent_review",
+              "rollback_plan",
+              "rollback_verification",
+              "evidence_matches_current_commit"
+            ],
+            "risk_tags": [
+              "auth_security",
+              "data_migration"
+            ],
+            "schema_version": 1,
+            "secret_access": [],
+            "status": "approved",
+            "task_id": "TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor",
+            "version": 3
+          },
+          "scope_id": "SCOPE-01KY4P812NAHXDYZDFJ2X3QK9J",
+          "version": 3
+        },
+        "replace_existing": [
+          "tasks/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/scope-contract.yaml"
+        ],
+        "replay_digest": "sha256:49526245edbab86b8674b3e18ad92ec65d13d8430f45e29f26fab53b6016ef57",
+        "run_id": null,
+        "schema_version": 1,
+        "task_id": "TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor"
+      },
+      "binding_digest": "sha256:6e564fa0bbb3ee5c995c010da419de581852daf22f744bd4fcaf699af9d9f522",
+      "broker_digest": "sha256:89ee199c776b97550efced799fd1f26140e9afed2c3036c1c590b59169193774",
+      "expected_revision": 4,
+      "expires_at": "2026-07-22T15:43:02.498976Z",
+      "idempotency_key": "github-sigstore-scope-approve:29932228685:1",
+      "independence_level": "L2",
+      "intent_digest": "sha256:12bd78053ab665271e062e7adddb46f18f72d88a0424b6a327cc55b2bd5e9354",
+      "issued_at": "2026-07-22T15:12:57.498976Z",
+      "issuer": "https://token.actions.githubusercontent.com",
+      "key_id": "sha256:34e10b8b6f22fe7c6e7388440aba519adc381bae48d4bfd6cdd3a8d5bce1c1fe",
+      "minimum_independence": "L2",
+      "operation": "scope.approve",
+      "ownership_digest": "sha256:291efd0cb181d3cc9b6577111be30ced1d44965b84836ae2d6e16c696b8ec50e",
+      "policy_digest": "sha256:ba3639b86091734159c865fd65aeea4e5a583b532231206ab7676b53e954ce43",
+      "policy_minimum_independence": "L2",
+      "replay_digest": "sha256:49526245edbab86b8674b3e18ad92ec65d13d8430f45e29f26fab53b6016ef57",
+      "repository_identity": "github:repository-id:1290429577",
+      "request_digest": "sha256:c0c6576fe55219b410e1ada927d86828c9837986fc4e4ff1412711be34e25b6e",
+      "signature_algorithm": "sigstore-keyless",
+      "signed_envelope": {
+        "bundle": {
+          "dsseEnvelope": {
+            "payload": "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJuYW1lIjoic3ViamVjdC5qc29uIiwiZGlnZXN0Ijp7InNoYTI1NiI6ImMwYzY1NzZmZTU1MjE5YjQxMGUxYWRhOTI3ZDg2ODI4Yzk4Mzc5ODZmYzRlNGZmMTQxMjcxMWJlMzRlMjViNmUifX1dLCJwcmVkaWNhdGVUeXBlIjoiaHR0cHM6Ly9naXRodWIuY29tL0l2ZXNDaGVuSFgvbXVsdGktYWdlbnQtY29sbGFiL2F0dGVzdGF0aW9ucy9tdXRhdGlvbi1hdXRob3JpdHkvdjEiLCJwcmVkaWNhdGUiOnsiYWN0b3JfaWQiOiJnb3Zlcm5hbmNlLW93bmVyIiwiYWN0b3Jfa2luZCI6Imh1bWFuIiwiYWxsb3dlZCI6dHJ1ZSwiYXV0aGVudGljYXRlZCI6dHJ1ZSwiYmluZGluZ19kaWdlc3QiOiJzaGEyNTY6NmU1NjRmYTBiYmIzZWU1Yzk5NWMwMTBkYTQxOWRlNTgxODUyZGFmMjJmNzQ0YmQ0ZmNhZjY5OWFmOWQ5ZjUyMiIsImVudmlyb25tZW50IjoiZ292ZXJuYW5jZS1hdXRob3JpdHkiLCJleHBpcmVzX2F0IjoiMjAyNi0wNy0yMlQxNTo0MzowMi40OTg5NzZaIiwiaW5kZXBlbmRlbmNlX2xldmVsIjoiTDIiLCJpc3N1ZWRfYXQiOiIyMDI2LTA3LTIyVDE1OjEyOjU3LjQ5ODk3NloiLCJpc3N1ZXIiOiJodHRwczovL3Rva2VuLmFjdGlvbnMuZ2l0aHVidXNlcmNvbnRlbnQuY29tIiwicmVxdWVzdF9kaWdlc3QiOiJzaGEyNTY6YzBjNjU3NmZlNTUyMTliNDEwZTFhZGE5MjdkODY4MjhjOTgzNzk4NmZjNGU0ZmYxNDEyNzExYmUzNGUyNWI2ZSIsInNjaGVtYV92ZXJzaW9uIjoxfX0=",
+            "payloadType": "application/vnd.in-toto+json",
+            "signatures": [
+              {
+                "sig": "MEYCIQCYINEKJ8F60BPjkTieTXfxeCw0HohAySx+JrhYD9XzIQIhAMl7Wq5+XfMo4lVISQ3MmiqJR2zexl5BFRBNyH8JM/SI"
+              }
+            ]
+          },
+          "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+          "verificationMaterial": {
+            "certificate": {
+              "rawBytes": "MIIIQzCCB8mgAwIBAgIUDiWqzM+/5btUHAHP+rBc5+sA5i0wCgYIKoZIzj0EAwMwNzEVMBMGA1UEChMMc2lnc3RvcmUuZGV2MR4wHAYDVQQDExVzaWdzdG9yZS1pbnRlcm1lZGlhdGUwHhcNMjYwNzIyMTUxMzAzWhcNMjYwNzIyMTUyMzAzWjAAMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEmwK/oUBLpqmSGxlE3S6phW48O3PnBPOKj2YUaxwBBLeGOIvWbbetVd4gQ57XKP9HxjXY9ezIU62Q8QabdRGYBqOCBugwggbkMA4GA1UdDwEB/wQEAwIHgDATBgNVHSUEDDAKBggrBgEFBQcDAzAdBgNVHQ4EFgQUpaZwBarxWGGWNoyN7QPf57UPGMcwHwYDVR0jBBgwFoAU39Ppz1YkEZb5qNjpKFWixi4YZD8wgZQGA1UdEQEB/wSBiTCBhoaBg2h0dHBzOi8vZ2l0aHViLmNvbS9JdmVzQ2hlbkhYL211bHRpLWFnZW50LWNvbGxhYi8uZ2l0aHViL3dvcmtmbG93cy9nb3Zlcm5hbmNlLXByLnltbEByZWZzL2hlYWRzL2NvZGV4L2dvdmVybmFuY2UtYXV0aG9yaXR5LXNpZ3N0b3JlMDkGCisGAQQBg78wAQEEK2h0dHBzOi8vdG9rZW4uYWN0aW9ucy5naXRodWJ1c2VyY29udGVudC5jb20wHwYKKwYBBAGDvzABAgQRd29ya2Zsb3dfZGlzcGF0Y2gwNgYKKwYBBAGDvzABAwQoN2E1NjEzM2E0ZWE3MjJkNDVmY2E3MWVlN2ZjZWIzMThkODA1MDdmODAbBgorBgEEAYO/MAEEBA1Hb3Zlcm5hbmNlIFBSMCsGCisGAQQBg78wAQUEHUl2ZXNDaGVuSFgvbXVsdGktYWdlbnQtY29sbGFiMDwGCisGAQQBg78wAQYELnJlZnMvaGVhZHMvY29kZXgvZ292ZXJuYW5jZS1hdXRob3JpdHktc2lnc3RvcmUwOwYKKwYBBAGDvzABCAQtDCtodHRwczovL3Rva2VuLmFjdGlvbnMuZ2l0aHVidXNlcmNvbnRlbnQuY29tMIGVBgorBgEEAYO/MAEJBIGGDIGDaHR0cHM6Ly9naXRodWIuY29tL0l2ZXNDaGVuSFgvbXVsdGktYWdlbnQtY29sbGFiLy5naXRodWIvd29ya2Zsb3dzL2dvdmVybmFuY2UtcHIueW1sQHJlZnMvaGVhZHMvY29kZXgvZ292ZXJuYW5jZS1hdXRob3JpdHktc2lnc3RvcmUwOAYKKwYBBAGDvzABCgQqDCg3YTU2MTMzYTRlYTcyMmQ0NWZjYTcxZWU3ZmNlYjMxOGQ4MDUwN2Y4MB0GCisGAQQBg78wAQsEDwwNZ2l0aHViLWhvc3RlZDBABgorBgEEAYO/MAEMBDIMMGh0dHBzOi8vZ2l0aHViLmNvbS9JdmVzQ2hlbkhYL211bHRpLWFnZW50LWNvbGxhYjA4BgorBgEEAYO/MAENBCoMKDdhNTYxMzNhNGVhNzIyZDQ1ZmNhNzFlZTdmY2ViMzE4ZDgwNTA3ZjgwPgYKKwYBBAGDvzABDgQwDC5yZWZzL2hlYWRzL2NvZGV4L2dvdmVybmFuY2UtYXV0aG9yaXR5LXNpZ3N0b3JlMBoGCisGAQQBg78wAQ8EDAwKMTI5MDQyOTU3NzAtBgorBgEEAYO/MAEQBB8MHWh0dHBzOi8vZ2l0aHViLmNvbS9JdmVzQ2hlbkhYMBkGCisGAQQBg78wAREECwwJMTY2MzE3MTM4MIGVBgorBgEEAYO/MAESBIGGDIGDaHR0cHM6Ly9naXRodWIuY29tL0l2ZXNDaGVuSFgvbXVsdGktYWdlbnQtY29sbGFiLy5naXRodWIvd29ya2Zsb3dzL2dvdmVybmFuY2UtcHIueW1sQHJlZnMvaGVhZHMvY29kZXgvZ292ZXJuYW5jZS1hdXRob3JpdHktc2lnc3RvcmUwOAYKKwYBBAGDvzABEwQqDCg3YTU2MTMzYTRlYTcyMmQ0NWZjYTcxZWU3ZmNlYjMxOGQ4MDUwN2Y4MCEGCisGAQQBg78wARQEEwwRd29ya2Zsb3dfZGlzcGF0Y2gwZAYKKwYBBAGDvzABFQRWDFRodHRwczovL2dpdGh1Yi5jb20vSXZlc0NoZW5IWC9tdWx0aS1hZ2VudC1jb2xsYWIvYWN0aW9ucy9ydW5zLzI5OTMyMjI4Njg1L2F0dGVtcHRzLzEwFgYKKwYBBAGDvzABFgQIDAZwdWJsaWMwJAYKKwYBBAGDvzABFwQWDBRnb3Zlcm5hbmNlLWF1dGhvcml0eTBTBgorBgEEAYO/MAEYBEUMQ3JlcG86SXZlc0NoZW5IWC9tdWx0aS1hZ2VudC1jb2xsYWI6ZW52aXJvbm1lbnQ6Z292ZXJuYW5jZS1hdXRob3JpdHkwgYsGCisGAQQB1nkCBAIEfQR7AHkAdwDdPTBqxscRMmMZHhyZZzcCokpeuN48rf+HinKALynujgAAAZ+KYyyzAAAEAwBIMEYCIQCtXqiWDL5qkIBnuXCojRATGAWMqgLY+XUth8aKOwCzTgIhAJijMPTYT2U0M4cGwruL14nahfLMjJ+sA0Y08+ptrWSOMAoGCCqGSM49BAMDA2gAMGUCMGVjUT0rHhUFG/4HSMWMeXqy+h8sHfNS/TcKx8jsxK8ZIC/FfKCl5HotX4JdAAupGQIxAIhyqy8x0LI8HWrNUQNalp2O0elGRMIl+jIdomxJxbht2fc3rQ3ciccqFIoHAYEmQw=="
+            },
+            "timestampVerificationData": {},
+            "tlogEntries": [
+              {
+                "canonicalizedBody": "eyJhcGlWZXJzaW9uIjoiMC4wLjEiLCJraW5kIjoiZHNzZSIsInNwZWMiOnsiZW52ZWxvcGVIYXNoIjp7ImFsZ29yaXRobSI6InNoYTI1NiIsInZhbHVlIjoiODMyMjc4NzAxMWRhYWY2MmQzNGVhYTBjMzBiN2JhNjc4YjM2MWU0NmIzOTE0NDgwY2Q3Yjg5ZTBmMjQ0NGQ2YyJ9LCJwYXlsb2FkSGFzaCI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJ2YWx1ZSI6IjhhNTU5MDlhNGM1NjRjNTM4NjQxOGE2MDc1YTMzYjg2ZTA5MmUwMjlhYTJiNjBkMTYyNzE5MWZkMGM4NDYzM2MifSwic2lnbmF0dXJlcyI6W3sic2lnbmF0dXJlIjoiTUVZQ0lRQ1lJTkVLSjhGNjBCUGprVGllVFhmeGVDdzBIb2hBeVN4K0pyaFlEOVh6SVFJaEFNbDdXcTUrWGZNbzRsVklTUTNNbWlxSlIyemV4bDVCRlJCTnlIOEpNL1NJIiwidmVyaWZpZXIiOiJMUzB0TFMxQ1JVZEpUaUJEUlZKVVNVWkpRMEZVUlMwdExTMHRDazFKU1VsUmVrTkRRamh0WjBGM1NVSkJaMGxWUkdsWGNYcE5LeTgxWW5SVlNFRklVQ3R5UW1NMUszTkJOV2t3ZDBObldVbExiMXBKZW1vd1JVRjNUWGNLVG5wRlZrMUNUVWRCTVZWRlEyaE5UV015Ykc1ak0xSjJZMjFWZFZwSFZqSk5ValIzU0VGWlJGWlJVVVJGZUZaNllWZGtlbVJIT1hsYVV6RndZbTVTYkFwamJURnNXa2RzYUdSSFZYZElhR05PVFdwWmQwNTZTWGxOVkZWNFRYcEJlbGRvWTA1TmFsbDNUbnBKZVUxVVZYbE5la0Y2VjJwQlFVMUdhM2RGZDFsSUNrdHZXa2w2YWpCRFFWRlpTVXR2V2tsNmFqQkVRVkZqUkZGblFVVnRkMHN2YjFWQ1RIQnhiVk5IZUd4Rk0xTTJjR2hYTkRoUE0xQnVRbEJQUzJveVdWVUtZWGgzUWtKTVpVZFBTWFpYWW1KbGRGWmtOR2RSTlRkWVMxQTVTSGhxV0ZrNVpYcEpWVFl5VVRoUllXSmtVa2RaUW5GUFEwSjFaM2RuWjJKclRVRTBSd3BCTVZWa1JIZEZRaTkzVVVWQmQwbElaMFJCVkVKblRsWklVMVZGUkVSQlMwSm5aM0pDWjBWR1FsRmpSRUY2UVdSQ1owNVdTRkUwUlVablVWVndZVnAzQ2tKaGNuaFhSMGRYVG05NVRqZFJVR1kxTjFWUVIwMWpkMGgzV1VSV1VqQnFRa0puZDBadlFWVXpPVkJ3ZWpGWmEwVmFZalZ4VG1wd1MwWlhhWGhwTkZrS1drUTRkMmRhVVVkQk1WVmtSVkZGUWk5M1UwSnBWRU5DYUc5aFFtY3lhREJrU0VKNlQyazRkbG95YkRCaFNGWnBURzFPZG1KVE9VcGtiVlo2VVRKb2JBcGlhMmhaVERJeE1XSklVbkJNVjBadVdsYzFNRXhYVG5aaVIzaG9XV2s0ZFZveWJEQmhTRlpwVEROa2RtTnRkRzFpUnprelkzazVibUl6V214amJUVm9DbUp0VG14TVdFSjVURzVzZEdKRlFubGFWMXA2VERKb2JGbFhVbnBNTWs1MldrZFdORXd5Wkhaa2JWWjVZbTFHZFZreVZYUlpXRll3WVVjNWVXRllValVLVEZoT2NGb3pUakJpTTBwc1RVUnJSME5wYzBkQlVWRkNaemM0ZDBGUlJVVkxNbWd3WkVoQ2VrOXBPSFprUnpseVdsYzBkVmxYVGpCaFZ6bDFZM2sxYmdwaFdGSnZaRmRLTVdNeVZubFpNamwxWkVkV2RXUkROV3BpTWpCM1NIZFpTMHQzV1VKQ1FVZEVkbnBCUWtGblVWSmtNamw1WVRKYWMySXpaR1phUjJ4NkNtTkhSakJaTW1kM1RtZFpTMHQzV1VKQ1FVZEVkbnBCUWtGM1VXOU9Na1V4VG1wRmVrMHlSVEJhVjBVelRXcEthMDVFVm0xWk1rVXpUVmRXYkU0eVdtb0tXbGRKZWsxVWFHdFBSRUV4VFVSa2JVOUVRV0pDWjI5eVFtZEZSVUZaVHk5TlFVVkZRa0V4U0dJeldteGpiVFZvWW0xT2JFbEdRbE5OUTNOSFEybHpSd3BCVVZGQ1p6YzRkMEZSVlVWSVZXd3lXbGhPUkdGSFZuVlRSbWQyWWxoV2MyUkhhM1JaVjJSc1ltNVJkRmt5T1hOaVIwWnBUVVIzUjBOcGMwZEJVVkZDQ21jM09IZEJVVmxGVEc1S2JGcHVUWFpoUjFab1draE5kbGt5T1d0YVdHZDJXakk1TWxwWVNuVlpWelZxV2xNeGFHUllVbTlpTTBwd1pFaHJkR015Ykc0S1l6TlNkbU50VlhkUGQxbExTM2RaUWtKQlIwUjJla0ZDUTBGUmRFUkRkRzlrU0ZKM1kzcHZka3d6VW5aaE1sWjFURzFHYW1SSGJIWmliazExV2pKc01BcGhTRlpwWkZoT2JHTnRUblppYmxKc1ltNVJkVmt5T1hSTlNVZFdRbWR2Y2tKblJVVkJXVTh2VFVGRlNrSkpSMGRFU1VkRVlVaFNNR05JVFRaTWVUbHVDbUZZVW05a1YwbDFXVEk1ZEV3d2JESmFXRTVFWVVkV2RWTkdaM1ppV0ZaelpFZHJkRmxYWkd4aWJsRjBXVEk1YzJKSFJtbE1lVFZ1WVZoU2IyUlhTWFlLWkRJNWVXRXlXbk5pTTJSNlRESmtkbVJ0Vm5saWJVWjFXVEpWZEdOSVNYVmxWekZ6VVVoS2JGcHVUWFpoUjFab1draE5kbGt5T1d0YVdHZDJXakk1TWdwYVdFcDFXVmMxYWxwVE1XaGtXRkp2WWpOS2NHUklhM1JqTW14dVl6TlNkbU50VlhkUFFWbExTM2RaUWtKQlIwUjJla0ZDUTJkUmNVUkRaek5aVkZVeUNrMVVUWHBaVkZKc1dWUmplVTF0VVRCT1YxcHFXVlJqZUZwWFZUTmFiVTVzV1dwTmVFOUhVVFJOUkZWM1RqSlpORTFDTUVkRGFYTkhRVkZSUW1jM09IY0tRVkZ6UlVSM2QwNWFNbXd3WVVoV2FVeFhhSFpqTTFKc1drUkNRVUpuYjNKQ1owVkZRVmxQTDAxQlJVMUNSRWxOVFVkb01HUklRbnBQYVRoMldqSnNNQXBoU0ZacFRHMU9kbUpUT1Vwa2JWWjZVVEpvYkdKcmFGbE1NakV4WWtoU2NFeFhSbTVhVnpVd1RGZE9kbUpIZUdoWmFrRTBRbWR2Y2tKblJVVkJXVTh2Q2sxQlJVNUNRMjlOUzBSa2FFNVVXWGhOZWs1b1RrZFdhRTU2U1hsYVJGRXhXbTFPYUU1NlJteGFWR1J0V1RKV2FVMTZSVFJhUkdkM1RsUkJNMXBxWjNjS1VHZFpTMHQzV1VKQ1FVZEVkbnBCUWtSblVYZEVRelY1V2xkYWVrd3lhR3haVjFKNlRESk9kbHBIVmpSTU1tUjJaRzFXZVdKdFJuVlpNbFYwV1ZoV01BcGhSemw1WVZoU05VeFlUbkJhTTA0d1lqTktiRTFDYjBkRGFYTkhRVkZSUW1jM09IZEJVVGhGUkVGM1MwMVVTVFZOUkZGNVQxUlZNMDU2UVhSQ1oyOXlDa0puUlVWQldVOHZUVUZGVVVKQ09FMUlWMmd3WkVoQ2VrOXBPSFphTW13d1lVaFdhVXh0VG5aaVV6bEtaRzFXZWxFeWFHeGlhMmhaVFVKclIwTnBjMGNLUVZGUlFtYzNPSGRCVWtWRlEzZDNTazFVV1RKTmVrVXpUVlJOTkUxSlIxWkNaMjl5UW1kRlJVRlpUeTlOUVVWVFFrbEhSMFJKUjBSaFNGSXdZMGhOTmdwTWVUbHVZVmhTYjJSWFNYVlpNamwwVERCc01scFlUa1JoUjFaMVUwWm5kbUpZVm5Oa1IydDBXVmRrYkdKdVVYUlpNamx6WWtkR2FVeDVOVzVoV0ZKdkNtUlhTWFprTWpsNVlUSmFjMkl6WkhwTU1tUjJaRzFXZVdKdFJuVlpNbFYwWTBoSmRXVlhNWE5SU0Vwc1dtNU5kbUZIVm1oYVNFMTJXVEk1YTFwWVozWUtXakk1TWxwWVNuVlpWelZxV2xNeGFHUllVbTlpTTBwd1pFaHJkR015Ykc1ak0xSjJZMjFWZDA5QldVdExkMWxDUWtGSFJIWjZRVUpGZDFGeFJFTm5Nd3BaVkZVeVRWUk5lbGxVVW14WlZHTjVUVzFSTUU1WFdtcFpWR040V2xkVk0xcHRUbXhaYWsxNFQwZFJORTFFVlhkT01sazBUVU5GUjBOcGMwZEJVVkZDQ21jM09IZEJVbEZGUlhkM1VtUXlPWGxoTWxwellqTmtabHBIYkhwalIwWXdXVEpuZDFwQldVdExkMWxDUWtGSFJIWjZRVUpHVVZKWFJFWlNiMlJJVW5jS1kzcHZka3d5WkhCa1IyZ3hXV2sxYW1JeU1IWlRXRnBzWXpCT2IxcFhOVWxYUXpsMFpGZDRNR0ZUTVdoYU1sWjFaRU14YW1JeWVITlpWMGwyV1ZkT01BcGhWemwxWTNrNWVXUlhOWHBNZWtrMVQxUk5lVTFxU1RST2FtY3hUREpHTUdSSFZuUmpTRko2VEhwRmQwWm5XVXRMZDFsQ1FrRkhSSFo2UVVKR1oxRkpDa1JCV25ka1YwcHpZVmROZDBwQldVdExkMWxDUWtGSFJIWjZRVUpHZDFGWFJFSlNibUl6V214amJUVm9ZbTFPYkV4WFJqRmtSMmgyWTIxc01HVlVRbFFLUW1kdmNrSm5SVVZCV1U4dlRVRkZXVUpGVlUxUk0wcHNZMGM0TmxOWVdteGpNRTV2V2xjMVNWZERPWFJrVjNnd1lWTXhhRm95Vm5Wa1F6RnFZako0Y3dwWlYwazJXbGMxTW1GWVNuWmliVEZzWW01Uk5sb3lPVEphV0VwMVdWYzFhbHBUTVdoa1dGSnZZak5LY0dSSWEzZG5XWE5IUTJselIwRlJVVUl4Ym10RENrSkJTVVZtVVZJM1FVaHJRV1IzUkdSUVZFSnhlSE5qVWsxdFRWcElhSGxhV25walEyOXJjR1YxVGpRNGNtWXJTR2x1UzBGTWVXNTFhbWRCUVVGYUswc0tXWGw1ZWtGQlFVVkJkMEpKVFVWWlEwbFJRM1JZY1dsWFJFdzFjV3RKUW01MVdFTnZhbEpCVkVkQlYwMXhaMHhaSzFoVmRHZzRZVXRQZDBONlZHZEphQXBCU21scVRWQlVXVlF5VlRCTk5HTkhkM0oxVERFMGJtRm9aa3hOYWtvcmMwRXdXVEE0SzNCMGNsZFRUMDFCYjBkRFEzRkhVMDAwT1VKQlRVUkJNbWRCQ2sxSFZVTk5SMVpxVlZRd2NraG9WVVpITHpSSVUwMVhUV1ZZY1hrcmFEaHpTR1pPVXk5VVkwdDRPR3B6ZUVzNFdrbERMMFptUzBOc05VaHZkRmcwU21RS1FVRjFjRWRSU1hoQlNXaDVjWGs0ZURCTVNUaElWM0pPVlZGT1lXeHdNazh3Wld4SFVrMUpiQ3RxU1dSdmJYaEtlR0pvZERKbVl6TnlVVE5qYVdOamNRcEdTVzlJUVZsRmJWRjNQVDBLTFMwdExTMUZUa1FnUTBWU1ZFbEdTVU5CVkVVdExTMHRMUW89In1dfX0=",
+                "inclusionPromise": {
+                  "signedEntryTimestamp": "MEYCIQDx+nGpk33M+ruhuS6cQ1Rxtfd/ppgfxantURstpL92sAIhAL9JKm+A4VEfmu6ABwBlTXEQcGMJF2I0H5BgR28XXcwr"
+                },
+                "inclusionProof": {
+                  "checkpoint": {
+                    "envelope": "rekor.sigstore.dev - 1193050959916656506\n2096526374\n1LlDLEPpsY/RW3XqP2lriJb0vEYwk3lyaGshp8IlLBY=\n\n— rekor.sigstore.dev wNI9ajBGAiEAhf+pQ0ImjG3UfDzNo+F/9R+kXlMKTo/komwyiVxxr60CIQCjE0PrwalMlOzvrpSVmbz0ll/Pubm31FT4iCH5lCKODg==\n"
+                  },
+                  "hashes": [
+                    "lqYP418ll3JAkBEPmOpNZkPWIcGuuCKfJxy2rS79tuc=",
+                    "XgBOcXcipm6nwoTx3zd263kfxAS5Yw6sYfnJpFOlUi8=",
+                    "MCszutnxwJkibhTUO1O/WEIIMR1o0UnJd4QIDrLU/EM=",
+                    "cQ/Ed/RbZjANeVtJvFd20YwEi+aRvehwfHe59jzBEZA=",
+                    "KX6Vnd+BW+pKqENlsRPDNfCxZBTaQNA8U3P3sYBlato=",
+                    "EPLUdsI/b9YuGAl6Npfy8fDdF4EzDD9v7KGMNFKgtKw=",
+                    "zgOwLGz0u1asaftyM9iNa1FlvZ81l/6e+jbN9C5jy2I=",
+                    "G2VXPQRWPwwDUbwr415U3KY/12eVYc+UqjgDm9Kmyc8=",
+                    "MClLpcCFypkb8WkyTQG0Fz2ey0/IXHzFNY15U2Q0r3o=",
+                    "kEi2T0nb1R20doF1gAonRsEX+G9Ux2WQx//HydGGuFU=",
+                    "/mCe9oD+G786ZtBM+7h+F9oNxnxfHKlkcViVDQpdT0o=",
+                    "kWh12ygWzVDr6/GTzyZq6xSZC+i2Ci4XzIbKxqexx/4=",
+                    "Yhty5npVtAcZaGTnt3QXTIMG92XKpJToA8FUaIXtwJ0=",
+                    "GxT6+CEXxY8Ak/besnRW/IK3DhneHQ5X5rIcw8L01DQ=",
+                    "Rq/A2aTC9e54ldNjcpsJ26rX/h8JlN6ZHxgw7yEa6C0=",
+                    "+/VZ56MsIPxMiyLAodzKXo5TEWdQp36z89qLhpzloAo=",
+                    "daxmZaajRpZV+JxHiOYZhJBiSKN5ucqjh2WnGbHhirw=",
+                    "DOCeoSMovIvLExkhIvisow9AuNXgeWs4ECkyR6EcqYU="
+                  ],
+                  "logIndex": "2096526372",
+                  "rootHash": "1LlDLEPpsY/RW3XqP2lriJb0vEYwk3lyaGshp8IlLBY=",
+                  "treeSize": "2096526374"
+                },
+                "integratedTime": "1784733183",
+                "kindVersion": {
+                  "kind": "dsse",
+                  "version": "0.0.1"
+                },
+                "logId": {
+                  "keyId": "wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0="
+                },
+                "logIndex": "2218430634"
+              }
+            ]
+          }
+        },
+        "predicate": {
+          "actor_id": "governance-owner",
+          "actor_kind": "human",
+          "allowed": true,
+          "authenticated": true,
+          "binding_digest": "sha256:6e564fa0bbb3ee5c995c010da419de581852daf22f744bd4fcaf699af9d9f522",
+          "environment": "governance-authority",
+          "expires_at": "2026-07-22T15:43:02.498976Z",
+          "independence_level": "L2",
+          "issued_at": "2026-07-22T15:12:57.498976Z",
+          "issuer": "https://token.actions.githubusercontent.com",
+          "request_digest": "sha256:c0c6576fe55219b410e1ada927d86828c9837986fc4e4ff1412711be34e25b6e",
+          "schema_version": 1
+        },
+        "subject": {
+          "actor_claim": {
+            "id": "governance-owner",
+            "kind": "human"
+          },
+          "audience": "mac-mutation-gateway/v1",
+          "expected_revision": 4,
+          "idempotency_key": "github-sigstore-scope-approve:29932228685:1",
+          "intent_digest": "sha256:12bd78053ab665271e062e7adddb46f18f72d88a0424b6a327cc55b2bd5e9354",
+          "operation": "scope.approve",
+          "ownership_digest": "sha256:291efd0cb181d3cc9b6577111be30ced1d44965b84836ae2d6e16c696b8ec50e",
+          "policy_digest": "sha256:ba3639b86091734159c865fd65aeea4e5a583b532231206ab7676b53e954ce43",
+          "repository_identity": "github:repository-id:1290429577",
+          "schema_version": 1,
+          "task_id": "TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor"
+        },
+        "verification_policy": {
+          "deny_self_hosted_runners": true,
+          "environment": "governance-authority",
+          "oidc_issuer": "https://token.actions.githubusercontent.com",
+          "predicate_type": "https://github.com/IvesChenHX/multi-agent-collab/attestations/mutation-authority/v1",
+          "repository": "IvesChenHX/multi-agent-collab",
+          "schema_version": 1,
+          "signer_workflow": "IvesChenHX/multi-agent-collab/.github/workflows/governance-pr.yml",
+          "source_digest": "7a56133a4ea722d45fca71ee7fceb318d80507f8",
+          "source_ref": "refs/heads/codex/governance-authority-sigstore",
+          "verifier_manifest": "sha256:59a47cba2ee2f3497dc9dc3f36db010d738f394bb3935ce7801ec92ed235cfce"
+        }
+      },
+      "store_contract_version": 3,
+      "task_id": "TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor",
+      "trust_digest": "sha256:526662a1ceac84675a4090bb82fdebbe4d98b8122a0f77dad65c19044dfd8a7b"
+    },
+    "scope": {
+      "allowed_operations": [
+        "read",
+        "write",
+        "execute_tests",
+        "generate_artifacts"
+      ],
+      "allowed_paths": [
+        "src/mac/authority.py",
+        "src/mac/repository.py",
+        "src/mac/application/task_service.py",
+        "src/mac/cli.py",
+        "scripts/ci/governance_pr.py",
+        ".github/workflows/governance-pr.yml",
+        "tests/operations/test_governance_pr.py",
+        "tests/security/test_authority_commands.py",
+        "docs/pilot/alpha-close-report.md",
+        "tasks/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/**",
+        "tasks/private/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/**",
+        "src/mac/migration.py",
+        "tests/test_authorityless_v6_migration.py",
+        "migration/v6-authorityless/**",
+        "tasks-v6/**",
+        ".github/workflows/ci.yml"
+      ],
+      "amendment_policy": {
+        "max_amendments": 2,
+        "max_paths_per_amendment": 4,
+        "require_independent_approval_for": [
+          "auth_security",
+          "production_deploy"
+        ]
+      },
+      "approved_by": [
+        "governance-owner"
+      ],
+      "base_commit": "a5eafdf308401a3b659e8d8f7e49f36c06a83592",
+      "denied_paths": [],
+      "id": "SCOPE-01KY4P812NAHXDYZDFJ2X3QK9J",
+      "network_access": "none",
+      "owners": [
+        "governance",
+        "platform",
+        "security",
+        "devex",
+        "tests",
+        "docs"
+      ],
+      "proposed_by": "repo-owner",
+      "required_gates": [
+        "targeted_tests",
+        "negative_security_tests",
+        "secret_scan",
+        "scope_guard",
+        "compatibility_review",
+        "independent_review",
+        "rollback_plan",
+        "rollback_verification",
+        "evidence_matches_current_commit"
+      ],
+      "risk_tags": [
+        "auth_security",
+        "data_migration"
+      ],
+      "schema_version": 1,
+      "secret_access": [],
+      "status": "approved",
+      "task_id": "TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor",
+      "version": 3
+    },
+    "scope_id": "SCOPE-01KY4P812NAHXDYZDFJ2X3QK9J",
+    "version": 3
+  },
+  "run_id": null,
+  "schema_version": 1,
+  "task_id": "TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor"
+}

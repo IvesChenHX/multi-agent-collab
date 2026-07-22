@@ -1,0 +1,14 @@
+{
+  "actor": {
+    "id": "governance-owner",
+    "kind": "human"
+  },
+  "decision": "approved",
+  "id": "APR-01KY565WD7TTCD6DSKMTZFDFR5",
+  "independence_level": "L2",
+  "kind": "scope",
+  "recorded_at": "2026-07-22T15:12:57.498976Z",
+  "schema_version": 1,
+  "subject_ref": "tasks/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/scope-contract.yaml#scope=SCOPE-01KY4P812NAHXDYZDFJ2X3QK9J;version=3;digest=sha256:7ac7b4a3c2553c21d501b862cf9461d16e1e52fde915196869cdc5ec9b09fbb7",
+  "task_id": "TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor"
+}
