@@ -582,6 +582,86 @@ def test_attested_scope_plan_round_trips_one_exact_approval_command(
     assert json.loads(stdout.getvalue())["operation"] == "scope.approve"
 
 
+def test_attested_scope_amend_plan_round_trips_one_exact_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    request = AuthorityRequest(
+        repository_identity="github:repository-id:1290429577",
+        operation="scope.amend",
+        task_id=TASK_ID,
+        actor_claim={"id": "repo-owner", "kind": "human"},
+        expected_revision=1,
+        idempotency_key="github-sigstore-scope-amend:987654:2",
+        intent_digest=canonical_digest({"scope": TASK_ID, "version": 2}),
+        policy_digest="sha256:" + "1" * 64,
+        ownership_digest="sha256:" + "2" * 64,
+        audience="mac-mutation-gateway/v1",
+    )
+    scope_path = tmp_path / "tasks" / TASK_ID / "scope-contract.yaml"
+    history_path = tmp_path / "tasks" / TASK_ID / "scope-history" / "scope-contract.v1.yaml"
+    command = AppendEvent(
+        task_id=TASK_ID,
+        event_type="scope_proposed",
+        payload={"scope_id": "SCOPE-example", "version": 2, "amendment": True, "scope": {"version": 2}},
+        actor_claim={"id": "repo-owner", "kind": "human"},
+        expected_revision=1,
+        idempotency_key=request.idempotency_key,
+        operation="scope.amend",
+        materializations=((history_path, {"version": 1}), (scope_path, {"version": 2})),
+        replace_existing=frozenset({scope_path}),
+        minimum_independence="L2",
+        replay_intent={
+            "add": [
+                "src/mac/migration.py",
+                "tests/test_authorityless_v6_migration.py",
+                "migration/v6-authorityless/**",
+                "tasks-v6/**",
+            ],
+            "add_operation": [],
+            "approver": ["repo-owner"],
+            "risk_tag": ["data_migration"],
+            "independent": True,
+        },
+    )
+    prepared = SimpleNamespace(
+        request=request,
+        intent={"schema_version": 1, "task_id": TASK_ID, "operation": "scope.amend"},
+        command=command,
+    )
+    monkeypatch.setattr(governance_pr, "_successor_scope_amend_command", lambda *_: command, raising=False)
+    monkeypatch.setattr(governance_pr, "_sigstore_trust_environment", lambda: {})
+
+    class FakeGateway:
+        def __init__(self, _repo: Path):
+            pass
+
+        def prepare(self, observed: AppendEvent):
+            assert governance_pr._serialize_append_event(observed, tmp_path) == governance_pr._serialize_append_event(command, tmp_path)
+            return prepared
+
+    monkeypatch.setattr(governance_pr, "MutationGateway", FakeGateway)
+    output_dir = tmp_path / "prepared-amendment"
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = governance_pr.github_attested_scope_amend_prepare_main(
+        output_dir=output_dir,
+        repo=tmp_path,
+        stdout=stdout,
+        stderr=stderr,
+        environment=_probe_environment("refs/heads/codex/governance-authority-sigstore"),
+    )
+
+    assert exit_code == 0
+    assert stderr.getvalue() == ""
+    plan = json.loads((output_dir / "plan.json").read_text(encoding="utf-8"))
+    restored = governance_pr._deserialize_append_event(plan["command"], tmp_path)
+    assert governance_pr._serialize_append_event(restored, tmp_path) == plan["command"]
+    assert plan["request"]["operation"] == "scope.amend"
+    assert json.loads(stdout.getvalue())["operation"] == "scope.amend"
+
+
 def test_github_validation_trust_requires_exact_actions_repository(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -724,6 +804,167 @@ def test_attested_task_apply_revalidates_plan_before_atomic_execution(
     assert stderr.getvalue() == ""
 
 
+def test_attested_apply_accepts_only_the_exact_scope_amendment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    additions = [
+        "src/mac/migration.py",
+        "tests/test_authorityless_v6_migration.py",
+        "migration/v6-authorityless/**",
+        "tasks-v6/**",
+    ]
+    base_paths = [
+        "src/mac/authority.py",
+        "src/mac/repository.py",
+        "src/mac/application/task_service.py",
+        "src/mac/cli.py",
+        "scripts/ci/governance_pr.py",
+        ".github/workflows/governance-pr.yml",
+        "tests/operations/test_governance_pr.py",
+        "tests/security/test_authority_commands.py",
+        "docs/pilot/alpha-close-report.md",
+        f"tasks/{TASK_ID}/**",
+        f"tasks/private/{TASK_ID}/**",
+    ]
+    replay_intent = {
+        "add": additions,
+        "add_operation": [],
+        "approver": ["repo-owner"],
+        "risk_tag": ["data_migration"],
+        "independent": True,
+    }
+    old_scope = {
+        "id": "SCOPE-example",
+        "task_id": TASK_ID,
+        "version": 1,
+        "status": "approved",
+        "allowed_paths": base_paths,
+        "risk_tags": [],
+    }
+    new_scope = {
+        "id": "SCOPE-example",
+        "task_id": TASK_ID,
+        "version": 2,
+        "status": "proposed",
+        "proposed_by": "repo-owner",
+        "approved_by": [],
+        "allowed_paths": [*base_paths, *additions],
+        "risk_tags": ["data_migration"],
+    }
+    scope_path = tmp_path / "tasks" / TASK_ID / "scope-contract.yaml"
+    history_path = tmp_path / "tasks" / TASK_ID / "scope-history" / "scope-contract.v1.yaml"
+    command = AppendEvent(
+        task_id=TASK_ID,
+        event_type="scope_proposed",
+        payload={
+            "scope_id": "SCOPE-example",
+            "version": 2,
+            "amendment": True,
+            "scope": new_scope,
+        },
+        actor_claim={"id": "repo-owner", "kind": "human"},
+        expected_revision=1,
+        idempotency_key="github-sigstore-scope-amend:987654:2",
+        operation="scope.amend",
+        materializations=((history_path, old_scope), (scope_path, new_scope)),
+        replace_existing=frozenset({scope_path}),
+        minimum_independence="L2",
+        replay_intent=replay_intent,
+    )
+    intent = {"schema_version": 1, "task_id": TASK_ID, "operation": "scope.amend"}
+    request = AuthorityRequest(
+        repository_identity="github:repository-id:1290429577",
+        operation="scope.amend",
+        task_id=TASK_ID,
+        actor_claim={"id": "repo-owner", "kind": "human"},
+        expected_revision=1,
+        idempotency_key=command.idempotency_key,
+        intent_digest=canonical_digest(intent),
+        policy_digest="sha256:" + "1" * 64,
+        ownership_digest="sha256:" + "2" * 64,
+        audience="mac-mutation-gateway/v1",
+    )
+    plan = {
+        "schema_version": 1,
+        "kind": "mac.prepared-mutation",
+        "command": governance_pr._serialize_append_event(command, tmp_path),
+        "request": request.as_dict(),
+        "intent": intent,
+        "verification_policy": {
+            "schema_version": 1,
+            "repository": "IvesChenHX/multi-agent-collab",
+            "signer_workflow": "IvesChenHX/multi-agent-collab/.github/workflows/governance-pr.yml",
+            "source_ref": "refs/heads/codex/governance-authority-sigstore",
+            "source_digest": "a" * 40,
+            "predicate_type": (
+                "https://github.com/IvesChenHX/multi-agent-collab/"
+                "attestations/mutation-authority/v1"
+            ),
+            "environment": "governance-authority",
+            "oidc_issuer": "https://token.actions.githubusercontent.com",
+            "deny_self_hosted_runners": True,
+        },
+    }
+    predicate = {
+        "schema_version": 1,
+        "allowed": True,
+        "authenticated": True,
+        "issuer": "https://token.actions.githubusercontent.com",
+        "actor_id": "repo-owner",
+        "actor_kind": "human",
+        "independence_level": "L2",
+        "issued_at": "2026-07-22T00:00:00Z",
+        "expires_at": "2026-07-22T00:30:00Z",
+        "request_digest": request.request_digest,
+        "binding_digest": request.binding_digest,
+        "environment": "governance-authority",
+    }
+    plan_path = tmp_path / "plan.json"
+    predicate_path = tmp_path / "predicate.json"
+    bundle_path = tmp_path / "bundle.json"
+    plan_path.write_text(json.dumps(plan, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    predicate_path.write_text(json.dumps(predicate, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    bundle_path.write_text("{}", encoding="utf-8")
+    calls: list[str] = []
+
+    class FakeGateway:
+        def __init__(self, _repo: Path):
+            pass
+
+        def prepare(self, observed: AppendEvent):
+            calls.append("prepare")
+            return SimpleNamespace(request=request, intent=intent, command=observed)
+
+        def execute(self, observed: AppendEvent):
+            calls.append("execute")
+            assert observed.replay_intent == replay_intent
+            return SimpleNamespace(
+                projection={"id": TASK_ID, "revision": 2},
+                event={"event_id": "EVT-test"},
+                authority={"attestation_id": "sigstore:test", "binding_digest": request.binding_digest},
+            )
+
+    monkeypatch.setattr(governance_pr, "MutationGateway", FakeGateway)
+    monkeypatch.setattr(governance_pr, "command_manifest_digest", lambda _: "sha256:" + "b" * 64)
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = github_attested_task_apply_main(
+        plan_path=plan_path,
+        predicate_path=predicate_path,
+        bundle_path=bundle_path,
+        repo=tmp_path,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert exit_code == 0
+    assert calls == ["prepare", "execute"]
+    assert json.loads(stdout.getvalue())["revision"] == 2
+    assert stderr.getvalue() == ""
+
+
 def test_governance_workflow_isolates_oidc_from_pull_request_code():
     workflow = yaml.safe_load(
         Path(".github/workflows/governance-pr.yml").read_text(encoding="utf-8")
@@ -764,6 +1005,7 @@ def test_governance_workflow_isolates_oidc_from_pull_request_code():
     assert upload["uses"] == "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
     assert "authority_create_successor" in authority["if"]
     assert "authority_approve_successor_scope" in authority["if"]
+    assert "authority_amend_successor_scope" in authority["if"]
 
 
 def test_discover_task_ids_from_changed_v6_task_metadata():

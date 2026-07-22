@@ -58,6 +58,7 @@ from mac.repository import (
     MutationGateway,
     utc_now,
 )
+from mac.scope import amend_scope
 
 
 _TASK_DIRECTORY = re.compile(r"^tasks/(?P<directory>TASK-(?P<ulid>[0-9A-HJKMNP-TV-Z]{26})(?:-[^/]+)?)/")
@@ -92,6 +93,23 @@ _MUTATION_ATTESTATION_PREDICATE_TYPE = (
 )
 _GIT_OBJECT_ID = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _MAX_ATTESTATION_BUNDLE_BYTES = 8_000_000
+_SUCCESSOR_SCOPE_BASE_PATHS = (
+    "src/mac/authority.py",
+    "src/mac/repository.py",
+    "src/mac/application/task_service.py",
+    "src/mac/cli.py",
+    "scripts/ci/governance_pr.py",
+    ".github/workflows/governance-pr.yml",
+    "tests/operations/test_governance_pr.py",
+    "tests/security/test_authority_commands.py",
+    "docs/pilot/alpha-close-report.md",
+)
+_SUCCESSOR_SCOPE_AMENDMENT_PATHS = (
+    "src/mac/migration.py",
+    "tests/test_authorityless_v6_migration.py",
+    "migration/v6-authorityless/**",
+    "tasks-v6/**",
+)
 
 
 class _RejectRedirects(HTTPRedirectHandler):
@@ -907,17 +925,7 @@ def _successor_create_command(values: Mapping[str, str], repo: Path) -> CreateTa
             "No OIDC bearer token or GitHub token enters Task, Event, Evidence, logs, or Git.",
             "Governance-sensitive changes receive L2 review before merge.",
         ],
-        allowed_paths=[
-            "src/mac/authority.py",
-            "src/mac/repository.py",
-            "src/mac/application/task_service.py",
-            "src/mac/cli.py",
-            "scripts/ci/governance_pr.py",
-            ".github/workflows/governance-pr.yml",
-            "tests/operations/test_governance_pr.py",
-            "tests/security/test_authority_commands.py",
-            "docs/pilot/alpha-close-report.md",
-        ],
+        allowed_paths=list(_SUCCESSOR_SCOPE_BASE_PATHS),
         allowed_operations=["read", "write", "execute_tests", "generate_artifacts"],
         owners=["governance", "platform", "security", "devex", "tests", "docs"],
         runtime_profile="local-multi",
@@ -960,6 +968,23 @@ def _successor_scope_approval_command(
     directory = repository.task_dir(task_id)
     task = load_data(directory / "task.yaml")
     scope = load_data(directory / "scope-contract.yaml")
+    expected_paths = [
+        *_SUCCESSOR_SCOPE_BASE_PATHS,
+        f"tasks/{task_id}/**",
+        f"tasks/private/{task_id}/**",
+    ]
+    version = scope.get("version")
+    exact_scope_version = (
+        version == 1
+        and scope.get("proposed_by") == "governance-owner"
+        and scope.get("allowed_paths") == expected_paths
+        and scope.get("risk_tags") == []
+    ) or (
+        version == 2
+        and scope.get("proposed_by") == "repo-owner"
+        and scope.get("allowed_paths") == [*expected_paths, *_SUCCESSOR_SCOPE_AMENDMENT_PATHS]
+        and scope.get("risk_tags") == ["data_migration"]
+    )
     if (
         task.get("id") != task_id
         or task.get("title") != "GitHub authority bootstrap successor"
@@ -968,8 +993,7 @@ def _successor_scope_approval_command(
         or type(task.get("revision")) is not int
         or scope.get("task_id") != task_id
         or scope.get("status") != "proposed"
-        or scope.get("version") != 1
-        or scope.get("proposed_by") != "governance-owner"
+        or not exact_scope_version
     ):
         raise ValueError("successor scope is not eligible for protected approval")
     actor = {"id": "repo-owner", "kind": "human"}
@@ -1015,6 +1039,78 @@ def _successor_scope_approval_command(
         replace_existing=frozenset({scope_path}),
         minimum_independence="L2",
         replay_intent={"independence_level_claim": "L2"},
+    )
+
+
+def _successor_scope_amend_command(
+    values: Mapping[str, str], repo: Path,
+) -> AppendEvent:
+    task_id = _required_environment(values, "MAC_AUTHORITY_PROBE_TASK_ID")
+    if _TASK_ID.fullmatch(task_id) is None:
+        raise ValueError("scope amendment task identifier is invalid")
+    repository = FilesystemTaskRepository(repo)
+    directory = repository.task_dir(task_id)
+    task = load_data(directory / "task.yaml")
+    old_scope = load_data(directory / "scope-contract.yaml")
+    expected_paths = [
+        *_SUCCESSOR_SCOPE_BASE_PATHS,
+        f"tasks/{task_id}/**",
+        f"tasks/private/{task_id}/**",
+    ]
+    if (
+        task.get("id") != task_id
+        or task.get("title") != "GitHub authority bootstrap successor"
+        or task.get("mode") != "high_risk"
+        or task.get("state") != "triage"
+        or task.get("revision") != 1
+        or old_scope.get("task_id") != task_id
+        or old_scope.get("status") != "approved"
+        or old_scope.get("version") != 1
+        or old_scope.get("approved_by") != ["repo-owner"]
+        or old_scope.get("allowed_paths") != expected_paths
+        or old_scope.get("risk_tags") != []
+    ):
+        raise ValueError("successor scope is not eligible for protected amendment")
+    actor = {"id": "repo-owner", "kind": "human"}
+    replay_intent = {
+        "add": list(_SUCCESSOR_SCOPE_AMENDMENT_PATHS),
+        "add_operation": [],
+        "approver": [actor["id"]],
+        "risk_tag": ["data_migration"],
+        "independent": True,
+    }
+    amended_scope = amend_scope(
+        old_scope,
+        add_paths=replay_intent["add"],
+        add_operations=replay_intent["add_operation"],
+        actor=actor["id"],
+        approvers=replay_intent["approver"],
+        added_risk_tags=replay_intent["risk_tag"],
+        independent_approval=True,
+    )
+    scope_path = directory / "scope-contract.yaml"
+    history_path = directory / "scope-history" / "scope-contract.v1.yaml"
+    return AppendEvent(
+        task_id=task_id,
+        event_type="scope_proposed",
+        payload={
+            "scope_id": amended_scope["id"],
+            "version": amended_scope["version"],
+            "amendment": True,
+            "scope": amended_scope,
+        },
+        actor_claim=actor,
+        expected_revision=task["revision"],
+        idempotency_key=(
+            "github-sigstore-scope-amend:"
+            f"{_required_environment(values, 'GITHUB_RUN_ID')}:"
+            f"{_required_environment(values, 'GITHUB_RUN_ATTEMPT')}"
+        ),
+        operation="scope.amend",
+        materializations=((history_path, old_scope), (scope_path, amended_scope)),
+        replace_existing=frozenset({scope_path}),
+        minimum_independence="L2",
+        replay_intent=replay_intent,
     )
 
 
@@ -1154,6 +1250,47 @@ def github_attested_scope_prepare_main(
                 os.environ[name] = value
 
 
+def github_attested_scope_amend_prepare_main(
+    *,
+    output_dir: Path,
+    repo: Path = Path("."),
+    stdout: TextIO = sys.stdout,
+    stderr: TextIO = sys.stderr,
+    environment: Mapping[str, str] | None = None,
+) -> int:
+    """Prepare the exact v2 Scope amendment for protected Sigstore signing."""
+
+    previous: dict[str, str | None] = {}
+    try:
+        values = os.environ if environment is None else environment
+        assignments = _sigstore_trust_environment()
+        for name, value in assignments.items():
+            previous[name] = os.environ.get(name)
+            os.environ[name] = value
+        command = _successor_scope_amend_command(values, repo)
+        request, _ = _write_attested_mutation_plan(
+            command, output_dir=output_dir, repo=repo, values=values,
+        )
+        stdout.write(json.dumps({
+            "ok": True,
+            "task_id": command.task_id,
+            "operation": command.operation,
+            "request_digest": request.request_digest,
+            "binding_digest": request.binding_digest,
+            "predicate_type": _MUTATION_ATTESTATION_PREDICATE_TYPE,
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+        return 0
+    except (MacError, OSError, subprocess.SubprocessError, TypeError, ValueError, yaml.YAMLError):
+        stderr.write("trusted attested scope amendment preparation failed\n")
+        return 2
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 def _load_json_document(path: Path, *, canonical: bool, maximum: int) -> dict[str, Any]:
     raw = path.read_bytes()
     if not raw or len(raw) > maximum:
@@ -1162,6 +1299,69 @@ def _load_json_document(path: Path, *, canonical: bool, maximum: int) -> dict[st
     if not isinstance(document, dict) or (canonical and raw != _canonical_document_bytes(document)):
         raise ValueError("prepared mutation artifact is invalid")
     return document
+
+
+def _allowlisted_successor_scope_amendment(command: AppendEvent) -> bool:
+    task_id = command.task_id
+    expected_paths = [
+        *_SUCCESSOR_SCOPE_BASE_PATHS,
+        f"tasks/{task_id}/**",
+        f"tasks/private/{task_id}/**",
+    ]
+    exact_replay_intent = {
+        "add": list(_SUCCESSOR_SCOPE_AMENDMENT_PATHS),
+        "add_operation": [],
+        "approver": ["repo-owner"],
+        "risk_tag": ["data_migration"],
+        "independent": True,
+    }
+    payload = command.payload
+    amended = payload.get("scope") if isinstance(payload, Mapping) else None
+    if (
+        command.operation != "scope.amend"
+        or command.event_type != "scope_proposed"
+        or dict(command.actor_claim) != {"id": "repo-owner", "kind": "human"}
+        or command.expected_revision != 1
+        or command.minimum_independence != "L2"
+        or command.replay_intent != exact_replay_intent
+        or not command.idempotency_key.startswith("github-sigstore-scope-amend:")
+        or not isinstance(amended, Mapping)
+        or set(payload) != {"scope_id", "version", "amendment", "scope"}
+        or payload.get("amendment") is not True
+        or payload.get("version") != 2
+        or payload.get("scope_id") != amended.get("id")
+        or amended.get("task_id") != task_id
+        or amended.get("version") != 2
+        or amended.get("status") != "proposed"
+        or amended.get("proposed_by") != "repo-owner"
+        or amended.get("approved_by") != []
+        or amended.get("allowed_paths") != [*expected_paths, *_SUCCESSOR_SCOPE_AMENDMENT_PATHS]
+        or amended.get("risk_tags") != ["data_migration"]
+        or len(command.materializations) != 2
+        or len(command.replace_existing) != 1
+    ):
+        return False
+    current_path = next(iter(command.replace_existing))
+    current_suffix = ("tasks", task_id, "scope-contract.yaml")
+    history_suffix = ("tasks", task_id, "scope-history", "scope-contract.v1.yaml")
+    if tuple(current_path.parts[-3:]) != current_suffix:
+        return False
+    by_path = {path: value for path, value in command.materializations}
+    current = by_path.get(current_path)
+    history = next(
+        (value for path, value in command.materializations if tuple(path.parts[-4:]) == history_suffix),
+        None,
+    )
+    return bool(
+        current == dict(amended)
+        and isinstance(history, Mapping)
+        and history.get("id") == amended.get("id")
+        and history.get("task_id") == task_id
+        and history.get("version") == 1
+        and history.get("status") == "approved"
+        and history.get("allowed_paths") == expected_paths
+        and history.get("risk_tags") == []
+    )
 
 
 def github_attested_task_apply_main(
@@ -1211,6 +1411,9 @@ def github_attested_task_apply_main(
         if isinstance(command, CreateTask):
             if command.operation != "task.create" or command.minimum_independence != "L2":
                 raise ValueError("prepared task mutation is not allowlisted")
+        elif command.operation == "scope.amend":
+            if not _allowlisted_successor_scope_amendment(command):
+                raise ValueError("prepared scope amendment is not allowlisted")
         elif (
             command.operation != "scope.approve"
             or command.event_type != "scope_approved"
@@ -1424,6 +1627,12 @@ def main(argv: list[str] | None = None) -> int:
         mutation_parser.add_argument("--out", type=Path, required=True)
         mutation_args = mutation_parser.parse_args(normalized_argv)
         return github_attested_scope_prepare_main(output_dir=mutation_args.out)
+    if normalized_argv and normalized_argv[0] == "--github-attested-scope-amend-prepare":
+        mutation_parser = argparse.ArgumentParser()
+        mutation_parser.add_argument("--github-attested-scope-amend-prepare", action="store_true")
+        mutation_parser.add_argument("--out", type=Path, required=True)
+        mutation_args = mutation_parser.parse_args(normalized_argv)
+        return github_attested_scope_amend_prepare_main(output_dir=mutation_args.out)
     if normalized_argv and normalized_argv[0] == "--github-attested-task-apply":
         mutation_parser = argparse.ArgumentParser()
         mutation_parser.add_argument("--github-attested-task-apply", action="store_true")
