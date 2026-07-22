@@ -990,6 +990,7 @@ def test_governance_workflow_isolates_oidc_from_pull_request_code():
         "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
     )
     assert checkout["with"]["ref"] == "${{ github.sha }}"
+    assert checkout["with"]["fetch-depth"] == 0
     assert checkout["with"]["persist-credentials"] is False
     rendered = json.dumps(authority, sort_keys=True)
     assert "pull_request.head" not in rendered
