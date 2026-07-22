@@ -764,8 +764,6 @@ def _load_canonical_json_file(path_value: object, *, maximum: int, field: str) -
 
 def _sigstore_policy_from_document(
     document: Mapping[str, Any],
-    *,
-    verifier_manifest: str,
 ) -> _SigstoreVerificationPolicy:
     required = {
         "schema_version",
@@ -783,9 +781,11 @@ def _sigstore_policy_from_document(
         set(document) != required
         or document.get("schema_version") != 1
         or document.get("deny_self_hosted_runners") is not True
-        or document.get("verifier_manifest") != verifier_manifest
     ):
         raise _security_error("AUTHORITY_CONFIGURATION_INVALID", "authority Sigstore policy is invalid")
+    verifier_manifest = str(document.get("verifier_manifest", "")).lower()
+    if _DIGEST.fullmatch(verifier_manifest) is None:
+        raise _security_error("AUTHORITY_CONFIGURATION_INVALID", "authority Sigstore verifier manifest is invalid")
     source_digest = str(document.get("source_digest", "")).lower()
     if _GIT_OBJECT_ID.fullmatch(source_digest) is None:
         raise _security_error("AUTHORITY_CONFIGURATION_INVALID", "authority Sigstore source digest is invalid")
@@ -941,14 +941,16 @@ class SigstoreAuthorityAdapter:
             _seal=_ADAPTER_SEAL,
         )
 
-    def _validate_policy(self, policy: _SigstoreVerificationPolicy) -> None:
+    def _validate_policy(
+        self, policy: _SigstoreVerificationPolicy, *, historical: bool,
+    ) -> None:
         if (
             policy.repository != self._expected_repository
             or policy.signer_workflow != self._expected_signer_workflow
             or policy.predicate_type != self._expected_predicate_type
             or policy.environment != self._expected_environment
             or policy.oidc_issuer != self._expected_oidc_issuer
-            or policy.verifier_manifest != self._verifier_manifest
+            or (not historical and policy.verifier_manifest != self._verifier_manifest)
         ):
             raise _security_error("AUTHORITY_ISSUER_MISMATCH", "Sigstore authority policy is not trusted")
 
@@ -961,7 +963,7 @@ class SigstoreAuthorityAdapter:
         policy: _SigstoreVerificationPolicy,
         historical: bool,
     ) -> tuple[Mapping[str, Any], str, str]:
-        self._validate_policy(policy)
+        self._validate_policy(policy, historical=historical)
         expected_predicate_keys = {
             "schema_version", "allowed", "authenticated", "issuer", "actor_id",
             "actor_kind", "independence_level", "issued_at", "expires_at",
@@ -1141,10 +1143,7 @@ class SigstoreAuthorityAdapter:
             or not isinstance(policy_document, Mapping)
         ):
             raise _security_error("AUTHORITY_BINDING_MISMATCH", "persisted Sigstore envelope is not bound", task_id=request.task_id)
-        policy = _sigstore_policy_from_document(
-            policy_document,
-            verifier_manifest=self._verifier_manifest,
-        )
+        policy = _sigstore_policy_from_document(policy_document)
         _, trust_digest, bundle_digest = self._verify_bundle(
             request=request,
             predicate=predicate,

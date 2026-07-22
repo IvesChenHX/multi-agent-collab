@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -40,12 +41,23 @@ from mac.authority import (
     canonical_digest,
     command_manifest_digest,
     current_authority_verifier,
+    scope_approval_subject,
     require_authority,
+    valid_scope_approvals,
 )
 from mac.application.task_service import TaskService
 from mac.errors import MacError
 from mac.git import GitRepository
-from mac.repository import AUTHORITY_REPOSITORY_IDENTITY_ENV, CreateTask, MutationGateway
+from mac.ids import prefixed
+from mac.io import load_data
+from mac.repository import (
+    AUTHORITY_REPOSITORY_IDENTITY_ENV,
+    AppendEvent,
+    CreateTask,
+    FilesystemTaskRepository,
+    MutationGateway,
+    utc_now,
+)
 
 
 _TASK_DIRECTORY = re.compile(r"^tasks/(?P<directory>TASK-(?P<ulid>[0-9A-HJKMNP-TV-Z]{26})(?:-[^/]+)?)/")
@@ -727,6 +739,137 @@ def _deserialize_create_task(document: object) -> CreateTask:
     )
 
 
+def _prepared_repo_path(repo: Path, value: object, *, task_id: str) -> Path:
+    if not isinstance(value, str):
+        raise ValueError("prepared mutation path is invalid")
+    relative = PurePosixPath(value)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+        or relative.parts[:2] != ("tasks", task_id)
+    ):
+        raise ValueError("prepared mutation path is invalid")
+    root = repo.resolve()
+    candidate = root.joinpath(*relative.parts)
+    try:
+        candidate.resolve(strict=False).relative_to(root)
+    except ValueError as exc:
+        raise ValueError("prepared mutation path is invalid") from exc
+    return candidate
+
+
+def _serialize_append_event(command: AppendEvent, repo: Path) -> dict[str, Any]:
+    root = repo.resolve()
+
+    def relative(path: Path) -> str:
+        try:
+            value = path.resolve(strict=False).relative_to(root).as_posix()
+        except ValueError as exc:
+            raise ValueError("prepared mutation path is outside the repository") from exc
+        _prepared_repo_path(root, value, task_id=command.task_id)
+        return value
+
+    return {
+        "command_type": "AppendEvent",
+        "task_id": command.task_id,
+        "event_type": command.event_type,
+        "payload": dict(command.payload),
+        "actor_claim": dict(command.actor_claim),
+        "expected_revision": command.expected_revision,
+        "idempotency_key": command.idempotency_key,
+        "operation": command.operation,
+        "run_id": command.run_id,
+        "event_id": command.event_id,
+        "materializations": [
+            [relative(path), dict(value)] for path, value in command.materializations
+        ],
+        "replace_existing": sorted(relative(path) for path in command.replace_existing),
+        "minimum_independence": command.minimum_independence,
+        "replay_intent": dict(command.replay_intent or {}),
+    }
+
+
+def _deserialize_append_event(document: object, repo: Path) -> AppendEvent:
+    required = {
+        "command_type", "task_id", "event_type", "payload", "actor_claim",
+        "expected_revision", "idempotency_key", "operation", "run_id", "event_id",
+        "materializations", "replace_existing", "minimum_independence", "replay_intent",
+    }
+    if not isinstance(document, dict) or set(document) != required or document.get("command_type") != "AppendEvent":
+        raise ValueError("prepared mutation command is invalid")
+    task_id = document.get("task_id")
+    materializations = document.get("materializations")
+    replacements = document.get("replace_existing")
+    expected_revision = document.get("expected_revision")
+    if (
+        not isinstance(task_id, str)
+        or _TASK_ID.fullmatch(task_id) is None
+        or not isinstance(document.get("event_type"), str)
+        or not isinstance(document.get("payload"), dict)
+        or not isinstance(document.get("actor_claim"), dict)
+        or type(expected_revision) is not int
+        or not isinstance(document.get("idempotency_key"), str)
+        or not isinstance(document.get("operation"), str)
+        or document.get("run_id") is not None and not isinstance(document.get("run_id"), str)
+        or document.get("event_id") is not None and not isinstance(document.get("event_id"), str)
+        or not isinstance(document.get("replay_intent"), dict)
+        or not isinstance(materializations, list)
+        or not materializations
+        or any(
+            not isinstance(item, list)
+            or len(item) != 2
+            or not isinstance(item[0], str)
+            or not isinstance(item[1], dict)
+            for item in materializations
+        )
+        or not isinstance(replacements, list)
+        or any(not isinstance(item, str) for item in replacements)
+    ):
+        raise ValueError("prepared mutation command is invalid")
+    return AppendEvent(
+        task_id=task_id,
+        event_type=document["event_type"],
+        payload=document["payload"],
+        actor_claim=document["actor_claim"],
+        expected_revision=expected_revision,
+        idempotency_key=document["idempotency_key"],
+        operation=document["operation"],
+        run_id=document["run_id"],
+        event_id=document["event_id"],
+        materializations=tuple(
+            (_prepared_repo_path(repo, item[0], task_id=task_id), item[1])
+            for item in materializations
+        ),
+        replace_existing=frozenset(
+            _prepared_repo_path(repo, item, task_id=task_id) for item in replacements
+        ),
+        minimum_independence=(
+            str(document["minimum_independence"])
+            if document.get("minimum_independence") is not None
+            else None
+        ),
+        replay_intent=document["replay_intent"],
+    )
+
+
+def _serialize_mutation(command: CreateTask | AppendEvent, repo: Path) -> dict[str, Any]:
+    if isinstance(command, CreateTask):
+        return _serialize_create_task(command)
+    if isinstance(command, AppendEvent):
+        return _serialize_append_event(command, repo)
+    raise ValueError("unsupported prepared mutation command")
+
+
+def _deserialize_mutation(document: object, repo: Path) -> CreateTask | AppendEvent:
+    command_type = document.get("command_type") if isinstance(document, dict) else None
+    if command_type == "CreateTask":
+        return _deserialize_create_task(document)
+    if command_type == "AppendEvent":
+        return _deserialize_append_event(document, repo)
+    raise ValueError("prepared mutation command is invalid")
+
+
 def _mutation_verification_policy(values: Mapping[str, str]) -> dict[str, Any]:
     source_ref = _required_environment(values, "GITHUB_REF")
     source_digest = _required_environment(values, "GITHUB_SHA").lower()
@@ -807,6 +950,125 @@ def _successor_create_command(values: Mapping[str, str], repo: Path) -> CreateTa
     )
 
 
+def _successor_scope_approval_command(
+    values: Mapping[str, str], repo: Path,
+) -> AppendEvent:
+    task_id = _required_environment(values, "MAC_AUTHORITY_PROBE_TASK_ID")
+    if _TASK_ID.fullmatch(task_id) is None:
+        raise ValueError("scope approval task identifier is invalid")
+    repository = FilesystemTaskRepository(repo)
+    directory = repository.task_dir(task_id)
+    task = load_data(directory / "task.yaml")
+    scope = load_data(directory / "scope-contract.yaml")
+    if (
+        task.get("id") != task_id
+        or task.get("title") != "GitHub authority bootstrap successor"
+        or task.get("mode") != "high_risk"
+        or task.get("state") != "triage"
+        or type(task.get("revision")) is not int
+        or scope.get("task_id") != task_id
+        or scope.get("status") != "proposed"
+        or scope.get("version") != 1
+        or scope.get("proposed_by") != "governance-owner"
+    ):
+        raise ValueError("successor scope is not eligible for protected approval")
+    actor = {"id": "repo-owner", "kind": "human"}
+    approval = {
+        "schema_version": 1,
+        "id": prefixed("APR"),
+        "task_id": task_id,
+        "kind": "scope",
+        "actor": actor,
+        "decision": "approved",
+        "subject_ref": scope_approval_subject(task, scope),
+        "independence_level": "L2",
+        "recorded_at": utc_now(),
+    }
+    config = load_data(repo / ".agents/config.yaml")
+    ownership = load_data(repo / str(config["paths"]["ownership"]))
+    if not valid_scope_approvals(task, scope, [approval], ownership, config):
+        raise ValueError("protected scope approval actor is not authorized")
+    approved_scope = deepcopy(scope)
+    approved_scope["status"] = "approved"
+    approved_scope["approved_by"] = [actor["id"]]
+    scope_path = directory / "scope-contract.yaml"
+    approval_path = directory / "approvals" / f"{approval['id']}.json"
+    return AppendEvent(
+        task_id=task_id,
+        event_type="scope_approved",
+        payload={
+            "scope_id": scope["id"],
+            "version": scope["version"],
+            "approval_id": approval["id"],
+            "approval": approval,
+            "scope": approved_scope,
+        },
+        actor_claim=actor,
+        expected_revision=task["revision"],
+        idempotency_key=(
+            "github-sigstore-scope-approve:"
+            f"{_required_environment(values, 'GITHUB_RUN_ID')}:"
+            f"{_required_environment(values, 'GITHUB_RUN_ATTEMPT')}"
+        ),
+        operation="scope.approve",
+        materializations=((approval_path, approval), (scope_path, approved_scope)),
+        replace_existing=frozenset({scope_path}),
+        minimum_independence="L2",
+        replay_intent={"independence_level_claim": "L2"},
+    )
+
+
+def _sigstore_trust_environment() -> dict[str, str]:
+    verifier_argv = ["gh", "attestation", "verify"]
+    return {
+        SIGSTORE_VERIFIER_ARGV_ENV: json.dumps(verifier_argv, separators=(",", ":")),
+        SIGSTORE_VERIFIER_MANIFEST_ENV: command_manifest_digest(verifier_argv),
+        SIGSTORE_REPOSITORY_ENV: _EXPECTED_GITHUB_REPOSITORY,
+        SIGSTORE_SIGNER_WORKFLOW_ENV: _EXPECTED_GITHUB_SIGNER_WORKFLOW,
+        SIGSTORE_PREDICATE_TYPE_ENV: _MUTATION_ATTESTATION_PREDICATE_TYPE,
+        SIGSTORE_ENVIRONMENT_ENV: "governance-authority",
+        SIGSTORE_OIDC_ISSUER_ENV: _EXPECTED_GITHUB_OIDC_ISSUER,
+    }
+
+
+def _write_attested_mutation_plan(
+    command: CreateTask | AppendEvent,
+    *,
+    output_dir: Path,
+    repo: Path,
+    values: Mapping[str, str],
+) -> tuple[AuthorityRequest, Mapping[str, Any]]:
+    prepared = MutationGateway(repo).prepare(command)
+    policy = _mutation_verification_policy(values)
+    now = datetime.now(timezone.utc)
+    predicate = {
+        "schema_version": 1,
+        "allowed": True,
+        "authenticated": True,
+        "issuer": policy["oidc_issuer"],
+        "actor_id": prepared.request.actor_claim["id"],
+        "actor_kind": prepared.request.actor_claim["kind"],
+        "independence_level": "L2",
+        "issued_at": _render_time(now - timedelta(seconds=5)),
+        "expires_at": _render_time(now + timedelta(minutes=30)),
+        "request_digest": prepared.request.request_digest,
+        "binding_digest": prepared.request.binding_digest,
+        "environment": policy["environment"],
+    }
+    plan = {
+        "schema_version": 1,
+        "kind": "mac.prepared-mutation",
+        "command": _serialize_mutation(command, repo),
+        "request": prepared.request.as_dict(),
+        "intent": dict(prepared.intent),
+        "verification_policy": policy,
+    }
+    _write_new_canonical_document(output_dir / "plan.json", plan)
+    _write_new_canonical_document(output_dir / "subject.json", prepared.request.as_dict())
+    _write_new_canonical_document(output_dir / "predicate.json", predicate)
+    return prepared.request, policy
+
+
 def github_attested_task_prepare_main(
     *,
     output_dir: Path,
@@ -820,45 +1082,61 @@ def github_attested_task_prepare_main(
     try:
         values = os.environ if environment is None else environment
         command = _successor_create_command(values, repo)
-        prepared = MutationGateway(repo).prepare(command)
-        policy = _mutation_verification_policy(values)
-        now = datetime.now(timezone.utc)
-        predicate = {
-            "schema_version": 1,
-            "allowed": True,
-            "authenticated": True,
-            "issuer": policy["oidc_issuer"],
-            "actor_id": prepared.request.actor_claim["id"],
-            "actor_kind": prepared.request.actor_claim["kind"],
-            "independence_level": "L2",
-            "issued_at": _render_time(now - timedelta(seconds=5)),
-            "expires_at": _render_time(now + timedelta(minutes=30)),
-            "request_digest": prepared.request.request_digest,
-            "binding_digest": prepared.request.binding_digest,
-            "environment": policy["environment"],
-        }
-        plan = {
-            "schema_version": 1,
-            "kind": "mac.prepared-mutation",
-            "command": _serialize_create_task(command),
-            "request": prepared.request.as_dict(),
-            "intent": dict(prepared.intent),
-            "verification_policy": policy,
-        }
-        _write_new_canonical_document(output_dir / "plan.json", plan)
-        _write_new_canonical_document(output_dir / "subject.json", prepared.request.as_dict())
-        _write_new_canonical_document(output_dir / "predicate.json", predicate)
+        request, _ = _write_attested_mutation_plan(
+            command, output_dir=output_dir, repo=repo, values=values,
+        )
         stdout.write(json.dumps({
             "ok": True,
             "task_id": command.task["id"],
-            "request_digest": prepared.request.request_digest,
-            "binding_digest": prepared.request.binding_digest,
+            "request_digest": request.request_digest,
+            "binding_digest": request.binding_digest,
             "predicate_type": _MUTATION_ATTESTATION_PREDICATE_TYPE,
         }, sort_keys=True, separators=(",", ":")) + "\n")
         return 0
     except (MacError, OSError, TypeError, ValueError, yaml.YAMLError):
         stderr.write("trusted attested task preparation failed\n")
         return 2
+
+
+def github_attested_scope_prepare_main(
+    *,
+    output_dir: Path,
+    repo: Path = Path("."),
+    stdout: TextIO = sys.stdout,
+    stderr: TextIO = sys.stderr,
+    environment: Mapping[str, str] | None = None,
+) -> int:
+    """Prepare one exact scope.approve plan after replaying persisted authority."""
+
+    previous: dict[str, str | None] = {}
+    try:
+        values = os.environ if environment is None else environment
+        assignments = _sigstore_trust_environment()
+        for name, value in assignments.items():
+            previous[name] = os.environ.get(name)
+            os.environ[name] = value
+        command = _successor_scope_approval_command(values, repo)
+        request, _ = _write_attested_mutation_plan(
+            command, output_dir=output_dir, repo=repo, values=values,
+        )
+        stdout.write(json.dumps({
+            "ok": True,
+            "task_id": command.task_id,
+            "operation": command.operation,
+            "request_digest": request.request_digest,
+            "binding_digest": request.binding_digest,
+            "predicate_type": _MUTATION_ATTESTATION_PREDICATE_TYPE,
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+        return 0
+    except (MacError, OSError, subprocess.SubprocessError, TypeError, ValueError, yaml.YAMLError):
+        stderr.write("trusted attested scope preparation failed\n")
+        return 2
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def _load_json_document(path: Path, *, canonical: bool, maximum: int) -> dict[str, Any]:
@@ -880,7 +1158,7 @@ def github_attested_task_apply_main(
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
 ) -> int:
-    """Verify and atomically apply one exact attested task.create plan."""
+    """Verify and atomically apply one allowlisted exact attested mutation plan."""
 
     previous: dict[str, str | None] = {}
     try:
@@ -896,16 +1174,6 @@ def github_attested_task_apply_main(
             or planned_request.get("repository_identity") != expected_repository_identity
         ):
             raise ValueError("prepared mutation repository identity is invalid")
-        for name, value in {
-            AUTHORITY_REPOSITORY_IDENTITY_ENV: expected_repository_identity,
-            SIGSTORE_BUNDLE_ENV: str(bundle_path.resolve()),
-        }.items():
-            previous[name] = os.environ.get(name)
-            os.environ[name] = value
-        command = _deserialize_create_task(plan["command"])
-        prepared = MutationGateway(repo).prepare(command)
-        if prepared.request.as_dict() != plan.get("request") or dict(prepared.intent) != plan.get("intent"):
-            raise ValueError("prepared mutation plan no longer matches repository state")
         policy = plan.get("verification_policy")
         if not isinstance(policy, dict) or set(policy) != {
             "schema_version", "repository", "signer_workflow", "source_ref", "source_digest",
@@ -924,13 +1192,23 @@ def github_attested_task_apply_main(
             or policy.get("deny_self_hosted_runners") is not True
         ):
             raise ValueError("prepared mutation verification policy is invalid")
-        verifier_argv = ["gh", "attestation", "verify"]
+        command = _deserialize_mutation(plan["command"], repo)
+        if isinstance(command, CreateTask):
+            if command.operation != "task.create" or command.minimum_independence != "L2":
+                raise ValueError("prepared task mutation is not allowlisted")
+        elif (
+            command.operation != "scope.approve"
+            or command.event_type != "scope_approved"
+            or dict(command.actor_claim) != {"id": "repo-owner", "kind": "human"}
+            or command.minimum_independence != "L2"
+        ):
+            raise ValueError("prepared scope mutation is not allowlisted")
         with tempfile.TemporaryDirectory(prefix="mac-attested-task-") as directory:
             canonical_bundle = Path(directory) / "bundle.json"
             canonical_bundle.write_bytes(_canonical_document_bytes(bundle))
             assignments = {
-                SIGSTORE_VERIFIER_ARGV_ENV: json.dumps(verifier_argv, separators=(",", ":")),
-                SIGSTORE_VERIFIER_MANIFEST_ENV: command_manifest_digest(verifier_argv),
+                **_sigstore_trust_environment(),
+                AUTHORITY_REPOSITORY_IDENTITY_ENV: expected_repository_identity,
                 SIGSTORE_REPOSITORY_ENV: str(policy["repository"]),
                 SIGSTORE_SIGNER_WORKFLOW_ENV: str(policy["signer_workflow"]),
                 SIGSTORE_SOURCE_REF_ENV: str(policy["source_ref"]),
@@ -945,6 +1223,9 @@ def github_attested_task_apply_main(
                 if name not in previous:
                     previous[name] = os.environ.get(name)
                 os.environ[name] = value
+            prepared = MutationGateway(repo).prepare(command)
+            if prepared.request.as_dict() != plan.get("request") or dict(prepared.intent) != plan.get("intent"):
+                raise ValueError("prepared mutation plan no longer matches repository state")
             result = MutationGateway(repo).execute(command)
         stdout.write(json.dumps({
             "ok": True,
@@ -956,7 +1237,7 @@ def github_attested_task_apply_main(
         }, sort_keys=True, separators=(",", ":")) + "\n")
         return 0
     except (MacError, OSError, subprocess.SubprocessError, TypeError, ValueError, json.JSONDecodeError):
-        stderr.write("trusted attested task application failed\n")
+        stderr.write("trusted attested mutation application failed\n")
         return 2
     finally:
         for name, value in previous.items():
@@ -1122,6 +1403,12 @@ def main(argv: list[str] | None = None) -> int:
         mutation_parser.add_argument("--out", type=Path, required=True)
         mutation_args = mutation_parser.parse_args(normalized_argv)
         return github_attested_task_prepare_main(output_dir=mutation_args.out)
+    if normalized_argv and normalized_argv[0] == "--github-attested-scope-prepare":
+        mutation_parser = argparse.ArgumentParser()
+        mutation_parser.add_argument("--github-attested-scope-prepare", action="store_true")
+        mutation_parser.add_argument("--out", type=Path, required=True)
+        mutation_args = mutation_parser.parse_args(normalized_argv)
+        return github_attested_scope_prepare_main(output_dir=mutation_args.out)
     if normalized_argv and normalized_argv[0] == "--github-attested-task-apply":
         mutation_parser = argparse.ArgumentParser()
         mutation_parser.add_argument("--github-attested-task-apply", action="store_true")

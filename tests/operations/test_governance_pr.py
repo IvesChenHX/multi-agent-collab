@@ -14,6 +14,7 @@ from scripts.ci.governance_pr import (
     check_current_evidence,
     discover_task_ids,
     evaluate,
+    github_attested_scope_prepare_main,
     github_attested_task_apply_main,
     github_attested_task_prepare_main,
     github_attestation_probe_prepare_main,
@@ -23,7 +24,7 @@ from scripts.ci.governance_pr import (
     github_oidc_probe_main,
 )
 from mac.authority import AuthorityRequest, canonical_digest
-from mac.repository import CreateTask
+from mac.repository import AppendEvent, CreateTask
 
 
 TASK_ID = "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q"
@@ -505,6 +506,82 @@ def test_attested_task_plan_round_trips_one_exact_create_command(
     )
 
 
+def test_attested_scope_plan_round_trips_one_exact_approval_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    request = AuthorityRequest(
+        repository_identity="github:repository-id:1290429577",
+        operation="scope.approve",
+        task_id=TASK_ID,
+        actor_claim={"id": "repo-owner", "kind": "human"},
+        expected_revision=0,
+        idempotency_key="github-sigstore-scope-approve:987654:2",
+        intent_digest=canonical_digest({"scope": TASK_ID}),
+        policy_digest="sha256:" + "1" * 64,
+        ownership_digest="sha256:" + "2" * 64,
+        audience="mac-mutation-gateway/v1",
+    )
+    scope_path = tmp_path / "tasks" / TASK_ID / "scope-contract.yaml"
+    approval_path = tmp_path / "tasks" / TASK_ID / "approvals" / "APR-example.json"
+    command = AppendEvent(
+        task_id=TASK_ID,
+        event_type="scope_approved",
+        payload={"scope_id": "SCOPE-example", "approval_id": "APR-example"},
+        actor_claim={"id": "repo-owner", "kind": "human"},
+        expected_revision=0,
+        idempotency_key=request.idempotency_key,
+        operation="scope.approve",
+        materializations=(
+            (approval_path, {"id": "APR-example"}),
+            (scope_path, {"task_id": TASK_ID, "status": "approved"}),
+        ),
+        replace_existing=frozenset({scope_path}),
+        minimum_independence="L2",
+        replay_intent={"independence_level_claim": "L2"},
+    )
+    prepared = SimpleNamespace(
+        request=request,
+        intent={"schema_version": 1, "task_id": TASK_ID, "operation": "scope.approve"},
+        command=command,
+    )
+    monkeypatch.setattr(
+        governance_pr, "_successor_scope_approval_command", lambda *_: command,
+    )
+    monkeypatch.setattr(governance_pr, "_sigstore_trust_environment", lambda: {})
+
+    class FakeGateway:
+        def __init__(self, _repo: Path):
+            pass
+
+        def prepare(self, observed: AppendEvent):
+            assert governance_pr._serialize_append_event(observed, tmp_path) == governance_pr._serialize_append_event(command, tmp_path)
+            return prepared
+
+    monkeypatch.setattr(governance_pr, "MutationGateway", FakeGateway)
+    output_dir = tmp_path / "prepared-scope"
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = github_attested_scope_prepare_main(
+        output_dir=output_dir,
+        repo=tmp_path,
+        stdout=stdout,
+        stderr=stderr,
+        environment=_probe_environment(
+            "refs/heads/codex/governance-authority-sigstore"
+        ),
+    )
+
+    assert exit_code == 0
+    assert stderr.getvalue() == ""
+    plan = json.loads((output_dir / "plan.json").read_text(encoding="utf-8"))
+    restored = governance_pr._deserialize_append_event(plan["command"], tmp_path)
+    assert governance_pr._serialize_append_event(restored, tmp_path) == plan["command"]
+    assert plan["request"]["operation"] == "scope.approve"
+    assert json.loads(stdout.getvalue())["operation"] == "scope.approve"
+
+
 def test_attested_task_apply_revalidates_plan_before_atomic_execution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -648,11 +725,12 @@ def test_governance_workflow_isolates_oidc_from_pull_request_code():
     assert attest["uses"] == "actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6"
     assert attest["with"]["predicate-type"].endswith("/authority-probe/v1")
     assert "bundle-path" in rendered
-    task_attest = next(step for step in authority["steps"] if step.get("id") == "task-attestation")
-    assert task_attest["uses"] == "actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6"
+    mutation_attest = next(step for step in authority["steps"] if step.get("id") == "mutation-attestation")
+    assert mutation_attest["uses"] == "actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6"
     upload = next(step for step in authority["steps"] if str(step.get("uses", "")).startswith("actions/upload-artifact@"))
     assert upload["uses"] == "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
     assert "authority_create_successor" in authority["if"]
+    assert "authority_approve_successor_scope" in authority["if"]
 
 
 def test_discover_task_ids_from_changed_v6_task_metadata():

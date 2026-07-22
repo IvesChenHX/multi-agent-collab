@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -422,6 +423,24 @@ def test_sigstore_bundle_creates_a_durable_non_secret_authority_fact(
     monkeypatch.delenv(SIGSTORE_PREDICATE_ENV)
     monkeypatch.delenv(SIGSTORE_SOURCE_REF_ENV)
     monkeypatch.delenv(SIGSTORE_SOURCE_DIGEST_ENV)
+    verify_authority_audit_record(audit, request)
+
+    portable_verifier = tmp_path / "portable-sigstore-verifier.py"
+    shutil.copyfile(_BROKER, portable_verifier)
+    portable_argv = [
+        sys.executable, "-I", str(portable_verifier), "--sigstore-verifier",
+    ]
+    assert command_manifest_digest(portable_argv) != (
+        audit["signed_envelope"]["verification_policy"]["verifier_manifest"]
+    )
+    monkeypatch.setenv(
+        SIGSTORE_VERIFIER_ARGV_ENV,
+        json.dumps(portable_argv, separators=(",", ":")),
+    )
+    monkeypatch.setenv(
+        SIGSTORE_VERIFIER_MANIFEST_ENV,
+        command_manifest_digest(portable_argv),
+    )
     verify_authority_audit_record(audit, request)
 
 
