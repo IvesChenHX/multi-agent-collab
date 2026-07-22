@@ -35,7 +35,7 @@ jobs:
       - name: Verify locked schema bundle
         run: uv run --frozen python scripts/release/check_schema_lock.py
       - name: Validate repository
-        run: uv run --frozen mac validate --json
+        run: uv run --frozen python scripts/ci/governance_pr.py --github-trusted-validate --json
       - name: Run test suite
         run: uv run --frozen pytest
       - name: Verify executable schema lock

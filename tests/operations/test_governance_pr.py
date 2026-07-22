@@ -673,6 +673,22 @@ def test_second_successor_scope_amendment_adds_only_cross_platform_ci(
         project / "tasks" / SUCCESSOR_TASK_ID,
         repo / "tasks" / SUCCESSOR_TASK_ID,
     )
+    task_dir = repo / "tasks" / SUCCESSOR_TASK_ID
+    v2_scope = yaml.safe_load(
+        (task_dir / "scope-history/scope-contract.v2.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    (task_dir / "scope-contract.yaml").write_text(
+        yaml.safe_dump(v2_scope, sort_keys=False),
+        encoding="utf-8",
+    )
+    task = yaml.safe_load((task_dir / "task.yaml").read_text(encoding="utf-8"))
+    task["revision"] = 3
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(task, sort_keys=False),
+        encoding="utf-8",
+    )
     environment = _probe_environment(
         "refs/heads/codex/governance-authority-sigstore"
     )
@@ -766,6 +782,17 @@ def test_github_trusted_validate_requires_exact_host_and_restores_environment(
     assert json.loads(stdout.getvalue()) == {"ok": True, "issues": []}
     assert stderr.getvalue() == ""
     assert all(name not in governance_pr.os.environ for name in tracked)
+
+
+def test_cross_platform_ci_uses_the_fail_closed_github_trust_wrapper():
+    project = Path(__file__).resolve().parents[2]
+    workflow = (project / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert (
+        "uv run --frozen python scripts/ci/governance_pr.py "
+        "--github-trusted-validate --json"
+    ) in workflow
+    assert "run: uv run --frozen mac validate --json" not in workflow
 
 
 def test_attested_v2_scope_approval_uses_a_distinct_authorized_logical_actor(
