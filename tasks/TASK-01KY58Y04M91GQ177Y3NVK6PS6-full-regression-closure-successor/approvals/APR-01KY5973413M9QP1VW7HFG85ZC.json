@@ -1,0 +1,14 @@
+{
+  "actor": {
+    "id": "repo-owner",
+    "kind": "human"
+  },
+  "decision": "approved",
+  "id": "APR-01KY5973413M9QP1VW7HFG85ZC",
+  "independence_level": "L2",
+  "kind": "scope",
+  "recorded_at": "2026-07-22T16:05:51.428655Z",
+  "schema_version": 1,
+  "subject_ref": "tasks/TASK-01KY58Y04M91GQ177Y3NVK6PS6-full-regression-closure-successor/scope-contract.yaml#scope=SCOPE-01KY58Y04M91GQ177Y3NVK6PS7;version=1;digest=sha256:0e1f4370ee8290e8e44b7ea24b6c18bce976a0769f6807967c41e30be93fa476",
+  "task_id": "TASK-01KY58Y04M91GQ177Y3NVK6PS6-full-regression-closure-successor"
+}
