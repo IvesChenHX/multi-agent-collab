@@ -46,7 +46,7 @@ from mac.authority import (
     valid_scope_approvals,
 )
 from mac.application.task_service import TaskService
-from mac.errors import MacError
+from mac.errors import ExitCode, MacError
 from mac.git import GitRepository
 from mac.ids import prefixed
 from mac.io import load_data
@@ -109,6 +109,9 @@ _SUCCESSOR_SCOPE_AMENDMENT_PATHS = (
     "tests/test_authorityless_v6_migration.py",
     "migration/v6-authorityless/**",
     "tasks-v6/**",
+)
+_SUCCESSOR_SCOPE_SECOND_AMENDMENT_PATHS = (
+    ".github/workflows/ci.yml",
 )
 
 
@@ -984,6 +987,15 @@ def _successor_scope_approval_command(
         and scope.get("proposed_by") == "repo-owner"
         and scope.get("allowed_paths") == [*expected_paths, *_SUCCESSOR_SCOPE_AMENDMENT_PATHS]
         and scope.get("risk_tags") == ["data_migration"]
+    ) or (
+        version == 3
+        and scope.get("proposed_by") == "repo-owner"
+        and scope.get("allowed_paths") == [
+            *expected_paths,
+            *_SUCCESSOR_SCOPE_AMENDMENT_PATHS,
+            *_SUCCESSOR_SCOPE_SECOND_AMENDMENT_PATHS,
+        ]
+        and scope.get("risk_tags") == ["auth_security", "data_migration"]
     )
     if (
         task.get("id") != task_id
@@ -1060,26 +1072,44 @@ def _successor_scope_amend_command(
         f"tasks/{task_id}/**",
         f"tasks/private/{task_id}/**",
     ]
+    version = old_scope.get("version")
+    if version == 1:
+        eligible_revision = 1
+        eligible_paths = expected_paths
+        eligible_approvers = ["repo-owner"]
+        eligible_risk_tags: list[str] = []
+        amendment_paths = list(_SUCCESSOR_SCOPE_AMENDMENT_PATHS)
+        amendment_approvers = ["repo-owner"]
+        added_risk_tags = ["data_migration"]
+    elif version == 2:
+        eligible_revision = 3
+        eligible_paths = [*expected_paths, *_SUCCESSOR_SCOPE_AMENDMENT_PATHS]
+        eligible_approvers = ["governance-owner"]
+        eligible_risk_tags = ["data_migration"]
+        amendment_paths = list(_SUCCESSOR_SCOPE_SECOND_AMENDMENT_PATHS)
+        amendment_approvers = ["governance-owner"]
+        added_risk_tags = ["auth_security"]
+    else:
+        raise ValueError("successor scope is not eligible for protected amendment")
     if (
         task.get("id") != task_id
         or task.get("title") != "GitHub authority bootstrap successor"
         or task.get("mode") != "high_risk"
         or task.get("state") != "triage"
-        or task.get("revision") != 1
+        or task.get("revision") != eligible_revision
         or old_scope.get("task_id") != task_id
         or old_scope.get("status") != "approved"
-        or old_scope.get("version") != 1
-        or old_scope.get("approved_by") != ["repo-owner"]
-        or old_scope.get("allowed_paths") != expected_paths
-        or old_scope.get("risk_tags") != []
+        or old_scope.get("approved_by") != eligible_approvers
+        or old_scope.get("allowed_paths") != eligible_paths
+        or old_scope.get("risk_tags") != eligible_risk_tags
     ):
         raise ValueError("successor scope is not eligible for protected amendment")
     actor = {"id": "repo-owner", "kind": "human"}
     replay_intent = {
-        "add": list(_SUCCESSOR_SCOPE_AMENDMENT_PATHS),
+        "add": amendment_paths,
         "add_operation": [],
-        "approver": [actor["id"]],
-        "risk_tag": ["data_migration"],
+        "approver": amendment_approvers,
+        "risk_tag": added_risk_tags,
         "independent": True,
     }
     amended_scope = amend_scope(
@@ -1092,7 +1122,7 @@ def _successor_scope_amend_command(
         independent_approval=True,
     )
     scope_path = directory / "scope-contract.yaml"
-    history_path = directory / "scope-history" / "scope-contract.v1.yaml"
+    history_path = directory / "scope-history" / f"scope-contract.v{version}.yaml"
     return AppendEvent(
         task_id=task_id,
         event_type="scope_proposed",
@@ -1130,19 +1160,27 @@ def _sigstore_trust_environment() -> dict[str, str]:
     }
 
 
-def _configure_github_validation_trust(values: Mapping[str, str]) -> None:
-    """Promote the stable repository identity only on the exact GitHub host."""
-
+def _github_validation_trust_environment(
+    values: Mapping[str, str],
+) -> dict[str, str]:
     if (
         values.get("GITHUB_ACTIONS", "").lower() != "true"
         or values.get("GITHUB_REPOSITORY") != _EXPECTED_GITHUB_REPOSITORY
         or values.get("GITHUB_REPOSITORY_ID") != _EXPECTED_GITHUB_REPOSITORY_ID
     ):
-        return
-    os.environ[AUTHORITY_REPOSITORY_IDENTITY_ENV] = (
-        f"github:repository-id:{_EXPECTED_GITHUB_REPOSITORY_ID}"
-    )
-    os.environ.update(_sigstore_trust_environment())
+        return {}
+    return {
+        AUTHORITY_REPOSITORY_IDENTITY_ENV: (
+            f"github:repository-id:{_EXPECTED_GITHUB_REPOSITORY_ID}"
+        ),
+        **_sigstore_trust_environment(),
+    }
+
+
+def _configure_github_validation_trust(values: Mapping[str, str]) -> None:
+    """Promote the stable repository identity only on the exact GitHub host."""
+
+    os.environ.update(_github_validation_trust_environment(values))
 
 
 def _write_attested_mutation_plan(
@@ -1311,42 +1349,67 @@ def _allowlisted_successor_scope_amendment(command: AppendEvent) -> bool:
         f"tasks/{task_id}/**",
         f"tasks/private/{task_id}/**",
     ]
-    exact_replay_intent = {
-        "add": list(_SUCCESSOR_SCOPE_AMENDMENT_PATHS),
-        "add_operation": [],
-        "approver": ["repo-owner"],
-        "risk_tag": ["data_migration"],
-        "independent": True,
-    }
     payload = command.payload
     amended = payload.get("scope") if isinstance(payload, Mapping) else None
+    target_version = payload.get("version") if isinstance(payload, Mapping) else None
+    if target_version == 2:
+        prior_version = 1
+        expected_revision = 1
+        prior_paths = expected_paths
+        prior_approved_by = ["repo-owner"]
+        prior_risk_tags: list[str] = []
+        additions = list(_SUCCESSOR_SCOPE_AMENDMENT_PATHS)
+        approvers = ["repo-owner"]
+        added_risk_tags = ["data_migration"]
+        amended_risk_tags = ["data_migration"]
+    elif target_version == 3:
+        prior_version = 2
+        expected_revision = 3
+        prior_paths = [*expected_paths, *_SUCCESSOR_SCOPE_AMENDMENT_PATHS]
+        prior_approved_by = ["governance-owner"]
+        prior_risk_tags = ["data_migration"]
+        additions = list(_SUCCESSOR_SCOPE_SECOND_AMENDMENT_PATHS)
+        approvers = ["governance-owner"]
+        added_risk_tags = ["auth_security"]
+        amended_risk_tags = ["auth_security", "data_migration"]
+    else:
+        return False
+    exact_replay_intent = {
+        "add": additions,
+        "add_operation": [],
+        "approver": approvers,
+        "risk_tag": added_risk_tags,
+        "independent": True,
+    }
     if (
         command.operation != "scope.amend"
         or command.event_type != "scope_proposed"
         or dict(command.actor_claim) != {"id": "repo-owner", "kind": "human"}
-        or command.expected_revision != 1
+        or command.expected_revision != expected_revision
         or command.minimum_independence != "L2"
         or command.replay_intent != exact_replay_intent
         or not command.idempotency_key.startswith("github-sigstore-scope-amend:")
         or not isinstance(amended, Mapping)
         or set(payload) != {"scope_id", "version", "amendment", "scope"}
         or payload.get("amendment") is not True
-        or payload.get("version") != 2
+        or payload.get("version") != target_version
         or payload.get("scope_id") != amended.get("id")
         or amended.get("task_id") != task_id
-        or amended.get("version") != 2
+        or amended.get("version") != target_version
         or amended.get("status") != "proposed"
         or amended.get("proposed_by") != "repo-owner"
         or amended.get("approved_by") != []
-        or amended.get("allowed_paths") != [*expected_paths, *_SUCCESSOR_SCOPE_AMENDMENT_PATHS]
-        or amended.get("risk_tags") != ["data_migration"]
+        or amended.get("allowed_paths") != [*prior_paths, *additions]
+        or amended.get("risk_tags") != amended_risk_tags
         or len(command.materializations) != 2
         or len(command.replace_existing) != 1
     ):
         return False
     current_path = next(iter(command.replace_existing))
     current_suffix = ("tasks", task_id, "scope-contract.yaml")
-    history_suffix = ("tasks", task_id, "scope-history", "scope-contract.v1.yaml")
+    history_suffix = (
+        "tasks", task_id, "scope-history", f"scope-contract.v{prior_version}.yaml",
+    )
     if tuple(current_path.parts[-3:]) != current_suffix:
         return False
     by_path = {path: value for path, value in command.materializations}
@@ -1360,10 +1423,11 @@ def _allowlisted_successor_scope_amendment(command: AppendEvent) -> bool:
         and isinstance(history, Mapping)
         and history.get("id") == amended.get("id")
         and history.get("task_id") == task_id
-        and history.get("version") == 1
+        and history.get("version") == prior_version
         and history.get("status") == "approved"
-        and history.get("allowed_paths") == expected_paths
-        and history.get("risk_tags") == []
+        and history.get("approved_by") == prior_approved_by
+        and history.get("allowed_paths") == prior_paths
+        and history.get("risk_tags") == prior_risk_tags
     )
 
 
@@ -1374,7 +1438,11 @@ def _allowlisted_successor_scope_approval(command: AppendEvent) -> bool:
     if not isinstance(scope, Mapping) or not isinstance(approval, Mapping):
         return False
     version = scope.get("version")
-    expected_actor = "repo-owner" if version == 1 else "governance-owner" if version == 2 else ""
+    expected_actor = (
+        "repo-owner" if version == 1
+        else "governance-owner" if version in {2, 3}
+        else ""
+    )
     task_id = command.task_id
     expected_paths = [
         *_SUCCESSOR_SCOPE_BASE_PATHS,
@@ -1383,6 +1451,9 @@ def _allowlisted_successor_scope_approval(command: AppendEvent) -> bool:
     ]
     if version == 2:
         expected_paths.extend(_SUCCESSOR_SCOPE_AMENDMENT_PATHS)
+    elif version == 3:
+        expected_paths.extend(_SUCCESSOR_SCOPE_AMENDMENT_PATHS)
+        expected_paths.extend(_SUCCESSOR_SCOPE_SECOND_AMENDMENT_PATHS)
     return bool(
         expected_actor
         and command.operation == "scope.approve"
@@ -1400,7 +1471,11 @@ def _allowlisted_successor_scope_approval(command: AppendEvent) -> bool:
         and scope.get("approved_by") == [expected_actor]
         and scope.get("proposed_by") == ("governance-owner" if version == 1 else "repo-owner")
         and scope.get("allowed_paths") == expected_paths
-        and scope.get("risk_tags") == ([] if version == 1 else ["data_migration"])
+        and scope.get("risk_tags") == (
+            [] if version == 1
+            else ["data_migration"] if version == 2
+            else ["auth_security", "data_migration"]
+        )
         and approval.get("task_id") == task_id
         and approval.get("kind") == "scope"
         and approval.get("actor") == {"id": expected_actor, "kind": "human"}
@@ -1563,6 +1638,52 @@ def _run(argv: list[str]) -> dict[str, Any]:
     }
 
 
+def github_trusted_validate_main(
+    *,
+    stdout: TextIO = sys.stdout,
+    stderr: TextIO = sys.stderr,
+    environment: Mapping[str, str] | None = None,
+) -> int:
+    """Run repository validation with trust bound to the exact GitHub host."""
+
+    values = os.environ if environment is None else environment
+    assignments = _github_validation_trust_environment(values)
+    if not assignments:
+        stdout.write(json.dumps({
+            "ok": False,
+            "error": {
+                "code": "CI_GITHUB_TRUST_INVALID",
+                "message": "trusted GitHub repository identity is unavailable",
+            },
+        }, separators=(",", ":")) + "\n")
+        return int(ExitCode.SECURITY)
+    previous = {name: os.environ.get(name) for name in assignments}
+    try:
+        os.environ.update(assignments)
+        check = _run(["mac", "validate", "--json"])
+        output = check.get("output")
+        if isinstance(output, Mapping):
+            stdout.write(json.dumps(dict(output), ensure_ascii=False, separators=(",", ":")) + "\n")
+        else:
+            stdout.write(json.dumps({
+                "ok": False,
+                "error": {
+                    "code": "CI_VALIDATION_OUTPUT_INVALID",
+                    "message": "repository validation did not return JSON",
+                },
+            }, separators=(",", ":")) + "\n")
+        if check.get("stderr"):
+            stderr.write(str(check["stderr"]) + "\n")
+        exit_code = check.get("exit_code")
+        return int(exit_code) if type(exit_code) is int else int(ExitCode.INTERNAL)
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 def check_current_evidence(repo: Path, task_directory: str, head: str) -> dict[str, Any]:
     """Fail unless Evidence covers claims at the PR head's current code subject."""
     task_dir = repo / "tasks" / task_directory
@@ -1635,6 +1756,8 @@ def main(argv: list[str] | None = None) -> int:
         return github_oidc_broker_main()
     if normalized_argv == ["--github-oidc-probe"]:
         return github_oidc_probe_main()
+    if normalized_argv == ["--github-trusted-validate", "--json"]:
+        return github_trusted_validate_main()
     if normalized_argv and normalized_argv[0] == "--github-attestation-probe-prepare":
         probe_parser = argparse.ArgumentParser()
         probe_parser.add_argument("--github-attestation-probe-prepare", action="store_true")

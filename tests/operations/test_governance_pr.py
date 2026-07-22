@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 import subprocess
 from io import StringIO
 from pathlib import Path
@@ -28,6 +29,7 @@ from mac.repository import AppendEvent, CreateTask
 
 
 TASK_ID = "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q"
+SUCCESSOR_TASK_ID = "TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor"
 
 
 def _authority_request() -> AuthorityRequest:
@@ -662,6 +664,110 @@ def test_attested_scope_amend_plan_round_trips_one_exact_command(
     assert json.loads(stdout.getvalue())["operation"] == "scope.amend"
 
 
+def test_second_successor_scope_amendment_adds_only_cross_platform_ci(
+    tmp_path: Path,
+):
+    project = Path(__file__).resolve().parents[2]
+    repo = tmp_path / "repo"
+    shutil.copytree(
+        project / "tasks" / SUCCESSOR_TASK_ID,
+        repo / "tasks" / SUCCESSOR_TASK_ID,
+    )
+    environment = _probe_environment(
+        "refs/heads/codex/governance-authority-sigstore"
+    )
+    environment["MAC_AUTHORITY_PROBE_TASK_ID"] = SUCCESSOR_TASK_ID
+
+    command = governance_pr._successor_scope_amend_command(environment, repo)
+
+    assert command.expected_revision == 3
+    assert command.replay_intent == {
+        "add": [".github/workflows/ci.yml"],
+        "add_operation": [],
+        "approver": ["governance-owner"],
+        "risk_tag": ["auth_security"],
+        "independent": True,
+    }
+    assert command.payload["version"] == 3
+    amended = command.payload["scope"]
+    assert amended["version"] == 3
+    assert amended["allowed_paths"][-1] == ".github/workflows/ci.yml"
+    assert amended["risk_tags"] == ["auth_security", "data_migration"]
+    assert governance_pr._allowlisted_successor_scope_amendment(command)
+
+
+def test_github_trusted_validate_requires_exact_host_and_restores_environment(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    tracked = [
+        governance_pr.AUTHORITY_REPOSITORY_IDENTITY_ENV,
+        governance_pr.SIGSTORE_VERIFIER_ARGV_ENV,
+        governance_pr.SIGSTORE_VERIFIER_MANIFEST_ENV,
+        governance_pr.SIGSTORE_REPOSITORY_ENV,
+        governance_pr.SIGSTORE_SIGNER_WORKFLOW_ENV,
+        governance_pr.SIGSTORE_PREDICATE_TYPE_ENV,
+        governance_pr.SIGSTORE_ENVIRONMENT_ENV,
+        governance_pr.SIGSTORE_OIDC_ISSUER_ENV,
+    ]
+    for name in tracked:
+        monkeypatch.delenv(name, raising=False)
+    calls: list[list[str]] = []
+
+    def run(argv: list[str]) -> dict[str, object]:
+        calls.append(argv)
+        assert governance_pr.os.environ[
+            governance_pr.AUTHORITY_REPOSITORY_IDENTITY_ENV
+        ] == "github:repository-id:1290429577"
+        assert governance_pr.os.environ[
+            governance_pr.SIGSTORE_REPOSITORY_ENV
+        ] == "IvesChenHX/multi-agent-collab"
+        return {
+            "argv": argv,
+            "exit_code": 0,
+            "output": {"ok": True, "issues": []},
+            "stdout": None,
+            "stderr": None,
+        }
+
+    monkeypatch.setattr(governance_pr, "_run", run)
+    rejected_stdout = StringIO()
+    rejected_stderr = StringIO()
+
+    rejected = governance_pr.github_trusted_validate_main(
+        environment={
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_REPOSITORY": "attacker/example",
+            "GITHUB_REPOSITORY_ID": "1290429577",
+        },
+        stdout=rejected_stdout,
+        stderr=rejected_stderr,
+    )
+
+    assert rejected == 9
+    assert calls == []
+    assert json.loads(rejected_stdout.getvalue())["error"]["code"] == (
+        "CI_GITHUB_TRUST_INVALID"
+    )
+
+    stdout = StringIO()
+    stderr = StringIO()
+    accepted = governance_pr.github_trusted_validate_main(
+        environment={
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_REPOSITORY": "IvesChenHX/multi-agent-collab",
+            "GITHUB_REPOSITORY_ID": "1290429577",
+        },
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert accepted == 0
+    assert calls == [["mac", "validate", "--json"]]
+    assert json.loads(stdout.getvalue()) == {"ok": True, "issues": []}
+    assert stderr.getvalue() == ""
+    assert all(name not in governance_pr.os.environ for name in tracked)
+
+
 def test_attested_v2_scope_approval_uses_a_distinct_authorized_logical_actor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -951,6 +1057,7 @@ def test_attested_apply_accepts_only_the_exact_scope_amendment(
         "task_id": TASK_ID,
         "version": 1,
         "status": "approved",
+        "approved_by": ["repo-owner"],
         "allowed_paths": base_paths,
         "risk_tags": [],
     }
