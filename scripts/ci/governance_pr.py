@@ -49,8 +49,8 @@ _EXPECTED_GITHUB_REPOSITORY = "IvesChenHX/multi-agent-collab"
 _EXPECTED_GITHUB_REPOSITORY_ID = "1290429577"
 _EXPECTED_GITHUB_ACTOR_ID = "166317138"
 _EXPECTED_GITHUB_REF = "refs/heads/master"
-_EXPECTED_GITHUB_WORKFLOW_SUFFIX = (
-    "/.github/workflows/governance-pr.yml@refs/heads/master"
+_EXPECTED_GITHUB_BOOTSTRAP_REF = (
+    "refs/heads/codex/governance-authority-sigstore"
 )
 _EXPECTED_GITHUB_SIGNER_WORKFLOW = (
     "IvesChenHX/multi-agent-collab/.github/workflows/governance-pr.yml"
@@ -305,8 +305,9 @@ def _github_probe_request(values: Mapping[str, str], repo: Path) -> AuthorityReq
         or repository_id != _EXPECTED_GITHUB_REPOSITORY_ID
         or actor_id != _EXPECTED_GITHUB_ACTOR_ID
         or event_name != "workflow_dispatch"
-        or ref != _EXPECTED_GITHUB_REF
-        or not workflow_ref.endswith(_EXPECTED_GITHUB_WORKFLOW_SUFFIX)
+        or ref not in {_EXPECTED_GITHUB_REF, _EXPECTED_GITHUB_BOOTSTRAP_REF}
+        or workflow_ref
+        != f"{_EXPECTED_GITHUB_SIGNER_WORKFLOW}@{ref}"
         or not run_id.isdigit()
         or not run_attempt.isdigit()
         or _TASK_ID.fullmatch(task_id) is None
@@ -459,7 +460,7 @@ def _github_attestation_probe_documents(
         "source": {
             "repository": _EXPECTED_GITHUB_REPOSITORY,
             "repository_id": _EXPECTED_GITHUB_REPOSITORY_ID,
-            "ref": _EXPECTED_GITHUB_REF,
+            "ref": _required_environment(values, "GITHUB_REF"),
             "workflow": _EXPECTED_GITHUB_SIGNER_WORKFLOW,
             "workflow_digest": source_digest,
         },
@@ -560,6 +561,7 @@ def github_attestation_probe_verify_main(
         ):
             raise ValueError("authority attestation bundle is invalid")
         source_digest = _required_environment(values, "GITHUB_SHA").lower()
+        source_ref = _required_environment(values, "GITHUB_REF")
         completed = run(
             [
                 "gh",
@@ -575,7 +577,7 @@ def github_attestation_probe_verify_main(
                 "--signer-workflow",
                 _EXPECTED_GITHUB_SIGNER_WORKFLOW,
                 "--source-ref",
-                _EXPECTED_GITHUB_REF,
+                source_ref,
                 "--source-digest",
                 source_digest,
                 "--cert-oidc-issuer",

@@ -55,16 +55,16 @@ def _oidc_environment() -> dict[str, str]:
     }
 
 
-def _probe_environment() -> dict[str, str]:
+def _probe_environment(ref: str = "refs/heads/master") -> dict[str, str]:
     return {
         "GITHUB_REPOSITORY": "IvesChenHX/multi-agent-collab",
         "GITHUB_REPOSITORY_ID": "1290429577",
         "GITHUB_ACTOR_ID": "166317138",
         "GITHUB_EVENT_NAME": "workflow_dispatch",
-        "GITHUB_REF": "refs/heads/master",
+        "GITHUB_REF": ref,
         "GITHUB_WORKFLOW_REF": (
             "IvesChenHX/multi-agent-collab/"
-            ".github/workflows/governance-pr.yml@refs/heads/master"
+            f".github/workflows/governance-pr.yml@{ref}"
         ),
         "GITHUB_RUN_ID": "987654",
         "GITHUB_RUN_ATTEMPT": "2",
@@ -301,6 +301,28 @@ def test_github_attestation_probe_prepares_canonical_non_secret_documents(tmp_pa
     assert b"github-request-token" not in rendered
 
 
+def test_github_attestation_probe_accepts_only_the_exact_bootstrap_branch(tmp_path: Path):
+    _write_probe_task(tmp_path)
+    bootstrap = "refs/heads/codex/governance-authority-sigstore"
+
+    assert github_attestation_probe_prepare_main(
+        subject_path=tmp_path / "bootstrap-subject.json",
+        predicate_path=tmp_path / "bootstrap-predicate.json",
+        repo=tmp_path,
+        stdout=StringIO(),
+        stderr=StringIO(),
+        environment=_probe_environment(bootstrap),
+    ) == 0
+    assert github_attestation_probe_prepare_main(
+        subject_path=tmp_path / "rogue-subject.json",
+        predicate_path=tmp_path / "rogue-predicate.json",
+        repo=tmp_path,
+        stdout=StringIO(),
+        stderr=StringIO(),
+        environment=_probe_environment("refs/heads/codex/rogue"),
+    ) == 2
+
+
 def test_github_attestation_probe_verifies_exact_predicate_and_transparency_timestamp(
     tmp_path: Path,
 ):
@@ -372,6 +394,7 @@ def test_github_attestation_probe_verifies_exact_predicate_and_transparency_time
         "IvesChenHX/multi-agent-collab/.github/workflows/governance-pr.yml"
     )
     assert argv[argv.index("--source-digest") + 1] == "a" * 40
+    assert argv[argv.index("--source-ref") + 1] == "refs/heads/master"
     assert captured["kwargs"]["shell"] is False
     assert json.loads(stdout.getvalue())["subject_digest"] == f"sha256:{subject_digest}"
 
