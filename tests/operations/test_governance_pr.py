@@ -793,6 +793,7 @@ def test_cross_platform_ci_uses_the_fail_closed_github_trust_wrapper():
         "--github-trusted-validate --json"
     ) in workflow
     assert "run: uv run --frozen mac validate --json" not in workflow
+    assert "fetch-depth: 0" in workflow
 
 
 def test_attested_v2_scope_approval_uses_a_distinct_authorized_logical_actor(
