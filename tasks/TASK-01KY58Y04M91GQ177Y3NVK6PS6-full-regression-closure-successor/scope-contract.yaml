@@ -1,0 +1,62 @@
+allowed_operations:
+- read
+- write
+- execute_tests
+- generate_artifacts
+allowed_paths:
+- src/mac/authority.py
+- src/mac/cli.py
+- src/mac/git.py
+- src/mac/migration.py
+- src/mac/repository.py
+- src/mac/schema_validation.py
+- src/mac/scope.py
+- tests/test_event_store.py
+- tests/test_examples_v6.py
+- tests/test_migration_and_services.py
+- tests/test_repair_round4.py
+- tests/test_repair_round5_platform.py
+- tests/test_schema_validation.py
+- tests/test_scope_amendment_and_workflow.py
+- tests/operations/test_release_artifacts.py
+- examples/v6/**
+- tasks/TASK-01KY58Y04M91GQ177Y3NVK6PS6-full-regression-closure-successor/**
+- tasks/private/TASK-01KY58Y04M91GQ177Y3NVK6PS6-full-regression-closure-successor/**
+amendment_policy:
+  max_amendments: 2
+  max_paths_per_amendment: 4
+  require_independent_approval_for:
+  - auth_security
+  - production_deploy
+approved_by: []
+base_commit: 1dedfb1e64a3169fca3588b73d5ad64df3e71d3d
+denied_paths: []
+id: SCOPE-01KY58Y04M91GQ177Y3NVK6PS7
+network_access: none
+owners:
+- governance
+- platform
+- devex
+- tests
+- examples
+- docs
+proposed_by: governance-owner
+required_gates:
+- targeted_tests
+- negative_security_tests
+- secret_scan
+- scope_guard
+- compatibility_review
+- independent_review
+- rollback_plan
+- rollback_verification
+- evidence_matches_current_commit
+risk_tags:
+- auth_security
+- compatibility
+- data_migration
+schema_version: 1
+secret_access: []
+status: proposed
+task_id: TASK-01KY58Y04M91GQ177Y3NVK6PS6-full-regression-closure-successor
+version: 1
