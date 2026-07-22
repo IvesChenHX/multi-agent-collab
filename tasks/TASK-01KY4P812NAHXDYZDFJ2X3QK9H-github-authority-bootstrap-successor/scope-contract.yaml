@@ -25,7 +25,8 @@ amendment_policy:
   require_independent_approval_for:
   - auth_security
   - production_deploy
-approved_by: []
+approved_by:
+- governance-owner
 base_commit: a5eafdf308401a3b659e8d8f7e49f36c06a83592
 denied_paths: []
 id: SCOPE-01KY4P812NAHXDYZDFJ2X3QK9J
@@ -52,6 +53,6 @@ risk_tags:
 - data_migration
 schema_version: 1
 secret_access: []
-status: proposed
+status: approved
 task_id: TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor
 version: 2

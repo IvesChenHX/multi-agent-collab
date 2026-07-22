@@ -54,11 +54,11 @@ required_gates:
 - rollback_plan
 - rollback_verification
 - evidence_matches_current_commit
-revision: 2
+revision: 3
 runtime_profile: local-multi
 schema_version: 6
 scope_contract_ref: tasks/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/scope-contract.yaml
 state: triage
 terminal: null
 title: GitHub authority bootstrap successor
-updated_at: '2026-07-22T14:14:46.790722Z'
+updated_at: '2026-07-22T14:22:56.545701Z'
