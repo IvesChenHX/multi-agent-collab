@@ -113,6 +113,33 @@ _SUCCESSOR_SCOPE_AMENDMENT_PATHS = (
 _SUCCESSOR_SCOPE_SECOND_AMENDMENT_PATHS = (
     ".github/workflows/ci.yml",
 )
+_SUCCESSOR_PROFILE_ENV = "MAC_AUTHORITY_SUCCESSOR_PROFILE"
+_REGRESSION_SUCCESSOR_PROFILE = "full-regression"
+_REGRESSION_SUCCESSOR_TITLE = "Full regression closure successor"
+_REGRESSION_SUCCESSOR_SCOPE_PATHS = (
+    "src/mac/authority.py",
+    "src/mac/cli.py",
+    "src/mac/git.py",
+    "src/mac/migration.py",
+    "src/mac/repository.py",
+    "src/mac/schema_validation.py",
+    "src/mac/scope.py",
+    "tests/test_event_store.py",
+    "tests/test_examples_v6.py",
+    "tests/test_migration_and_services.py",
+    "tests/test_repair_round4.py",
+    "tests/test_repair_round5_platform.py",
+    "tests/test_schema_validation.py",
+    "tests/test_scope_amendment_and_workflow.py",
+    "tests/operations/test_release_artifacts.py",
+    "examples/v6/**",
+)
+_REGRESSION_SUCCESSOR_OWNERS = (
+    "governance", "platform", "devex", "tests", "examples", "docs",
+)
+_REGRESSION_SUCCESSOR_RISK_TAGS = (
+    "auth_security", "compatibility", "data_migration",
+)
 
 
 class _RejectRedirects(HTTPRedirectHandler):
@@ -915,22 +942,47 @@ def _mutation_verification_policy(values: Mapping[str, str]) -> dict[str, Any]:
 def _successor_create_command(values: Mapping[str, str], repo: Path) -> CreateTask:
     probe = _github_probe_request(values, repo)
     parent_task = probe.task_id
-    command = TaskService(repo).build_create_command(
-        title="GitHub authority bootstrap successor",
-        mode="high_risk",
-        objective=(
+    profile = values.get(_SUCCESSOR_PROFILE_ENV, "bootstrap") or "bootstrap"
+    if profile == "bootstrap":
+        title = "GitHub authority bootstrap successor"
+        objective = (
             "Create the first GitHub-Sigstore-authorized governance successor and "
             "complete the two-phase Mutation Gateway trust loop."
-        ),
-        acceptance=[
+        )
+        acceptance = [
             "Every persisted mutation carries a verified non-secret Sigstore authority bundle.",
             "Scope approval and replay succeed against the exact signed mutation intent.",
             "No OIDC bearer token or GitHub token enters Task, Event, Evidence, logs, or Git.",
             "Governance-sensitive changes receive L2 review before merge.",
-        ],
-        allowed_paths=list(_SUCCESSOR_SCOPE_BASE_PATHS),
+        ]
+        allowed_paths = list(_SUCCESSOR_SCOPE_BASE_PATHS)
+        owners = ["governance", "platform", "security", "devex", "tests", "docs"]
+        risk_tags: list[str] = []
+    elif profile == _REGRESSION_SUCCESSOR_PROFILE:
+        title = _REGRESSION_SUCCESSOR_TITLE
+        objective = (
+            "Close the full cross-platform regression suite while preserving the "
+            "GitHub-Sigstore authority and commit-bound evidence loop."
+        )
+        acceptance = [
+            "The full locked test suite passes on Linux, macOS, and Windows for every supported Python version.",
+            "Trusted repository validation remains green on every CI matrix entry.",
+            "Legacy Scope, migration, Git workspace, LFS, and YAML compatibility regressions are covered test-first.",
+            "All persisted mutations and completion evidence remain bound to approved Scope and the current commit.",
+        ]
+        allowed_paths = list(_REGRESSION_SUCCESSOR_SCOPE_PATHS)
+        owners = list(_REGRESSION_SUCCESSOR_OWNERS)
+        risk_tags = list(_REGRESSION_SUCCESSOR_RISK_TAGS)
+    else:
+        raise ValueError("successor profile is not allowlisted")
+    command = TaskService(repo).build_create_command(
+        title=title,
+        mode="high_risk",
+        objective=objective,
+        acceptance=acceptance,
+        allowed_paths=allowed_paths,
         allowed_operations=["read", "write", "execute_tests", "generate_artifacts"],
-        owners=["governance", "platform", "security", "devex", "tests", "docs"],
+        owners=owners,
         runtime_profile="local-multi",
         required_gates=[
             "targeted_tests", "negative_security_tests", "secret_scan", "scope_guard",
@@ -942,6 +994,7 @@ def _successor_create_command(values: Mapping[str, str], repo: Path) -> CreateTa
             "github-sigstore-task-create:"
             f"{_required_environment(values, 'GITHUB_RUN_ID')}:"
             f"{_required_environment(values, 'GITHUB_RUN_ATTEMPT')}"
+            f"{':' + profile if profile != 'bootstrap' else ''}"
         ),
         parent_task=parent_task,
         supersedes=[parent_task],
@@ -954,6 +1007,7 @@ def _successor_create_command(values: Mapping[str, str], repo: Path) -> CreateTa
         f"tasks/{task_id}/**",
         f"tasks/private/{task_id}/**",
     ]
+    adjusted_scope["risk_tags"] = risk_tags
     return replace(
         command,
         initial_entities=((scope_path, adjusted_scope),),
@@ -971,35 +1025,53 @@ def _successor_scope_approval_command(
     directory = repository.task_dir(task_id)
     task = load_data(directory / "task.yaml")
     scope = load_data(directory / "scope-contract.yaml")
-    expected_paths = [
+    profile = values.get(_SUCCESSOR_PROFILE_ENV, "bootstrap") or "bootstrap"
+    bootstrap_paths = [
         *_SUCCESSOR_SCOPE_BASE_PATHS,
         f"tasks/{task_id}/**",
         f"tasks/private/{task_id}/**",
     ]
+    regression_paths = [
+        *_REGRESSION_SUCCESSOR_SCOPE_PATHS,
+        f"tasks/{task_id}/**",
+        f"tasks/private/{task_id}/**",
+    ]
     version = scope.get("version")
-    exact_scope_version = (
-        version == 1
-        and scope.get("proposed_by") == "governance-owner"
-        and scope.get("allowed_paths") == expected_paths
-        and scope.get("risk_tags") == []
-    ) or (
-        version == 2
-        and scope.get("proposed_by") == "repo-owner"
-        and scope.get("allowed_paths") == [*expected_paths, *_SUCCESSOR_SCOPE_AMENDMENT_PATHS]
-        and scope.get("risk_tags") == ["data_migration"]
-    ) or (
-        version == 3
-        and scope.get("proposed_by") == "repo-owner"
-        and scope.get("allowed_paths") == [
-            *expected_paths,
-            *_SUCCESSOR_SCOPE_AMENDMENT_PATHS,
-            *_SUCCESSOR_SCOPE_SECOND_AMENDMENT_PATHS,
-        ]
-        and scope.get("risk_tags") == ["auth_security", "data_migration"]
-    )
+    if profile == "bootstrap":
+        expected_title = "GitHub authority bootstrap successor"
+        exact_scope_version = (
+            version == 1
+            and scope.get("proposed_by") == "governance-owner"
+            and scope.get("allowed_paths") == bootstrap_paths
+            and scope.get("risk_tags") == []
+        ) or (
+            version == 2
+            and scope.get("proposed_by") == "repo-owner"
+            and scope.get("allowed_paths") == [*bootstrap_paths, *_SUCCESSOR_SCOPE_AMENDMENT_PATHS]
+            and scope.get("risk_tags") == ["data_migration"]
+        ) or (
+            version == 3
+            and scope.get("proposed_by") == "repo-owner"
+            and scope.get("allowed_paths") == [
+                *bootstrap_paths,
+                *_SUCCESSOR_SCOPE_AMENDMENT_PATHS,
+                *_SUCCESSOR_SCOPE_SECOND_AMENDMENT_PATHS,
+            ]
+            and scope.get("risk_tags") == ["auth_security", "data_migration"]
+        )
+    elif profile == _REGRESSION_SUCCESSOR_PROFILE:
+        expected_title = _REGRESSION_SUCCESSOR_TITLE
+        exact_scope_version = (
+            version == 1
+            and scope.get("proposed_by") == "governance-owner"
+            and scope.get("allowed_paths") == regression_paths
+            and scope.get("risk_tags") == list(_REGRESSION_SUCCESSOR_RISK_TAGS)
+        )
+    else:
+        raise ValueError("successor profile is not allowlisted")
     if (
         task.get("id") != task_id
-        or task.get("title") != "GitHub authority bootstrap successor"
+        or task.get("title") != expected_title
         or task.get("mode") != "high_risk"
         or task.get("state") != "triage"
         or type(task.get("revision")) is not int
@@ -1449,11 +1521,28 @@ def _allowlisted_successor_scope_approval(command: AppendEvent) -> bool:
         f"tasks/{task_id}/**",
         f"tasks/private/{task_id}/**",
     ]
-    if version == 2:
+    expected_risk_tags: list[str]
+    if (
+        version == 1
+        and scope.get("allowed_paths") == [
+            *_REGRESSION_SUCCESSOR_SCOPE_PATHS,
+            f"tasks/{task_id}/**",
+            f"tasks/private/{task_id}/**",
+        ]
+    ):
+        expected_paths = list(scope["allowed_paths"])
+        expected_risk_tags = list(_REGRESSION_SUCCESSOR_RISK_TAGS)
+    elif version == 1:
+        expected_risk_tags = []
+    elif version == 2:
         expected_paths.extend(_SUCCESSOR_SCOPE_AMENDMENT_PATHS)
+        expected_risk_tags = ["data_migration"]
     elif version == 3:
         expected_paths.extend(_SUCCESSOR_SCOPE_AMENDMENT_PATHS)
         expected_paths.extend(_SUCCESSOR_SCOPE_SECOND_AMENDMENT_PATHS)
+        expected_risk_tags = ["auth_security", "data_migration"]
+    else:
+        expected_risk_tags = []
     return bool(
         expected_actor
         and command.operation == "scope.approve"
@@ -1471,11 +1560,7 @@ def _allowlisted_successor_scope_approval(command: AppendEvent) -> bool:
         and scope.get("approved_by") == [expected_actor]
         and scope.get("proposed_by") == ("governance-owner" if version == 1 else "repo-owner")
         and scope.get("allowed_paths") == expected_paths
-        and scope.get("risk_tags") == (
-            [] if version == 1
-            else ["data_migration"] if version == 2
-            else ["auth_security", "data_migration"]
-        )
+        and scope.get("risk_tags") == expected_risk_tags
         and approval.get("task_id") == task_id
         and approval.get("kind") == "scope"
         and approval.get("actor") == {"id": expected_actor, "kind": "human"}

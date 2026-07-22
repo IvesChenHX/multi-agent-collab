@@ -30,6 +30,24 @@ from mac.repository import AppendEvent, CreateTask
 
 TASK_ID = "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q"
 SUCCESSOR_TASK_ID = "TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor"
+REGRESSION_SCOPE_PATHS = [
+    "src/mac/authority.py",
+    "src/mac/cli.py",
+    "src/mac/git.py",
+    "src/mac/migration.py",
+    "src/mac/repository.py",
+    "src/mac/schema_validation.py",
+    "src/mac/scope.py",
+    "tests/test_event_store.py",
+    "tests/test_examples_v6.py",
+    "tests/test_migration_and_services.py",
+    "tests/test_repair_round4.py",
+    "tests/test_repair_round5_platform.py",
+    "tests/test_schema_validation.py",
+    "tests/test_scope_amendment_and_workflow.py",
+    "tests/operations/test_release_artifacts.py",
+    "examples/v6/**",
+]
 
 
 def _authority_request() -> AuthorityRequest:
@@ -506,6 +524,135 @@ def test_attested_task_plan_round_trips_one_exact_create_command(
     assert plan["verification_policy"]["source_ref"].endswith(
         "/codex/governance-authority-sigstore"
     )
+
+
+def test_regression_successor_creation_is_exactly_scoped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    task_id = "TASK-01KY58ZZZZZZZZZZZZZZZZZZZZ-full-regression-closure-successor"
+    captured: dict[str, object] = {}
+
+    class FakeTaskService:
+        def __init__(self, repo: Path):
+            assert repo == tmp_path
+
+        def build_create_command(self, **kwargs: object) -> CreateTask:
+            captured.update(kwargs)
+            return CreateTask(
+                task={"id": task_id, "title": kwargs["title"]},
+                initial_entities=((
+                    "scope-contract.yaml",
+                    {
+                        "allowed_paths": list(kwargs["allowed_paths"]),
+                        "risk_tags": [],
+                    },
+                ),),
+                actor_claim=dict(kwargs["actor"]),
+                idempotency_key=str(kwargs["idempotency_key"]),
+                replay_intent={"title": kwargs["title"]},
+            )
+
+    monkeypatch.setattr(governance_pr, "TaskService", FakeTaskService)
+    monkeypatch.setattr(
+        governance_pr,
+        "_github_probe_request",
+        lambda *_: SimpleNamespace(task_id=SUCCESSOR_TASK_ID),
+    )
+    environment = _probe_environment(
+        "refs/heads/codex/governance-authority-sigstore"
+    )
+    environment["MAC_AUTHORITY_SUCCESSOR_PROFILE"] = "full-regression"
+
+    command = governance_pr._successor_create_command(environment, tmp_path)
+
+    assert captured["title"] == "Full regression closure successor"
+    assert captured["mode"] == "high_risk"
+    assert captured["parent_task"] == SUCCESSOR_TASK_ID
+    assert captured["supersedes"] == [SUCCESSOR_TASK_ID]
+    assert captured["allowed_paths"] == REGRESSION_SCOPE_PATHS
+    assert captured["owners"] == [
+        "governance", "platform", "devex", "tests", "examples", "docs",
+    ]
+    assert "independent_review" in captured["required_gates"]
+    assert "evidence_matches_current_commit" in captured["required_gates"]
+    assert command.minimum_independence == "L2"
+    scope = command.initial_entities[0][1]
+    assert scope["allowed_paths"] == [
+        *REGRESSION_SCOPE_PATHS,
+        f"tasks/{task_id}/**",
+        f"tasks/private/{task_id}/**",
+    ]
+    assert scope["risk_tags"] == ["auth_security", "compatibility", "data_migration"]
+
+
+def test_regression_successor_scope_approval_is_exact_and_l2(
+    tmp_path: Path,
+):
+    task_id = "TASK-01KY58ZZZZZZZZZZZZZZZZZZZZ-full-regression-closure-successor"
+    task_dir = tmp_path / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    agents = tmp_path / ".agents"
+    agents.mkdir()
+    (agents / "config.yaml").write_text(
+        yaml.safe_dump({
+            "paths": {"ownership": ".agents/ownership.yaml"},
+            "security": {"governance_sensitive_paths": []},
+        }),
+        encoding="utf-8",
+    )
+    (agents / "ownership.yaml").write_text(
+        yaml.safe_dump({
+            "owners": {
+                "governance": {"approvers": ["governance-owner"]},
+                "platform": {"approvers": ["platform-owner"]},
+                "devex": {"approvers": ["devex-owner"]},
+                "tests": {},
+                "examples": {"approvers": ["platform-owner"]},
+                "docs": {"approvers": ["repo-owner"]},
+            },
+        }),
+        encoding="utf-8",
+    )
+    task = {
+        "id": task_id,
+        "title": "Full regression closure successor",
+        "mode": "high_risk",
+        "state": "triage",
+        "revision": 0,
+        "scope_contract_ref": f"tasks/{task_id}/scope-contract.yaml",
+    }
+    scope = {
+        "id": "SCOPE-01KY58ZZZZZZZZZZZZZZZZZZZZ",
+        "task_id": task_id,
+        "version": 1,
+        "status": "proposed",
+        "proposed_by": "governance-owner",
+        "approved_by": [],
+        "allowed_paths": [
+            *REGRESSION_SCOPE_PATHS,
+            f"tasks/{task_id}/**",
+            f"tasks/private/{task_id}/**",
+        ],
+        "owners": ["governance", "platform", "devex", "tests", "examples", "docs"],
+        "risk_tags": ["auth_security", "compatibility", "data_migration"],
+    }
+    (task_dir / "task.yaml").write_text(yaml.safe_dump(task), encoding="utf-8")
+    (task_dir / "scope-contract.yaml").write_text(yaml.safe_dump(scope), encoding="utf-8")
+    environment = _probe_environment(
+        "refs/heads/codex/governance-authority-sigstore"
+    )
+    environment["MAC_AUTHORITY_PROBE_TASK_ID"] = task_id
+    environment["MAC_AUTHORITY_SUCCESSOR_PROFILE"] = "full-regression"
+
+    command = governance_pr._successor_scope_approval_command(environment, tmp_path)
+
+    assert command.expected_revision == 0
+    assert command.minimum_independence == "L2"
+    assert command.actor_claim == {"id": "repo-owner", "kind": "human"}
+    assert command.payload["approval"]["actor"] == command.actor_claim
+    assert command.payload["approval"]["independence_level"] == "L2"
+    assert command.payload["scope"]["approved_by"] == ["repo-owner"]
 
 
 def test_attested_scope_plan_round_trips_one_exact_approval_command(
@@ -1225,6 +1372,9 @@ def test_governance_workflow_isolates_oidc_from_pull_request_code():
     assert authority["environment"] == "governance-authority"
     assert authority["env"]["MAC_AUTHORITY_REPOSITORY_IDENTITY"] == (
         "github:repository-id:${{ github.repository_id }}"
+    )
+    assert authority["env"]["MAC_AUTHORITY_SUCCESSOR_PROFILE"] == (
+        "${{ inputs.authority_successor_profile || 'bootstrap' }}"
     )
     assert authority["permissions"] == {
         "contents": "read",

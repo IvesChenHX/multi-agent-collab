@@ -22,6 +22,14 @@ on:
       authority_task_id:
         description: One v6 Task identifier to bind to an authority probe
         required: false
+      authority_successor_profile:
+        description: Exact allowlisted successor contract to prepare or approve
+        required: false
+        type: choice
+        options:
+          - bootstrap
+          - full-regression
+        default: bootstrap
       authority_create_successor:
         description: Prepare, sign, and export the first attested successor task mutation
         required: false
@@ -84,6 +92,7 @@ jobs:
     env:
       MAC_AUTHORITY_PROBE_TASK_ID: ${{ inputs.authority_task_id }}
       MAC_AUTHORITY_REPOSITORY_IDENTITY: github:repository-id:${{ github.repository_id }}
+      MAC_AUTHORITY_SUCCESSOR_PROFILE: ${{ inputs.authority_successor_profile || 'bootstrap' }}
     steps:
       - name: Check out the trusted workflow revision
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
