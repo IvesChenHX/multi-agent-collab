@@ -4455,7 +4455,16 @@ class FilesystemTaskRepository:
 
     def find_idempotency(self, key: str) -> tuple[str, dict[str, Any]] | None:
         for task_dir in sorted(path for path in self.tasks_root.glob("TASK-*") if path.is_dir()) if self.tasks_root.is_dir() else []:
-            for event in self.list_events(task_dir.name):
+            records = [
+                (path, load_data(path))
+                for path in sorted((self.task_dir(task_dir.name) / "events").glob("EVT-*.json"))
+            ]
+            if not any(
+                isinstance(event, Mapping) and event.get("idempotency_key") == key
+                for _, event in records
+            ):
+                continue
+            for event in self._validate_event_records(task_dir.name, records):
                 if event.get("idempotency_key") == key:
                     return task_dir.name, event
         return None

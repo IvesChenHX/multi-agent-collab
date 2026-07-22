@@ -13,7 +13,7 @@ from mac.cli import init_command, scope_approve, task_transition
 from mac.errors import MacError
 from mac.events import replay_events
 from mac.handoff import build_handoff_packet
-from mac.io import atomic_write_yaml, load_data
+from mac.io import atomic_write_json, atomic_write_yaml, load_data
 from mac.migration import convert_v5, list_tasks_dual, scan_v5
 from mac.repository import AppendEvent, FilesystemTaskRepository, MutationGateway
 from mac.result import ResultService
@@ -38,6 +38,40 @@ def init_repo(root: Path) -> None:
     atomic_write_yaml(ownership_path, ownership)
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "init"], check=True)
+
+
+def test_create_idempotency_ignores_unrelated_invalid_event_stream(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    service = TaskService(tmp_path)
+    arguments = {
+        "title": "first",
+        "mode": "standard",
+        "objective": "work",
+        "acceptance": ["works"],
+        "allowed_paths": ["src/**"],
+        "owners": ["backend"],
+        "runtime_profile": "local-single",
+        "required_gates": ["targeted_tests"],
+        "actor": {"id": "a", "kind": "agent"},
+        "idempotency_key": "create-first",
+    }
+    first = service.create(**arguments)
+    events = sorted((FilesystemTaskRepository(tmp_path).task_dir(first["task"]["id"]) / "events").glob("EVT-*.json"))
+    event = load_data(events[0])
+    event["payload"].pop("authority")
+    atomic_write_json(events[0], event)
+
+    with pytest.raises(MacError) as matching_retry:
+        service.create(**arguments)
+    assert matching_retry.value.code == "EVENT_AUTHORITY_MISSING"
+
+    second = service.create(**{
+        **arguments,
+        "title": "second",
+        "idempotency_key": "create-second",
+    })
+    assert second["task"]["title"] == "second"
+    assert second["idempotent_replay"] is False
 
 
 def test_task_and_result_services_are_idempotent_and_handoff_is_minimal(tmp_path: Path) -> None:
