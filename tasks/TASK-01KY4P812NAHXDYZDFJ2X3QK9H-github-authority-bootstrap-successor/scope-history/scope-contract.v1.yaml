@@ -15,17 +15,14 @@ allowed_paths:
 - docs/pilot/alpha-close-report.md
 - tasks/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/**
 - tasks/private/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/**
-- src/mac/migration.py
-- tests/test_authorityless_v6_migration.py
-- migration/v6-authorityless/**
-- tasks-v6/**
 amendment_policy:
   max_amendments: 2
   max_paths_per_amendment: 4
   require_independent_approval_for:
   - auth_security
   - production_deploy
-approved_by: []
+approved_by:
+- repo-owner
 base_commit: a5eafdf308401a3b659e8d8f7e49f36c06a83592
 denied_paths: []
 id: SCOPE-01KY4P812NAHXDYZDFJ2X3QK9J
@@ -37,7 +34,7 @@ owners:
 - devex
 - tests
 - docs
-proposed_by: repo-owner
+proposed_by: governance-owner
 required_gates:
 - targeted_tests
 - negative_security_tests
@@ -48,10 +45,9 @@ required_gates:
 - rollback_plan
 - rollback_verification
 - evidence_matches_current_commit
-risk_tags:
-- data_migration
+risk_tags: []
 schema_version: 1
 secret_access: []
-status: proposed
+status: approved
 task_id: TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor
-version: 2
+version: 1
