@@ -73,6 +73,7 @@ jobs:
       attestations: write
     env:
       MAC_AUTHORITY_PROBE_TASK_ID: ${{ inputs.authority_task_id }}
+      MAC_AUTHORITY_REPOSITORY_IDENTITY: github:repository-id:${{ github.repository_id }}
     steps:
       - name: Check out the trusted workflow revision
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

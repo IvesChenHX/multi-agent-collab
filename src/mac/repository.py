@@ -226,6 +226,7 @@ class VerifiedTaskAggregate:
 
 
 MUTATION_AUDIENCE = "mac-mutation-gateway/v1"
+AUTHORITY_REPOSITORY_IDENTITY_ENV = "MAC_AUTHORITY_REPOSITORY_IDENTITY"
 
 
 @dataclass(frozen=True, slots=True)
@@ -721,6 +722,21 @@ del _make_store_guard
 
 
 def _repository_identity(repo: Path) -> str:
+    promoted = os.environ.get(AUTHORITY_REPOSITORY_IDENTITY_ENV, "")
+    if promoted:
+        if (
+            re.fullmatch(r"github:repository-id:[1-9][0-9]{0,19}", promoted) is None
+            or (
+                os.environ.get("GITHUB_ACTIONS", "").lower() != "true"
+                and not os.environ.get("MAC_AUTHORITY_SIGSTORE_BUNDLE")
+            )
+        ):
+            raise MacError(
+                "AUTHORITY_REPOSITORY_IDENTITY_INVALID",
+                "cross-workspace authority identity requires GitHub Actions or a Sigstore bundle",
+                exit_code=ExitCode.SECURITY,
+            )
+        return promoted
     try:
         identity: Mapping[str, Any] = GitRepository(repo).storage_identity()
     except (MacError, OSError, ValueError):

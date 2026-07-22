@@ -45,7 +45,7 @@ from mac.authority import (
 from mac.application.task_service import TaskService
 from mac.errors import MacError
 from mac.git import GitRepository
-from mac.repository import CreateTask, MutationGateway
+from mac.repository import AUTHORITY_REPOSITORY_IDENTITY_ENV, CreateTask, MutationGateway
 
 
 _TASK_DIRECTORY = re.compile(r"^tasks/(?P<directory>TASK-(?P<ulid>[0-9A-HJKMNP-TV-Z]{26})(?:-[^/]+)?)/")
@@ -889,6 +889,19 @@ def github_attested_task_apply_main(
         bundle = _load_json_document(bundle_path, canonical=False, maximum=_MAX_ATTESTATION_BUNDLE_BYTES)
         if set(plan) != {"schema_version", "kind", "command", "request", "intent", "verification_policy"} or plan.get("schema_version") != 1 or plan.get("kind") != "mac.prepared-mutation":
             raise ValueError("prepared mutation plan is invalid")
+        planned_request = plan.get("request")
+        expected_repository_identity = f"github:repository-id:{_EXPECTED_GITHUB_REPOSITORY_ID}"
+        if (
+            not isinstance(planned_request, dict)
+            or planned_request.get("repository_identity") != expected_repository_identity
+        ):
+            raise ValueError("prepared mutation repository identity is invalid")
+        for name, value in {
+            AUTHORITY_REPOSITORY_IDENTITY_ENV: expected_repository_identity,
+            SIGSTORE_BUNDLE_ENV: str(bundle_path.resolve()),
+        }.items():
+            previous[name] = os.environ.get(name)
+            os.environ[name] = value
         command = _deserialize_create_task(plan["command"])
         prepared = MutationGateway(repo).prepare(command)
         if prepared.request.as_dict() != plan.get("request") or dict(prepared.intent) != plan.get("intent"):
@@ -929,7 +942,8 @@ def github_attested_task_apply_main(
                 SIGSTORE_BUNDLE_ENV: str(canonical_bundle),
             }
             for name, value in assignments.items():
-                previous[name] = os.environ.get(name)
+                if name not in previous:
+                    previous[name] = os.environ.get(name)
                 os.environ[name] = value
             result = MutationGateway(repo).execute(command)
         stdout.write(json.dumps({

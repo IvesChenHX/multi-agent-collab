@@ -624,6 +624,9 @@ def test_governance_workflow_isolates_oidc_from_pull_request_code():
     assert "permissions" not in governance
     authority = workflow["jobs"]["authority-probe"]
     assert authority["environment"] == "governance-authority"
+    assert authority["env"]["MAC_AUTHORITY_REPOSITORY_IDENTITY"] == (
+        "github:repository-id:${{ github.repository_id }}"
+    )
     assert authority["permissions"] == {
         "contents": "read",
         "id-token": "write",
