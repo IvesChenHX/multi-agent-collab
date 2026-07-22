@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 TASK_ID = "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready"
-SOURCE_DIGEST = "sha256:fb16d5f46a649a62aa2d041767406049fcde76c70930b638facb13f2af25f039"
+SOURCE_DIGEST = "sha256:0ff1e4d9d93a6bec402610914b7053a0f69b92de397c1ce90b2b12df232fc6a7"
 
 
 def _source_bytes(path: Path) -> dict[str, bytes]:
@@ -80,6 +80,36 @@ def test_cli_scan_classifies_authorityless_v6_history_without_writing() -> None:
         "planned_writes": [],
     }
     assert after == before
+
+
+def test_cli_scan_digest_is_stable_across_git_text_line_endings(tmp_path: Path) -> None:
+    project = Path(__file__).resolve().parents[1]
+    digests: list[str] = []
+
+    for line_ending in (b"\n", b"\r\n"):
+        repo = tmp_path / ("lf" if line_ending == b"\n" else "crlf")
+        source = repo / "tasks" / TASK_ID
+        shutil.copytree(project / "tasks" / TASK_ID, source)
+        for path in sorted(child for child in source.rglob("*") if child.is_file()):
+            canonical = path.read_bytes().replace(b"\r\n", b"\n")
+            path.write_bytes(canonical.replace(b"\n", line_ending))
+
+        scanned = _run_cli(
+            repo,
+            "migrate",
+            "authorityless-v6",
+            "--repo",
+            str(repo),
+            "--task-id",
+            TASK_ID,
+            "--scan",
+            "--json",
+        )
+
+        assert scanned.returncode == 0, scanned.stderr
+        digests.append(json.loads(scanned.stdout)["source_digest"])
+
+    assert digests[0] == digests[1]
 
 
 def test_cli_apply_preserves_source_and_idempotently_records_unverifiable_history(tmp_path: Path) -> None:

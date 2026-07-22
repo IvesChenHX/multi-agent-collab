@@ -31,6 +31,19 @@ def _digest(path: Path) -> str | None:
     return sha256_bytes(path.read_bytes()) if path.is_file() else None
 
 
+def _portable_source_digest(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    content = path.read_bytes()
+    try:
+        content.decode("utf-8")
+    except UnicodeDecodeError:
+        canonical = content
+    else:
+        canonical = content.replace(b"\r\n", b"\n")
+    return sha256_bytes(canonical)
+
+
 def _entity_digest(value: Any) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return sha256_bytes(payload)
@@ -52,7 +65,7 @@ def _directory_digest(path: Path) -> str | None:
     for child in sorted(item for item in path.rglob("*") if item.is_file()):
         manifest.append({
             "path": child.relative_to(path).as_posix(),
-            "digest": _digest(child),
+            "digest": _portable_source_digest(child),
         })
     return _entity_digest(manifest)
 
