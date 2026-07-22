@@ -662,6 +662,118 @@ def test_attested_scope_amend_plan_round_trips_one_exact_command(
     assert json.loads(stdout.getvalue())["operation"] == "scope.amend"
 
 
+def test_attested_v2_scope_approval_uses_a_distinct_authorized_logical_actor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    task_dir = tmp_path / "tasks" / TASK_ID
+    task_dir.mkdir(parents=True)
+    agents = tmp_path / ".agents"
+    agents.mkdir()
+    (agents / "config.yaml").write_text(
+        yaml.safe_dump({
+            "paths": {"ownership": ".agents/ownership.yaml"},
+            "security": {"governance_sensitive_paths": [".github/workflows/*governance*"]},
+        }),
+        encoding="utf-8",
+    )
+    (agents / "ownership.yaml").write_text(
+        yaml.safe_dump({
+            "owners": {
+                "governance": {"approvers": ["governance-owner"]},
+                "platform": {"approvers": ["platform-owner"]},
+                "security": {"approvers": ["security-owner"]},
+                "devex": {"approvers": ["devex-owner"]},
+                "tests": {},
+                "docs": {"approvers": ["repo-owner"]},
+            },
+        }),
+        encoding="utf-8",
+    )
+    base_paths = [
+        "src/mac/authority.py",
+        "src/mac/repository.py",
+        "src/mac/application/task_service.py",
+        "src/mac/cli.py",
+        "scripts/ci/governance_pr.py",
+        ".github/workflows/governance-pr.yml",
+        "tests/operations/test_governance_pr.py",
+        "tests/security/test_authority_commands.py",
+        "docs/pilot/alpha-close-report.md",
+        f"tasks/{TASK_ID}/**",
+        f"tasks/private/{TASK_ID}/**",
+    ]
+    additions = [
+        "src/mac/migration.py",
+        "tests/test_authorityless_v6_migration.py",
+        "migration/v6-authorityless/**",
+        "tasks-v6/**",
+    ]
+    task = {
+        "id": TASK_ID,
+        "title": "GitHub authority bootstrap successor",
+        "mode": "high_risk",
+        "state": "triage",
+        "revision": 2,
+        "scope_contract_ref": f"tasks/{TASK_ID}/scope-contract.yaml",
+    }
+    scope = {
+        "id": "SCOPE-01K0W4Z36K3W5C2R0A3M8N9P7Q",
+        "task_id": TASK_ID,
+        "version": 2,
+        "status": "proposed",
+        "proposed_by": "repo-owner",
+        "approved_by": [],
+        "allowed_paths": [*base_paths, *additions],
+        "owners": ["governance", "platform", "security", "devex", "tests", "docs"],
+        "risk_tags": ["data_migration"],
+    }
+    (task_dir / "task.yaml").write_text(yaml.safe_dump(task), encoding="utf-8")
+    (task_dir / "scope-contract.yaml").write_text(yaml.safe_dump(scope), encoding="utf-8")
+    observed: list[AppendEvent] = []
+
+    class FakeGateway:
+        def __init__(self, _repo: Path):
+            pass
+
+        def prepare(self, command: AppendEvent):
+            observed.append(command)
+            intent = {"schema_version": 1, "task_id": TASK_ID, "operation": command.operation}
+            request = AuthorityRequest(
+                repository_identity="github:repository-id:1290429577",
+                operation=command.operation,
+                task_id=TASK_ID,
+                actor_claim=command.actor_claim,
+                expected_revision=command.expected_revision,
+                idempotency_key=command.idempotency_key,
+                intent_digest=canonical_digest(intent),
+                policy_digest="sha256:" + "1" * 64,
+                ownership_digest="sha256:" + "2" * 64,
+                audience="mac-mutation-gateway/v1",
+            )
+            return SimpleNamespace(request=request, intent=intent, command=command)
+
+    monkeypatch.setattr(governance_pr, "MutationGateway", FakeGateway)
+    monkeypatch.setattr(governance_pr, "_sigstore_trust_environment", lambda: {})
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = github_attested_scope_prepare_main(
+        output_dir=tmp_path / "prepared-v2-approval",
+        repo=tmp_path,
+        stdout=stdout,
+        stderr=stderr,
+        environment=_probe_environment("refs/heads/codex/governance-authority-sigstore"),
+    )
+
+    assert exit_code == 0
+    assert stderr.getvalue() == ""
+    assert len(observed) == 1
+    assert observed[0].actor_claim == {"id": "governance-owner", "kind": "human"}
+    assert observed[0].payload["approval"]["actor"] == observed[0].actor_claim
+    assert observed[0].payload["approval"]["independence_level"] == "L2"
+
+
 def test_github_validation_trust_requires_exact_actions_repository(
     monkeypatch: pytest.MonkeyPatch,
 ):

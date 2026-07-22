@@ -996,7 +996,10 @@ def _successor_scope_approval_command(
         or not exact_scope_version
     ):
         raise ValueError("successor scope is not eligible for protected approval")
-    actor = {"id": "repo-owner", "kind": "human"}
+    actor = {
+        "id": "repo-owner" if version == 1 else "governance-owner",
+        "kind": "human",
+    }
     approval = {
         "schema_version": 1,
         "id": prefixed("APR"),
@@ -1364,6 +1367,50 @@ def _allowlisted_successor_scope_amendment(command: AppendEvent) -> bool:
     )
 
 
+def _allowlisted_successor_scope_approval(command: AppendEvent) -> bool:
+    payload = command.payload
+    scope = payload.get("scope") if isinstance(payload, Mapping) else None
+    approval = payload.get("approval") if isinstance(payload, Mapping) else None
+    if not isinstance(scope, Mapping) or not isinstance(approval, Mapping):
+        return False
+    version = scope.get("version")
+    expected_actor = "repo-owner" if version == 1 else "governance-owner" if version == 2 else ""
+    task_id = command.task_id
+    expected_paths = [
+        *_SUCCESSOR_SCOPE_BASE_PATHS,
+        f"tasks/{task_id}/**",
+        f"tasks/private/{task_id}/**",
+    ]
+    if version == 2:
+        expected_paths.extend(_SUCCESSOR_SCOPE_AMENDMENT_PATHS)
+    return bool(
+        expected_actor
+        and command.operation == "scope.approve"
+        and command.event_type == "scope_approved"
+        and dict(command.actor_claim) == {"id": expected_actor, "kind": "human"}
+        and command.minimum_independence == "L2"
+        and command.replay_intent == {"independence_level_claim": "L2"}
+        and command.idempotency_key.startswith("github-sigstore-scope-approve:")
+        and set(payload) == {"scope_id", "version", "approval_id", "approval", "scope"}
+        and payload.get("scope_id") == scope.get("id")
+        and payload.get("version") == version
+        and payload.get("approval_id") == approval.get("id")
+        and scope.get("task_id") == task_id
+        and scope.get("status") == "approved"
+        and scope.get("approved_by") == [expected_actor]
+        and scope.get("proposed_by") == ("governance-owner" if version == 1 else "repo-owner")
+        and scope.get("allowed_paths") == expected_paths
+        and scope.get("risk_tags") == ([] if version == 1 else ["data_migration"])
+        and approval.get("task_id") == task_id
+        and approval.get("kind") == "scope"
+        and approval.get("actor") == {"id": expected_actor, "kind": "human"}
+        and approval.get("decision") == "approved"
+        and approval.get("independence_level") == "L2"
+        and len(command.replace_existing) == 1
+        and len(command.materializations) == 2
+    )
+
+
 def github_attested_task_apply_main(
     *,
     plan_path: Path,
@@ -1414,12 +1461,7 @@ def github_attested_task_apply_main(
         elif command.operation == "scope.amend":
             if not _allowlisted_successor_scope_amendment(command):
                 raise ValueError("prepared scope amendment is not allowlisted")
-        elif (
-            command.operation != "scope.approve"
-            or command.event_type != "scope_approved"
-            or dict(command.actor_claim) != {"id": "repo-owner", "kind": "human"}
-            or command.minimum_independence != "L2"
-        ):
+        elif not _allowlisted_successor_scope_approval(command):
             raise ValueError("prepared scope mutation is not allowlisted")
         with tempfile.TemporaryDirectory(prefix="mac-attested-task-") as directory:
             canonical_bundle = Path(directory) / "bundle.json"
