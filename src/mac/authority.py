@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +34,19 @@ BROKER_MANIFEST_ENV = "MAC_AUTHORITY_BROKER_MANIFEST_SHA256"
 PUBLIC_KEYRING_ENV = "MAC_AUTHORITY_PUBLIC_KEYRING_B64"
 EXPECTED_ISSUER_ENV = "MAC_AUTHORITY_EXPECTED_ISSUER"
 BROKER_CONTEXT_PREFIX = "MAC_AUTHORITY_BROKER_CONTEXT_"
+SIGSTORE_BUNDLE_ENV = "MAC_AUTHORITY_SIGSTORE_BUNDLE"
+SIGSTORE_PREDICATE_ENV = "MAC_AUTHORITY_SIGSTORE_PREDICATE"
+SIGSTORE_VERIFIER_ARGV_ENV = "MAC_AUTHORITY_SIGSTORE_VERIFIER_ARGV"
+SIGSTORE_VERIFIER_MANIFEST_ENV = "MAC_AUTHORITY_SIGSTORE_VERIFIER_MANIFEST_SHA256"
+SIGSTORE_REPOSITORY_ENV = "MAC_AUTHORITY_SIGSTORE_REPOSITORY"
+SIGSTORE_SIGNER_WORKFLOW_ENV = "MAC_AUTHORITY_SIGSTORE_SIGNER_WORKFLOW"
+SIGSTORE_SOURCE_REF_ENV = "MAC_AUTHORITY_SIGSTORE_SOURCE_REF"
+SIGSTORE_SOURCE_DIGEST_ENV = "MAC_AUTHORITY_SIGSTORE_SOURCE_DIGEST"
+SIGSTORE_PREDICATE_TYPE_ENV = "MAC_AUTHORITY_SIGSTORE_PREDICATE_TYPE"
+SIGSTORE_ENVIRONMENT_ENV = "MAC_AUTHORITY_SIGSTORE_ENVIRONMENT"
+SIGSTORE_OIDC_ISSUER_ENV = "MAC_AUTHORITY_SIGSTORE_OIDC_ISSUER"
+_MAX_SIGSTORE_BUNDLE_BYTES = 8_000_000
+_GIT_OBJECT_ID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -167,6 +181,9 @@ class VerifiedAuthority:
     key_id: str
     signed_payload_json: str
     signed_signature: str
+    store_contract_version: int
+    signed_bundle_json: str | None
+    sigstore_policy_json: str | None
     _verification_marker: object
 
     def __init__(
@@ -187,6 +204,9 @@ class VerifiedAuthority:
         signed_payload_json: str,
         signed_signature: str,
         _seal: object,
+        store_contract_version: int = 2,
+        signed_bundle_json: str | None = None,
+        sigstore_policy_json: str | None = None,
     ) -> None:
         if _seal is not _VERIFIED_SEAL:
             raise TypeError("VerifiedAuthority values are created only by successful broker verification")
@@ -215,6 +235,9 @@ class VerifiedAuthority:
             "key_id": key_id,
             "signed_payload_json": signed_payload_json,
             "signed_signature": signed_signature,
+            "store_contract_version": store_contract_version,
+            "signed_bundle_json": signed_bundle_json,
+            "sigstore_policy_json": sigstore_policy_json,
             "_verification_marker": _VERIFIED_SEAL,
         }
         for name, value in values.items():
@@ -689,9 +712,472 @@ class SubprocessAuthorityAdapter:
             raise _security_error("AUTHORITY_RESPONSE_INVALID", "persisted authority lifetime is invalid", task_id=request.task_id)
 
 
-def current_authority_verifier() -> SubprocessAuthorityAdapter:
+@dataclass(frozen=True, slots=True)
+class _SigstoreVerificationPolicy:
+    repository: str
+    signer_workflow: str
+    source_ref: str
+    source_digest: str
+    predicate_type: str
+    environment: str
+    oidc_issuer: str
+    verifier_manifest: str
+
+    def as_dict(self) -> dict[str, str | int | bool]:
+        return {
+            "schema_version": 1,
+            "repository": self.repository,
+            "signer_workflow": self.signer_workflow,
+            "source_ref": self.source_ref,
+            "source_digest": self.source_digest,
+            "predicate_type": self.predicate_type,
+            "environment": self.environment,
+            "oidc_issuer": self.oidc_issuer,
+            "deny_self_hosted_runners": True,
+            "verifier_manifest": self.verifier_manifest,
+        }
+
+
+def _safe_sigstore_name(value: object, field: str) -> str:
+    result = _safe_text(value, field)
+    if len(result) > 512 or any(character.isspace() for character in result):
+        raise _security_error("AUTHORITY_CONFIGURATION_INVALID", f"authority {field} is invalid")
+    return result
+
+
+def _load_canonical_json_file(path_value: object, *, maximum: int, field: str) -> tuple[dict[str, Any], str]:
+    path = Path(_safe_text(path_value, field))
+    try:
+        raw = path.read_bytes()
+        document = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        raise _security_error("AUTHORITY_CONFIGURATION_INVALID", f"authority {field} is invalid") from None
+    if (
+        not raw
+        or len(raw) > maximum
+        or not isinstance(document, dict)
+        or _canonical_json(document) != raw
+    ):
+        raise _security_error("AUTHORITY_CONFIGURATION_INVALID", f"authority {field} is invalid")
+    return document, raw.decode("utf-8")
+
+
+def _sigstore_policy_from_document(
+    document: Mapping[str, Any],
+    *,
+    verifier_manifest: str,
+) -> _SigstoreVerificationPolicy:
+    required = {
+        "schema_version",
+        "repository",
+        "signer_workflow",
+        "source_ref",
+        "source_digest",
+        "predicate_type",
+        "environment",
+        "oidc_issuer",
+        "deny_self_hosted_runners",
+        "verifier_manifest",
+    }
+    if (
+        set(document) != required
+        or document.get("schema_version") != 1
+        or document.get("deny_self_hosted_runners") is not True
+        or document.get("verifier_manifest") != verifier_manifest
+    ):
+        raise _security_error("AUTHORITY_CONFIGURATION_INVALID", "authority Sigstore policy is invalid")
+    source_digest = str(document.get("source_digest", "")).lower()
+    if _GIT_OBJECT_ID.fullmatch(source_digest) is None:
+        raise _security_error("AUTHORITY_CONFIGURATION_INVALID", "authority Sigstore source digest is invalid")
+    return _SigstoreVerificationPolicy(
+        repository=_safe_sigstore_name(document.get("repository"), "Sigstore repository"),
+        signer_workflow=_safe_sigstore_name(document.get("signer_workflow"), "Sigstore signer workflow"),
+        source_ref=_safe_sigstore_name(document.get("source_ref"), "Sigstore source ref"),
+        source_digest=source_digest,
+        predicate_type=_safe_sigstore_name(document.get("predicate_type"), "Sigstore predicate type"),
+        environment=_safe_sigstore_name(document.get("environment"), "Sigstore environment"),
+        oidc_issuer=_safe_sigstore_name(document.get("oidc_issuer"), "Sigstore OIDC issuer"),
+        verifier_manifest=verifier_manifest,
+    )
+
+
+class SigstoreAuthorityAdapter:
+    """Production Adapter for GitHub Artifact Attestation authority bundles."""
+
+    __slots__ = (
+        "_argv",
+        "_verifier_manifest",
+        "_expected_repository",
+        "_expected_signer_workflow",
+        "_expected_predicate_type",
+        "_expected_environment",
+        "_expected_oidc_issuer",
+        "_live_policy",
+        "_live_bundle",
+        "_live_predicate",
+        "_adapter_marker",
+    )
+
+    def __init__(
+        self,
+        *,
+        argv: tuple[str, ...],
+        verifier_manifest: str,
+        expected_repository: str,
+        expected_signer_workflow: str,
+        expected_predicate_type: str,
+        expected_environment: str,
+        expected_oidc_issuer: str,
+        live_policy: _SigstoreVerificationPolicy | None,
+        live_bundle: Mapping[str, Any] | None,
+        live_predicate: Mapping[str, Any] | None,
+        _seal: object,
+    ) -> None:
+        if _seal is not _ADAPTER_SEAL:
+            raise TypeError("SigstoreAuthorityAdapter must be loaded from the host environment")
+        self._argv = argv
+        self._verifier_manifest = verifier_manifest
+        self._expected_repository = expected_repository
+        self._expected_signer_workflow = expected_signer_workflow
+        self._expected_predicate_type = expected_predicate_type
+        self._expected_environment = expected_environment
+        self._expected_oidc_issuer = expected_oidc_issuer
+        self._live_policy = live_policy
+        self._live_bundle = dict(live_bundle) if live_bundle is not None else None
+        self._live_predicate = dict(live_predicate) if live_predicate is not None else None
+        self._adapter_marker = _ADAPTER_SEAL
+
+    def __init_subclass__(cls, **_: Any) -> NoReturn:
+        raise TypeError("SigstoreAuthorityAdapter is sealed")
+
+    def __repr__(self) -> str:
+        return "SigstoreAuthorityAdapter(configured=True)"
+
+    @classmethod
+    def _configuration(cls) -> tuple[tuple[str, ...], str, dict[str, str]]:
+        raw_argv = os.environ.get(SIGSTORE_VERIFIER_ARGV_ENV)
+        expected_manifest = os.environ.get(SIGSTORE_VERIFIER_MANIFEST_ENV)
+        names = {
+            "repository": SIGSTORE_REPOSITORY_ENV,
+            "signer_workflow": SIGSTORE_SIGNER_WORKFLOW_ENV,
+            "predicate_type": SIGSTORE_PREDICATE_TYPE_ENV,
+            "environment": SIGSTORE_ENVIRONMENT_ENV,
+            "oidc_issuer": SIGSTORE_OIDC_ISSUER_ENV,
+        }
+        values = {key: os.environ.get(name, "") for key, name in names.items()}
+        if not raw_argv or not expected_manifest or not all(values.values()):
+            raise _security_error(
+                "AUTHORITY_CONFIGURATION_MISSING",
+                "trusted Sigstore authority verification configuration is unavailable",
+            )
+        try:
+            decoded_argv = json.loads(raw_argv)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            raise _security_error("AUTHORITY_CONFIGURATION_INVALID", "authority Sigstore verifier is invalid") from None
+        if not isinstance(decoded_argv, list) or not decoded_argv or any(not isinstance(value, str) for value in decoded_argv):
+            raise _security_error("AUTHORITY_CONFIGURATION_INVALID", "authority Sigstore verifier is invalid")
+        resolved, observed = _resolved_command_manifest(decoded_argv)
+        if _DIGEST.fullmatch(expected_manifest) is None or not hmac.compare_digest(observed, expected_manifest):
+            raise _security_error("AUTHORITY_BROKER_MANIFEST_MISMATCH", "authority Sigstore verifier is not host-pinned")
+        return resolved, observed, {
+            key: _safe_sigstore_name(value, f"Sigstore {key}") for key, value in values.items()
+        }
+
+    @classmethod
+    def from_host_environment(cls) -> SigstoreAuthorityAdapter:
+        argv, manifest, values = cls._configuration()
+        bundle, _ = _load_canonical_json_file(
+            os.environ.get(SIGSTORE_BUNDLE_ENV),
+            maximum=_MAX_SIGSTORE_BUNDLE_BYTES,
+            field="Sigstore bundle",
+        )
+        predicate, _ = _load_canonical_json_file(
+            os.environ.get(SIGSTORE_PREDICATE_ENV),
+            maximum=_MAX_BROKER_RESPONSE_BYTES,
+            field="Sigstore predicate",
+        )
+        source_ref = _safe_sigstore_name(os.environ.get(SIGSTORE_SOURCE_REF_ENV), "Sigstore source ref")
+        source_digest = str(os.environ.get(SIGSTORE_SOURCE_DIGEST_ENV, "")).lower()
+        if _GIT_OBJECT_ID.fullmatch(source_digest) is None:
+            raise _security_error("AUTHORITY_CONFIGURATION_INVALID", "authority Sigstore source digest is invalid")
+        policy = _SigstoreVerificationPolicy(
+            repository=values["repository"],
+            signer_workflow=values["signer_workflow"],
+            source_ref=source_ref,
+            source_digest=source_digest,
+            predicate_type=values["predicate_type"],
+            environment=values["environment"],
+            oidc_issuer=values["oidc_issuer"],
+            verifier_manifest=manifest,
+        )
+        return cls(
+            argv=argv,
+            verifier_manifest=manifest,
+            expected_repository=values["repository"],
+            expected_signer_workflow=values["signer_workflow"],
+            expected_predicate_type=values["predicate_type"],
+            expected_environment=values["environment"],
+            expected_oidc_issuer=values["oidc_issuer"],
+            live_policy=policy,
+            live_bundle=bundle,
+            live_predicate=predicate,
+            _seal=_ADAPTER_SEAL,
+        )
+
+    @classmethod
+    def from_trust_environment(cls) -> SigstoreAuthorityAdapter:
+        argv, manifest, values = cls._configuration()
+        return cls(
+            argv=argv,
+            verifier_manifest=manifest,
+            expected_repository=values["repository"],
+            expected_signer_workflow=values["signer_workflow"],
+            expected_predicate_type=values["predicate_type"],
+            expected_environment=values["environment"],
+            expected_oidc_issuer=values["oidc_issuer"],
+            live_policy=None,
+            live_bundle=None,
+            live_predicate=None,
+            _seal=_ADAPTER_SEAL,
+        )
+
+    def _validate_policy(self, policy: _SigstoreVerificationPolicy) -> None:
+        if (
+            policy.repository != self._expected_repository
+            or policy.signer_workflow != self._expected_signer_workflow
+            or policy.predicate_type != self._expected_predicate_type
+            or policy.environment != self._expected_environment
+            or policy.oidc_issuer != self._expected_oidc_issuer
+            or policy.verifier_manifest != self._verifier_manifest
+        ):
+            raise _security_error("AUTHORITY_ISSUER_MISMATCH", "Sigstore authority policy is not trusted")
+
+    def _verify_bundle(
+        self,
+        *,
+        request: AuthorityRequest,
+        predicate: Mapping[str, Any],
+        bundle: Mapping[str, Any],
+        policy: _SigstoreVerificationPolicy,
+        historical: bool,
+    ) -> tuple[Mapping[str, Any], str, str]:
+        self._validate_policy(policy)
+        expected_predicate_keys = {
+            "schema_version", "allowed", "authenticated", "issuer", "actor_id",
+            "actor_kind", "independence_level", "issued_at", "expires_at",
+            "request_digest", "binding_digest", "environment",
+        }
+        if (
+            set(predicate) != expected_predicate_keys
+            or predicate.get("schema_version") != 1
+            or predicate.get("allowed") is not True
+            or predicate.get("authenticated") is not True
+            or predicate.get("issuer") != policy.oidc_issuer
+            or predicate.get("actor_id") != request.actor_claim["id"]
+            or predicate.get("actor_kind") != request.actor_claim["kind"]
+            or predicate.get("request_digest") != request.request_digest
+            or predicate.get("binding_digest") != request.binding_digest
+            or predicate.get("environment") != policy.environment
+        ):
+            raise _security_error("AUTHORITY_BINDING_MISMATCH", "Sigstore authority predicate is not exactly bound", task_id=request.task_id)
+        independence = str(predicate.get("independence_level", ""))
+        if independence not in _LEVEL:
+            raise _security_error("AUTHORITY_RESPONSE_INVALID", "Sigstore authority independence is invalid", task_id=request.task_id)
+        issued = _parse_time(predicate.get("issued_at"), "issued_at", task_id=request.task_id)
+        expires = _parse_time(predicate.get("expires_at"), "expires_at", task_id=request.task_id)
+        now = datetime.now(timezone.utc)
+        if expires <= issued or (not historical and (issued > now + timedelta(seconds=30) or expires <= now)):
+            raise _security_error("AUTHORITY_ATTESTATION_EXPIRED", "Sigstore authority fact is not currently valid", task_id=request.task_id)
+
+        resolved, observed = _resolved_command_manifest(self._argv)
+        if not hmac.compare_digest(observed, self._verifier_manifest):
+            raise _security_error("AUTHORITY_BROKER_MANIFEST_MISMATCH", "authority Sigstore verifier changed", task_id=request.task_id)
+        subject_bytes = _canonical_json(request.as_dict())
+        bundle_bytes = _canonical_json(dict(bundle))
+        with tempfile.TemporaryDirectory(prefix="mac-sigstore-") as directory:
+            root = Path(directory)
+            subject_path = root / "authority-request.json"
+            bundle_path = root / "attestation.json"
+            subject_path.write_bytes(subject_bytes)
+            bundle_path.write_bytes(bundle_bytes)
+            argv = [
+                *resolved,
+                str(subject_path),
+                "--repo", policy.repository,
+                "--bundle", str(bundle_path),
+                "--predicate-type", policy.predicate_type,
+                "--signer-workflow", policy.signer_workflow,
+                "--source-ref", policy.source_ref,
+                "--source-digest", policy.source_digest,
+                "--cert-oidc-issuer", policy.oidc_issuer,
+                "--deny-self-hosted-runners",
+                "--format", "json",
+            ]
+            safe_names = {
+                "COMSPEC", "HOME", "LANG", "LOCALAPPDATA", "PATH", "PATHEXT",
+                "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "WINDIR",
+            }
+            safe_environment = {
+                key: value for key, value in os.environ.items()
+                if key.upper() in safe_names or key.upper().startswith("LC_")
+            }
+            try:
+                completed = subprocess.run(
+                    argv,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    shell=False,
+                    env=safe_environment,
+                    timeout=30,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                raise _security_error("AUTHORITY_BROKER_UNAVAILABLE", "Sigstore verifier invocation failed", task_id=request.task_id) from None
+        if completed.returncode != 0 or len(completed.stdout.encode("utf-8")) > _MAX_SIGSTORE_BUNDLE_BYTES:
+            raise _security_error("AUTHORITY_SIGNATURE_INVALID", "Sigstore authority bundle is invalid", task_id=request.task_id)
+        try:
+            results = json.loads(completed.stdout)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            raise _security_error("AUTHORITY_SIGNATURE_INVALID", "Sigstore verifier output is invalid", task_id=request.task_id) from None
+        if not isinstance(results, list) or not results:
+            raise _security_error("AUTHORITY_SIGNATURE_INVALID", "Sigstore verifier output is invalid", task_id=request.task_id)
+        subject_digest = hashlib.sha256(subject_bytes).hexdigest()
+        matches: list[Mapping[str, Any]] = []
+        for item in results:
+            if not isinstance(item, Mapping):
+                continue
+            result = item.get("verificationResult")
+            if not isinstance(result, Mapping):
+                continue
+            statement = result.get("statement")
+            timestamps = result.get("verifiedTimestamps")
+            subjects = statement.get("subject") if isinstance(statement, Mapping) else None
+            if (
+                isinstance(statement, Mapping)
+                and statement.get("predicateType") == policy.predicate_type
+                and statement.get("predicate") == dict(predicate)
+                and isinstance(timestamps, list)
+                and timestamps
+                and isinstance(subjects, list)
+                and any(
+                    isinstance(candidate, Mapping)
+                    and isinstance(candidate.get("digest"), Mapping)
+                    and candidate["digest"].get("sha256") == subject_digest
+                    for candidate in subjects
+                )
+            ):
+                matches.append(result)
+        if len(matches) != 1:
+            raise _security_error("AUTHORITY_BINDING_MISMATCH", "Sigstore authority bundle does not bind one exact decision", task_id=request.task_id)
+        signature = matches[0].get("signature")
+        certificate = signature.get("certificate") if isinstance(signature, Mapping) else None
+        if not isinstance(certificate, Mapping) or not certificate:
+            raise _security_error("AUTHORITY_SIGNATURE_INVALID", "Sigstore authority certificate is missing", task_id=request.task_id)
+        return matches[0], canonical_digest(dict(certificate)), canonical_digest(dict(bundle))
+
+    def authorize(
+        self,
+        *,
+        request: AuthorityRequest,
+        minimum_independence: str | None = None,
+    ) -> VerifiedAuthority:
+        if (
+            type(self) is not SigstoreAuthorityAdapter
+            or self._adapter_marker is not _ADAPTER_SEAL
+            or self._live_policy is None
+            or self._live_bundle is None
+            or self._live_predicate is None
+        ):
+            raise _security_error("AUTHORITY_VERIFIER_REQUIRED", "a live Sigstore authority bundle is required", task_id=request.task_id)
+        _, trust_digest, bundle_digest = self._verify_bundle(
+            request=request,
+            predicate=self._live_predicate,
+            bundle=self._live_bundle,
+            policy=self._live_policy,
+            historical=False,
+        )
+        independence = str(self._live_predicate["independence_level"])
+        if minimum_independence is not None and not level_at_least(independence, minimum_independence):
+            raise _security_error("ACTOR_AUTHORITY_DENIED", "Sigstore authority does not satisfy required independence", task_id=request.task_id)
+        return VerifiedAuthority(
+            actor_id=str(self._live_predicate["actor_id"]),
+            actor_kind=str(self._live_predicate["actor_kind"]),
+            issuer=str(self._live_predicate["issuer"]),
+            attestation_id=f"sigstore:{bundle_digest}",
+            independence_level=independence,
+            issued_at=str(self._live_predicate["issued_at"]),
+            expires_at=str(self._live_predicate["expires_at"]),
+            request=request,
+            broker_digest=canonical_digest(self._live_policy.as_dict()),
+            trust_digest=trust_digest,
+            signature_algorithm="sigstore-keyless",
+            key_id=bundle_digest,
+            signed_payload_json=_canonical_json(self._live_predicate).decode("utf-8"),
+            signed_signature="",
+            store_contract_version=3,
+            signed_bundle_json=_canonical_json(self._live_bundle).decode("utf-8"),
+            sigstore_policy_json=_canonical_json(self._live_policy.as_dict()).decode("utf-8"),
+            _seal=_VERIFIED_SEAL,
+        )
+
+    def verify_persisted_envelope(
+        self,
+        envelope: Mapping[str, Any],
+        *,
+        request: AuthorityRequest,
+        audit: Mapping[str, Any],
+    ) -> None:
+        if set(envelope) != {"subject", "predicate", "bundle", "verification_policy"}:
+            raise _security_error("AUTHORITY_SIGNATURE_INVALID", "persisted Sigstore envelope is invalid", task_id=request.task_id)
+        subject = envelope.get("subject")
+        predicate = envelope.get("predicate")
+        bundle = envelope.get("bundle")
+        policy_document = envelope.get("verification_policy")
+        if (
+            subject != request.as_dict()
+            or not isinstance(predicate, Mapping)
+            or not isinstance(bundle, Mapping)
+            or not isinstance(policy_document, Mapping)
+        ):
+            raise _security_error("AUTHORITY_BINDING_MISMATCH", "persisted Sigstore envelope is not bound", task_id=request.task_id)
+        policy = _sigstore_policy_from_document(
+            policy_document,
+            verifier_manifest=self._verifier_manifest,
+        )
+        _, trust_digest, bundle_digest = self._verify_bundle(
+            request=request,
+            predicate=predicate,
+            bundle=bundle,
+            policy=policy,
+            historical=True,
+        )
+        expected = {
+            "store_contract_version": 3,
+            "issuer": predicate.get("issuer"),
+            "actor_id": predicate.get("actor_id"),
+            "actor_kind": predicate.get("actor_kind"),
+            "independence_level": predicate.get("independence_level"),
+            "issued_at": predicate.get("issued_at"),
+            "expires_at": predicate.get("expires_at"),
+            "attestation_id": f"sigstore:{bundle_digest}",
+            "broker_digest": canonical_digest(policy.as_dict()),
+            "trust_digest": trust_digest,
+            "signature_algorithm": "sigstore-keyless",
+            "key_id": bundle_digest,
+        }
+        if any(audit.get(key) != value for key, value in expected.items()):
+            raise _security_error("AUTHORITY_BINDING_MISMATCH", "persisted Sigstore audit fact is inconsistent", task_id=request.task_id)
+
+
+ProductionAuthorityAdapter = SubprocessAuthorityAdapter | SigstoreAuthorityAdapter
+
+
+def current_authority_verifier() -> ProductionAuthorityAdapter:
     """Load the production Adapter exclusively from the host environment."""
 
+    if os.environ.get(SIGSTORE_BUNDLE_ENV) or os.environ.get(SIGSTORE_PREDICATE_ENV):
+        return SigstoreAuthorityAdapter.from_host_environment()
     return SubprocessAuthorityAdapter.from_host_environment()
 
 
@@ -705,7 +1191,7 @@ def trusted_authority_verifier(_: object) -> NoReturn:
 
 
 def require_authority(
-    verifier: SubprocessAuthorityAdapter | None,
+    verifier: ProductionAuthorityAdapter | None,
     *,
     request: AuthorityRequest | None = None,
     actor_claim: Mapping[str, Any] | None = None,
@@ -720,7 +1206,7 @@ def require_authority(
     audience: str | None = None,
     minimum_independence: str | None = None,
 ) -> VerifiedAuthority:
-    if type(verifier) is not SubprocessAuthorityAdapter:
+    if type(verifier) not in {SubprocessAuthorityAdapter, SigstoreAuthorityAdapter}:
         raise _security_error(
             "AUTHORITY_VERIFIER_REQUIRED",
             "a host-configured production authority Adapter is required for this mutation",
@@ -765,8 +1251,8 @@ def authority_audit_record(decision: VerifiedAuthority) -> dict[str, Any]:
 
     if type(decision) is not VerifiedAuthority or decision._verification_marker is not _VERIFIED_SEAL:
         raise _security_error("AUTHORITY_FACT_UNVERIFIED", "an unverified authority fact cannot be persisted")
-    return {
-        "store_contract_version": 2,
+    record = {
+        "store_contract_version": decision.store_contract_version,
         "allowed": True,
         "authenticated": True,
         "issuer": decision.issuer,
@@ -791,11 +1277,38 @@ def authority_audit_record(decision: VerifiedAuthority) -> dict[str, Any]:
         "trust_digest": decision.trust_digest,
         "signature_algorithm": decision.signature_algorithm,
         "key_id": decision.key_id,
-        "signed_envelope": {
+    }
+    if decision.store_contract_version == 2:
+        record["signed_envelope"] = {
             "payload": json.loads(decision.signed_payload_json),
             "signature": decision.signed_signature,
-        },
-    }
+        }
+        return record
+    if (
+        decision.store_contract_version == 3
+        and decision.signed_bundle_json is not None
+        and decision.sigstore_policy_json is not None
+    ):
+        record["signed_envelope"] = {
+            "subject": {
+                "schema_version": 1,
+                "repository_identity": decision.repository_identity,
+                "operation": decision.operation,
+                "task_id": decision.task_id,
+                "actor_claim": {"id": decision.actor_id, "kind": decision.actor_kind},
+                "expected_revision": decision.expected_revision,
+                "idempotency_key": decision.idempotency_key,
+                "intent_digest": decision.intent_digest,
+                "policy_digest": decision.policy_digest,
+                "ownership_digest": decision.ownership_digest,
+                "audience": decision.audience,
+            },
+            "predicate": json.loads(decision.signed_payload_json),
+            "bundle": json.loads(decision.signed_bundle_json),
+            "verification_policy": json.loads(decision.sigstore_policy_json),
+        }
+        return record
+    raise _security_error("AUTHORITY_FACT_UNVERIFIED", "authority fact uses an unsupported Store contract")
 
 
 def verify_authority_audit_record(
@@ -811,11 +1324,18 @@ def verify_authority_audit_record(
             "persisted authority fact has no signed broker envelope",
             task_id=request.task_id,
         )
-    SubprocessAuthorityAdapter.from_trust_environment().verify_persisted_envelope(
-        envelope,
-        request=request,
-        audit=audit,
-    )
+    version = audit.get("store_contract_version")
+    if version == 2:
+        verifier: ProductionAuthorityAdapter = SubprocessAuthorityAdapter.from_trust_environment()
+    elif version == 3:
+        verifier = SigstoreAuthorityAdapter.from_trust_environment()
+    else:
+        raise _security_error(
+            "AUTHORITY_VERSION_UNSUPPORTED",
+            "persisted authority fact uses an unsupported Store contract",
+            task_id=request.task_id,
+        )
+    verifier.verify_persisted_envelope(envelope, request=request, audit=audit)
 
 
 def level_at_least(actual: str | None, required: str) -> bool:

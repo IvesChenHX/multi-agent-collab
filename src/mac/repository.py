@@ -325,6 +325,15 @@ class MutationResult:
     value: Mapping[str, Any] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedMutation:
+    """Read-only exact authority request for one snapshotted typed command."""
+
+    request: AuthorityRequest
+    intent: Mapping[str, Any]
+    command: MutationCommand
+
+
 def _plain_mapping(value: Mapping[str, Any] | None, *, field: str) -> dict[str, Any] | None:
     if value is None:
         return None
@@ -3007,10 +3016,10 @@ def _validate_governed_event_contract(
             exit_code=ExitCode.CORRUPTION,
             task_id=task_id or None,
         )
-    if store_contract_version != 2:
+    if store_contract_version not in {2, 3}:
         raise MacError(
             "EVENT_AUTHORITY_VERSION_UNSUPPORTED",
-            "governed Event does not use the current signed Store contract",
+            "governed Event does not use a supported signed Store contract",
             exit_code=ExitCode.CORRUPTION,
             task_id=task_id or None,
         )
@@ -6005,6 +6014,56 @@ class MutationGateway:
     ) -> None:
         self.repo = repo.resolve()
         self.repository = repository or FilesystemTaskRepository(self.repo)
+
+    def prepare(self, command: MutationCommand) -> PreparedMutation:
+        """Freeze and validate an exact mutation request without writing repository state."""
+
+        if type(command) not in {CreateTask, AppendEvent, Transition, Rebuild, RecordCommandEvidence, SubmitResult}:
+            raise MacError(
+                "MUTATION_COMMAND_UNSUPPORTED",
+                "MutationGateway accepts only closed typed commands",
+                exit_code=ExitCode.SECURITY,
+            )
+        snapshot = _snapshot_command(command)
+        if isinstance(snapshot, CreateTask):
+            _validate_create_materializations(snapshot)
+            if snapshot.operation != "task.create":
+                raise MacError(
+                    "MUTATION_OPERATION_INVALID",
+                    "CreateTask requires task.create authority",
+                    exit_code=ExitCode.SECURITY,
+                    task_id=str(snapshot.task.get("id", "")) or None,
+                )
+            task = dict(snapshot.task)
+            task_id = str(task.get("id", ""))
+            if self.repository.task_dir(task_id).exists():
+                raise MacError("TASK_EXISTS", f"task {task_id} already exists", exit_code=ExitCode.CONFLICT)
+        else:
+            events = self.repository.list_events(snapshot.task_id)
+            task = replay_events(events)
+            if int(task.get("revision", -1)) != snapshot.expected_revision:
+                raise MacError(
+                    "REVISION_CONFLICT",
+                    f"expected {snapshot.expected_revision}, current {task.get('revision')}",
+                    exit_code=ExitCode.CONFLICT,
+                    task_id=snapshot.task_id,
+                )
+        task_id = str(snapshot.task["id"]) if isinstance(snapshot, CreateTask) else snapshot.task_id
+        _validate_executable_policy_snapshot(self.repo, task, task_id=task_id)
+        intent = _command_intent(self.repo, snapshot)
+        request = _authority_request_for_command(self.repo, snapshot, task)
+        if request.intent_digest != canonical_digest(intent):
+            raise MacError(
+                "MUTATION_AUTHORITY_BINDING_MISMATCH",
+                "prepared mutation request does not bind its exact intent",
+                exit_code=ExitCode.SECURITY,
+                task_id=task_id,
+            )
+        return PreparedMutation(
+            request=request,
+            intent=deepcopy(intent),
+            command=snapshot,
+        )
 
     def execute(self, command: MutationCommand) -> MutationResult:
         return _GOVERNED_STORE_EXECUTE(self.repository, command)

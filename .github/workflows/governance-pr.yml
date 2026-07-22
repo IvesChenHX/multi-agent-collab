@@ -22,6 +22,11 @@ on:
       authority_task_id:
         description: One v6 Task identifier to bind to an authority probe
         required: false
+      authority_create_successor:
+        description: Prepare, sign, and export the first attested successor task mutation
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -58,7 +63,7 @@ jobs:
           --base "$PR_BASE" --head "$PR_HEAD" --json
 
   authority-probe:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.authority_probe }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.authority_probe || inputs.authority_create_successor) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: governance-authority
@@ -84,12 +89,14 @@ jobs:
       - name: Synchronize dependencies
         run: uv sync --locked
       - name: Prepare the exactly-bound authority probe
+        if: ${{ inputs.authority_probe }}
         run: >-
           uv run --frozen python scripts/ci/governance_pr.py
           --github-attestation-probe-prepare
           --subject "$RUNNER_TEMP/mac-authority-probe.json"
           --predicate "$RUNNER_TEMP/mac-authority-predicate.json"
       - name: Sign the authority probe with GitHub OIDC and Sigstore
+        if: ${{ inputs.authority_probe }}
         id: authority-attestation
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
         with:
@@ -98,9 +105,38 @@ jobs:
           predicate-path: ${{ runner.temp }}/mac-authority-predicate.json
           show-summary: false
       - name: Verify the bundle, signer workflow, source and transparency timestamp
+        if: ${{ inputs.authority_probe }}
         run: >-
           uv run --frozen python scripts/ci/governance_pr.py
           --github-attestation-probe-verify
           --subject "$RUNNER_TEMP/mac-authority-probe.json"
           --predicate "$RUNNER_TEMP/mac-authority-predicate.json"
           --bundle "${{ steps.authority-attestation.outputs.bundle-path }}"
+      - name: Prepare the exact successor task mutation
+        if: ${{ inputs.authority_create_successor }}
+        run: >-
+          uv run --frozen python scripts/ci/governance_pr.py
+          --github-attested-task-prepare
+          --out "$RUNNER_TEMP/mac-attested-task"
+      - name: Sign the successor mutation authority
+        if: ${{ inputs.authority_create_successor }}
+        id: task-attestation
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-path: ${{ runner.temp }}/mac-attested-task/subject.json
+          predicate-type: https://github.com/IvesChenHX/multi-agent-collab/attestations/mutation-authority/v1
+          predicate-path: ${{ runner.temp }}/mac-attested-task/predicate.json
+          show-summary: false
+      - name: Collect the non-secret authority bundle
+        if: ${{ inputs.authority_create_successor }}
+        run: >-
+          cp "${{ steps.task-attestation.outputs.bundle-path }}"
+          "$RUNNER_TEMP/mac-attested-task/bundle.json"
+      - name: Export the prepared mutation for local atomic application
+        if: ${{ inputs.authority_create_successor }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mac-attested-task-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mac-attested-task
+          if-no-files-found: error
+          retention-days: 7

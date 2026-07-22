@@ -127,8 +127,49 @@ def _broker_main() -> int:
     return 0
 
 
+def _sigstore_verifier_main() -> int:
+    try:
+        subject_path = Path(sys.argv[2])
+        bundle_path = Path(sys.argv[sys.argv.index("--bundle") + 1])
+        predicate_type = sys.argv[sys.argv.index("--predicate-type") + 1]
+        subject = subject_path.read_bytes()
+        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+        predicate = bundle["test_predicate"]
+    except (IndexError, KeyError, OSError, ValueError, json.JSONDecodeError):
+        return 2
+    output = [
+        {
+            "attestation": {"bundle": "test"},
+            "verificationResult": {
+                "statement": {
+                    "subject": [{
+                        "name": subject_path.name,
+                        "digest": {"sha256": hashlib.sha256(subject).hexdigest()},
+                    }],
+                    "predicateType": predicate_type,
+                    "predicate": predicate,
+                },
+                "verifiedTimestamps": [{"type": "test-transparency-log"}],
+                "signature": {
+                    "certificate": {
+                        "issuer": "https://token.actions.githubusercontent.com",
+                        "sourceRepository": "IvesChenHX/multi-agent-collab",
+                        "sourceDigest": "a" * 40,
+                    }
+                },
+            },
+        }
+    ]
+    sys.stdout.write(json.dumps(output, separators=(",", ":")))
+    return 0
+
+
 if __name__ == "__main__":
-    raise SystemExit(_broker_main())
+    raise SystemExit(
+        _sigstore_verifier_main()
+        if len(sys.argv) > 1 and sys.argv[1] == "--sigstore-verifier"
+        else _broker_main()
+    )
 
 import pytest
 
@@ -137,7 +178,19 @@ from mac.authority import (
     BROKER_MANIFEST_ENV,
     EXPECTED_ISSUER_ENV,
     PUBLIC_KEYRING_ENV,
+    SIGSTORE_BUNDLE_ENV,
+    SIGSTORE_ENVIRONMENT_ENV,
+    SIGSTORE_OIDC_ISSUER_ENV,
+    SIGSTORE_PREDICATE_ENV,
+    SIGSTORE_PREDICATE_TYPE_ENV,
+    SIGSTORE_REPOSITORY_ENV,
+    SIGSTORE_SIGNER_WORKFLOW_ENV,
+    SIGSTORE_SOURCE_DIGEST_ENV,
+    SIGSTORE_SOURCE_REF_ENV,
+    SIGSTORE_VERIFIER_ARGV_ENV,
+    SIGSTORE_VERIFIER_MANIFEST_ENV,
     AuthorityRequest,
+    SigstoreAuthorityAdapter,
     SubprocessAuthorityAdapter,
     authority_audit_record,
     canonical_digest,
@@ -235,6 +288,54 @@ def _configured_adapter(monkeypatch: pytest.MonkeyPatch) -> SubprocessAuthorityA
     return current_authority_verifier()
 
 
+def _configure_sigstore_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: AuthorityRequest,
+) -> None:
+    now = datetime.now(timezone.utc)
+    predicate = {
+        "schema_version": 1,
+        "allowed": True,
+        "authenticated": True,
+        "issuer": "https://token.actions.githubusercontent.com",
+        "actor_id": request.actor_claim["id"],
+        "actor_kind": request.actor_claim["kind"],
+        "independence_level": "L2",
+        "issued_at": _render_time(now - timedelta(seconds=5)),
+        "expires_at": _render_time(now + timedelta(minutes=5)),
+        "request_digest": request.request_digest,
+        "binding_digest": request.binding_digest,
+        "environment": "governance-authority",
+    }
+    bundle = {
+        "mediaType": "application/vnd.dev.sigstore.bundle+json;version=0.3",
+        "test_predicate": predicate,
+    }
+    predicate_path = tmp_path / "predicate.json"
+    bundle_path = tmp_path / "bundle.json"
+    predicate_path.write_bytes(_canonical_json(predicate))
+    bundle_path.write_bytes(_canonical_json(bundle))
+    argv = [sys.executable, "-I", str(_BROKER), "--sigstore-verifier"]
+    monkeypatch.setenv(SIGSTORE_VERIFIER_ARGV_ENV, json.dumps(argv, separators=(",", ":")))
+    monkeypatch.setenv(SIGSTORE_VERIFIER_MANIFEST_ENV, command_manifest_digest(argv))
+    monkeypatch.setenv(SIGSTORE_REPOSITORY_ENV, "IvesChenHX/multi-agent-collab")
+    monkeypatch.setenv(
+        SIGSTORE_SIGNER_WORKFLOW_ENV,
+        "IvesChenHX/multi-agent-collab/.github/workflows/governance-pr.yml",
+    )
+    monkeypatch.setenv(
+        SIGSTORE_PREDICATE_TYPE_ENV,
+        "https://github.com/IvesChenHX/multi-agent-collab/attestations/mutation-authority/v1",
+    )
+    monkeypatch.setenv(SIGSTORE_ENVIRONMENT_ENV, "governance-authority")
+    monkeypatch.setenv(SIGSTORE_OIDC_ISSUER_ENV, "https://token.actions.githubusercontent.com")
+    monkeypatch.setenv(SIGSTORE_SOURCE_REF_ENV, "refs/heads/master")
+    monkeypatch.setenv(SIGSTORE_SOURCE_DIGEST_ENV, "a" * 40)
+    monkeypatch.setenv(SIGSTORE_PREDICATE_ENV, str(predicate_path))
+    monkeypatch.setenv(SIGSTORE_BUNDLE_ENV, str(bundle_path))
+
+
 def test_missing_host_configuration_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in _HOST_ENV:
         monkeypatch.delenv(name, raising=False)
@@ -289,6 +390,66 @@ def test_successful_response_creates_a_sealed_verified_fact(monkeypatch: pytest.
     assert fact.binding_digest == request.binding_digest
     assert fact.broker_digest.startswith("sha256:")
     assert fact.trust_digest.startswith("sha256:")
+
+
+def test_sigstore_bundle_creates_a_durable_non_secret_authority_fact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _authority_request()
+    _configure_sigstore_authority(tmp_path, monkeypatch, request)
+
+    adapter = current_authority_verifier()
+    assert type(adapter) is SigstoreAuthorityAdapter
+    fact = require_authority(adapter, request=request, minimum_independence="L2")
+    audit = authority_audit_record(fact)
+
+    assert audit["store_contract_version"] == 3
+    assert audit["signature_algorithm"] == "sigstore-keyless"
+    assert audit["actor_id"] == request.actor_claim["id"]
+    assert audit["binding_digest"] == request.binding_digest
+    assert set(audit["signed_envelope"]) == {
+        "subject",
+        "predicate",
+        "bundle",
+        "verification_policy",
+    }
+    rendered = json.dumps(audit, sort_keys=True)
+    assert "ACTIONS_ID_TOKEN_REQUEST_TOKEN" not in rendered
+    assert "GITHUB_TOKEN" not in rendered
+
+    monkeypatch.delenv(SIGSTORE_BUNDLE_ENV)
+    monkeypatch.delenv(SIGSTORE_PREDICATE_ENV)
+    monkeypatch.delenv(SIGSTORE_SOURCE_REF_ENV)
+    monkeypatch.delenv(SIGSTORE_SOURCE_DIGEST_ENV)
+    verify_authority_audit_record(audit, request)
+
+
+def test_sigstore_historical_verification_rejects_predicate_or_bundle_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _authority_request()
+    _configure_sigstore_authority(tmp_path, monkeypatch, request)
+    fact = require_authority(current_authority_verifier(), request=request, minimum_independence="L2")
+    audit = authority_audit_record(fact)
+    monkeypatch.delenv(SIGSTORE_BUNDLE_ENV)
+    monkeypatch.delenv(SIGSTORE_PREDICATE_ENV)
+
+    predicate_drift = copy.deepcopy(audit)
+    predicate_drift["signed_envelope"]["predicate"]["actor_id"] = "attacker"
+    with pytest.raises(MacError) as predicate_error:
+        verify_authority_audit_record(predicate_drift, request)
+    assert predicate_error.value.code in {
+        "AUTHORITY_BINDING_MISMATCH",
+        "AUTHORITY_SIGNATURE_INVALID",
+    }
+
+    bundle_drift = copy.deepcopy(audit)
+    bundle_drift["signed_envelope"]["bundle"]["extra"] = "tampered"
+    with pytest.raises(MacError) as bundle_error:
+        verify_authority_audit_record(bundle_drift, request)
+    assert bundle_error.value.code == "AUTHORITY_BINDING_MISMATCH"
 
 
 @pytest.mark.parametrize(

@@ -33,6 +33,34 @@ class TaskService:
         idempotency_key: str, parent_task: str | None = None, supersedes: list[str] | None = None,
         allowed_operations: list[str] | None = None,
     ) -> dict[str, Any]:
+        command = self.build_create_command(
+            title=title,
+            mode=mode,
+            objective=objective,
+            acceptance=acceptance,
+            allowed_paths=allowed_paths,
+            owners=owners,
+            runtime_profile=runtime_profile,
+            required_gates=required_gates,
+            actor=actor,
+            idempotency_key=idempotency_key,
+            parent_task=parent_task,
+            supersedes=supersedes,
+            allowed_operations=allowed_operations,
+        )
+        created = self.mutations.execute(command)
+        stored_task = dict(created.projection)
+        stored_scope = load_data(self.repository.task_dir(str(stored_task["id"])) / "scope-contract.yaml")
+        return {"task": stored_task, "scope": stored_scope, "idempotent_replay": created.idempotent_replay}
+
+    def build_create_command(
+        self, *, title: str, mode: str, objective: str, acceptance: list[str], allowed_paths: list[str],
+        owners: list[str], runtime_profile: str, required_gates: list[str], actor: dict[str, Any],
+        idempotency_key: str, parent_task: str | None = None, supersedes: list[str] | None = None,
+        allowed_operations: list[str] | None = None,
+    ) -> CreateTask:
+        """Build one immutable task.create command without performing a write."""
+
         if mode not in {"standard", "high_risk", "audit"}:
             raise ValueError("persistent task mode must be standard, high_risk, or audit")
         if not acceptance or not allowed_paths or not owners:
@@ -89,15 +117,10 @@ class TaskService:
             "parent_task": parent_task,
             "supersedes": predecessor_ids,
         }
-        created = self.mutations.execute(
-            CreateTask(
-                task=task,
-                initial_entities=(("scope-contract.yaml", scope),),
-                actor_claim=actor,
-                idempotency_key=idempotency_key,
-                replay_intent=replay_intent,
-            )
+        return CreateTask(
+            task=task,
+            initial_entities=(("scope-contract.yaml", scope),),
+            actor_claim=actor,
+            idempotency_key=idempotency_key,
+            replay_intent=replay_intent,
         )
-        stored_task = dict(created.projection)
-        stored_scope = load_data(self.repository.task_dir(str(stored_task["id"])) / "scope-contract.yaml")
-        return {"task": stored_task, "scope": stored_scope, "idempotent_replay": created.idempotent_replay}
