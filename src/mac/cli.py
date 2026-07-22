@@ -22,7 +22,7 @@ from .git import GitRepository
 from .handoff import build_handoff_packet, write_handoff_packet
 from .ids import is_identifier, prefixed
 from .io import atomic_write_json, atomic_write_text, atomic_write_yaml, load_data
-from .migration import convert_v5, scan_v5
+from .migration import apply_authorityless_v6, convert_v5, scan_authorityless_v6, scan_v5, validate_authorityless_v6_migrations
 from .policy import compile_policy, ownership_source_path, policy_source_paths
 from .report import build_audit_bundle, build_index, render_task_report, verify_audit_bundle
 from .repository import (
@@ -202,7 +202,7 @@ def validate_command(repo: Path = typer.Option(Path("."), "--repo"), schema_dir:
             exit_code=ExitCode.VALIDATION,
             path=str(schema_dir or "schemas.lock.json"),
         ) from exc
-    issues = validate_repository(repo, schemas); payload = {"ok": not any(item.severity == "error" for item in issues), "issues": [item.as_dict() for item in issues]}; _emit(payload, json_output)
+    issues = validate_authorityless_v6_migrations(repo, validate_repository(repo, schemas), schemas); payload = {"ok": not any(item.severity == "error" for item in issues), "issues": [item.as_dict() for item in issues]}; _emit(payload, json_output)
     if not payload["ok"]: raise typer.Exit(ExitCode.VALIDATION)
 
 
@@ -913,6 +913,29 @@ def index_build(repo: Path = typer.Option(Path(".")), out: Optional[Path] = type
 def migrate_v5(repo: Path = typer.Option(Path(".")), scan: bool = typer.Option(False), apply: bool = typer.Option(False), output: Optional[Path] = typer.Option(None), report: Optional[Path] = typer.Option(None), json_output: bool = typer.Option(False, "--json")) -> None:
     payload = scan_v5(repo) if scan and not apply else convert_v5(repo, output=output, dry_run=not apply)
     if report: atomic_write_json(report, payload)
+    _emit({"ok": True, **payload}, json_output)
+
+
+@migrate_app.command("authorityless-v6")
+def migrate_authorityless_v6(task_id: str = typer.Option(..., "--task-id"), repo: Path = typer.Option(Path(".")), scan: bool = typer.Option(False, "--scan"), apply: bool = typer.Option(False, "--apply"), expected_source_digest: Optional[str] = typer.Option(None, "--expected-source-digest"), json_output: bool = typer.Option(False, "--json")) -> None:
+    if scan and apply:
+        raise MacError(
+            "MIGRATION_MODE_CONFLICT",
+            "authorityless v6 migration accepts exactly one of --scan or --apply",
+            exit_code=ExitCode.CLI_USAGE,
+            task_id=task_id,
+        )
+    if scan:
+        payload = scan_authorityless_v6(repo, task_id)
+    elif apply:
+        payload = apply_authorityless_v6(repo, task_id, expected_source_digest=expected_source_digest or "")
+    else:
+        raise MacError(
+            "MIGRATION_MODE_REQUIRED",
+            "authorityless v6 migration requires exactly one of --scan or --apply",
+            exit_code=ExitCode.CLI_USAGE,
+            task_id=task_id,
+        )
     _emit({"ok": True, **payload}, json_output)
 
 

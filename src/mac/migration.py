@@ -7,14 +7,14 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import yaml
 
-from .errors import ExitCode, MacError
-from .ids import prefixed
+from .errors import ExitCode, MacError, MacIssue
+from .ids import is_identifier, prefixed
 from .io import atomic_write_json, atomic_write_yaml, load_data
-from .repository import build_policy_ref, sha256_bytes, utc_now
+from .repository import FilesystemTaskRepository, build_policy_ref, sha256_bytes, utc_now
 from .events import replay_events
 from .schema_validation import SchemaSet
 from .ownership import OwnershipResolver
@@ -55,6 +55,553 @@ def _directory_digest(path: Path) -> str | None:
             "digest": _digest(child),
         })
     return _entity_digest(manifest)
+
+
+def scan_authorityless_v6(repo: Path, task_id: str) -> dict[str, Any]:
+    """Classify one immutable v6 event stream without changing repository state."""
+
+    root = repo.resolve()
+    if not is_identifier(task_id, "TASK"):
+        raise MacError(
+            "MIGRATION_TASK_ID_INVALID",
+            "authorityless v6 migration requires a safe Task identifier",
+            exit_code=ExitCode.SECURITY,
+            task_id=task_id or None,
+        )
+    repository = FilesystemTaskRepository(root)
+    task_dir = repository.task_dir(task_id)
+    if not task_dir.is_dir() or _is_link_like(task_dir):
+        raise MacError(
+            "MIGRATION_SOURCE_INVALID",
+            "authorityless v6 migration source must be a real Task directory",
+            exit_code=ExitCode.SECURITY,
+            path=task_dir.relative_to(root).as_posix(),
+            task_id=task_id,
+        )
+    try:
+        repository.list_events(task_id)
+    except MacError as exc:
+        if exc.code != "EVENT_AUTHORITY_MISSING":
+            raise
+    else:
+        return {
+            "task_id": task_id,
+            "eligible": False,
+            "classification": None,
+            "verification_status": "verified",
+            "reason": None,
+            "source_path": task_dir.relative_to(root).as_posix(),
+            "source_digest": _directory_digest(task_dir),
+            "planned_writes": [],
+        }
+    return {
+        "task_id": task_id,
+        "eligible": True,
+        "classification": "metadata_only",
+        "verification_status": "unverifiable",
+        "reason": "EVENT_AUTHORITY_MISSING",
+        "source_path": task_dir.relative_to(root).as_posix(),
+        "source_digest": _directory_digest(task_dir),
+        "planned_writes": [],
+    }
+
+
+def _authorityless_v6_identity(task_id: str) -> tuple[str, str, str]:
+    source_ulid = task_id.split("-", 2)[1]
+    return (
+        f"TASK-{source_ulid}-legacy",
+        f"SCOPE-{source_ulid}",
+        f"EVT-{source_ulid}",
+    )
+
+
+def _authorityless_v6_result(
+    scanned: dict[str, Any], *, action: str, migrated_task_id: str,
+) -> dict[str, Any]:
+    return {
+        "task_id": scanned["task_id"],
+        "action": action,
+        "classification": scanned["classification"],
+        "verification_status": scanned["verification_status"],
+        "reason": scanned["reason"],
+        "source_path": scanned["source_path"],
+        "source_digest": scanned["source_digest"],
+        "manifest_path": f"migration/v6-authorityless/{scanned['task_id']}.json",
+        "migrated_task_id": migrated_task_id,
+        "migrated_task_path": f"tasks-v6/{migrated_task_id}",
+    }
+
+
+def _authorityless_v6_manifest_matches(
+    manifest: dict[str, Any], scanned: dict[str, Any], migrated_task_id: str,
+) -> bool:
+    expected = {
+        "schema_version": 1,
+        "kind": "authorityless_v6_migration",
+        "source_task_id": scanned["task_id"],
+        "source_path": scanned["source_path"],
+        "source_digest": scanned["source_digest"],
+        "classification": "metadata_only",
+        "verification_status": "unverifiable",
+        "reason": "EVENT_AUTHORITY_MISSING",
+        "migrated_task_id": migrated_task_id,
+        "migrated_task_path": f"tasks-v6/{migrated_task_id}",
+    }
+    return set(manifest) == {*expected, "recorded_at"} and all(
+        manifest.get(key) == value for key, value in expected.items()
+    ) and isinstance(manifest.get("recorded_at"), str)
+
+
+def apply_authorityless_v6(
+    repo: Path, task_id: str, *, expected_source_digest: str,
+) -> dict[str, Any]:
+    """Preserve an authorityless v6 stream and publish an unverifiable record."""
+
+    root = repo.resolve()
+    scanned = scan_authorityless_v6(root, task_id)
+    if not scanned["eligible"]:
+        raise MacError(
+            "MIGRATION_SOURCE_NOT_ELIGIBLE",
+            "v6 history with valid authority must not be downgraded by migration",
+            exit_code=ExitCode.VALIDATION,
+            task_id=task_id,
+        )
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_source_digest or ""):
+        raise MacError(
+            "MIGRATION_SOURCE_DIGEST_REQUIRED",
+            "apply requires the exact source digest returned by --scan",
+            exit_code=ExitCode.CLI_USAGE,
+            task_id=task_id,
+        )
+    if scanned["source_digest"] != expected_source_digest:
+        raise MacError(
+            "MIGRATION_SOURCE_CHANGED",
+            "authorityless v6 source no longer matches the approved scan",
+            exit_code=ExitCode.CONFLICT,
+            task_id=task_id,
+            details={"expected": expected_source_digest, "actual": scanned["source_digest"]},
+        )
+
+    migrated_task_id, scope_id, event_id = _authorityless_v6_identity(task_id)
+    output_root = root / "tasks-v6"
+    migrated_task_dir = output_root / migrated_task_id
+    manifest_root = root / "migration" / "v6-authorityless"
+    manifest_path = manifest_root / f"{task_id}.json"
+    for path, code in (
+        (output_root, "MIGRATION_OUTPUT_UNSAFE"),
+        (manifest_root, "MIGRATION_MANIFEST_UNSAFE"),
+    ):
+        if path.exists() and (_is_link_like(path) or not path.is_dir()):
+            raise MacError(
+                code,
+                "migration output must be a real repository directory",
+                exit_code=ExitCode.SECURITY,
+                path=path.relative_to(root).as_posix(),
+            )
+
+    source_binding = {**scanned, "legacy_id": task_id}
+    output_exists = migrated_task_dir.exists() or _is_link_like(migrated_task_dir)
+    if output_exists and not _existing_output_matches_source(migrated_task_dir, source_binding):
+        raise MacError(
+            "MIGRATION_EXISTING_PROVENANCE_MISMATCH",
+            "existing authorityless migration output does not match the source",
+            exit_code=ExitCode.CORRUPTION,
+            path=migrated_task_dir.relative_to(root).as_posix(),
+            task_id=task_id,
+        )
+    if manifest_path.exists() or _is_link_like(manifest_path):
+        if _is_link_like(manifest_path) or not manifest_path.is_file():
+            raise MacError(
+                "MIGRATION_MANIFEST_UNSAFE",
+                "authorityless migration manifest must be a real file",
+                exit_code=ExitCode.SECURITY,
+                path=manifest_path.relative_to(root).as_posix(),
+            )
+        try:
+            manifest = load_data(manifest_path)
+        except Exception as exc:
+            raise MacError(
+                "MIGRATION_MANIFEST_INVALID",
+                "authorityless migration manifest is not valid structured data",
+                exit_code=ExitCode.CORRUPTION,
+                path=manifest_path.relative_to(root).as_posix(),
+            ) from exc
+        if not output_exists or not _authorityless_v6_manifest_matches(manifest, scanned, migrated_task_id):
+            raise MacError(
+                "MIGRATION_MANIFEST_PROVENANCE_MISMATCH",
+                "authorityless migration manifest is not bound to the current source and output",
+                exit_code=ExitCode.CORRUPTION,
+                path=manifest_path.relative_to(root).as_posix(),
+                task_id=task_id,
+            )
+        return _authorityless_v6_result(scanned, action="unchanged", migrated_task_id=migrated_task_id)
+
+    timestamp = utc_now()
+    if output_exists:
+        try:
+            existing_event = load_data(migrated_task_dir / "events" / f"{event_id}.json")
+        except Exception as exc:
+            raise MacError(
+                "MIGRATION_EXISTING_PROVENANCE_MISMATCH",
+                "existing authorityless migration event is not canonical",
+                exit_code=ExitCode.CORRUPTION,
+                path=migrated_task_dir.relative_to(root).as_posix(),
+                task_id=task_id,
+            ) from exc
+        if (
+            existing_event.get("event_id") != event_id
+            or existing_event.get("event_type") != "legacy_imported"
+            or not isinstance(existing_event.get("occurred_at"), str)
+        ):
+            raise MacError(
+                "MIGRATION_EXISTING_PROVENANCE_MISMATCH",
+                "existing authorityless migration event is not canonical",
+                exit_code=ExitCode.CORRUPTION,
+                path=migrated_task_dir.relative_to(root).as_posix(),
+                task_id=task_id,
+            )
+        timestamp = existing_event["occurred_at"]
+    if not output_exists:
+        source_task = load_data(root / str(scanned["source_path"]) / "task.yaml")
+        source_title = str(source_task.get("title") or task_id)
+        task = {
+            "schema_version": 6,
+            "id": migrated_task_id,
+            "legacy_id": task_id,
+            "title": f"Authorityless v6 history: {source_title}"[:200],
+            "mode": "standard",
+            "state": "failed",
+            "revision": 0,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "objective": "Preserve authorityless v6 metadata without claiming historical verification.",
+            "acceptance_criteria": [{
+                "id": "AC-001",
+                "text": "Preserve source metadata and classify historical verification as unverifiable.",
+                "required": False,
+            }],
+            "policy_ref": source_task["policy_ref"],
+            "ownership_ref": source_task["ownership_ref"],
+            "scope_contract_ref": f"tasks-v6/{migrated_task_id}/scope-contract.yaml",
+            "runtime_profile": "legacy-import",
+            "required_gates": [],
+            "active_controller": None,
+            "relationships": {"parent_task": None, "supersedes": [], "superseded_by": None},
+            "legacy_integrity": "metadata_only",
+            "terminal": {
+                "closed_at": timestamp,
+                "closed_by": "migration-automation",
+                "summary": "Authorityless v6 history retained as unverifiable metadata.",
+            },
+        }
+        scope = {
+            "schema_version": 1,
+            "id": scope_id,
+            "task_id": migrated_task_id,
+            "version": 1,
+            "status": "approved",
+            "proposed_by": "migration-automation",
+            "approved_by": ["migration-automation"],
+            "allowed_paths": ["legacy-unverifiable/**"],
+            "denied_paths": [],
+            "allowed_operations": ["read"],
+            "owners": ["legacy-unassigned"],
+            "risk_tags": ["legacy_unverifiable"],
+            "required_gates": [],
+            "network_access": "none",
+            "secret_access": [],
+            "amendment_policy": {
+                "max_amendments": 0,
+                "max_paths_per_amendment": 1,
+                "require_independent_approval_for": [],
+            },
+        }
+        event = {
+            "schema_version": 1,
+            "event_id": event_id,
+            "task_id": migrated_task_id,
+            "event_type": "legacy_imported",
+            "occurred_at": timestamp,
+            "actor": {"id": "migration-automation", "kind": "automation"},
+            "run_id": None,
+            "expected_revision": -1,
+            "new_revision": 0,
+            "idempotency_key": f"authorityless-v6-import:{task_id}:{expected_source_digest}",
+            "payload": {
+                "task": task,
+                "legacy_id": task_id,
+                "legacy_status": source_task.get("state"),
+                "integrity": "metadata_only",
+                "verification_status": "unverifiable",
+                "source_path": scanned["source_path"],
+                "source_digest": scanned["source_digest"],
+            },
+        }
+        projection = replay_events([event])
+        schemas = SchemaSet()
+        issues = [
+            *schemas.validate(projection, "task.schema.json", path=f"{migrated_task_id}/task.yaml"),
+            *schemas.validate(scope, "scope-contract.schema.json", path=f"{migrated_task_id}/scope-contract.yaml"),
+            *schemas.validate(event, "event.schema.json", path=f"{migrated_task_id}/events/{event_id}.json"),
+        ]
+        if issues:
+            raise MacError(
+                "MIGRATION_OUTPUT_INVALID",
+                "authorityless migration output does not satisfy v6 schemas",
+                exit_code=ExitCode.CORRUPTION,
+                details={"issues": [item.as_dict() for item in issues]},
+            )
+
+        staging_root = root / f".m-{prefixed('TXN').split('-', 1)[1]}.tmp"
+        staged_task = staging_root
+        published = False
+        try:
+            staged_task.mkdir(exist_ok=False)
+            atomic_write_json(staged_task / "events" / f"{event_id}.json", event)
+            atomic_write_yaml(staged_task / "scope-contract.yaml", scope)
+            atomic_write_yaml(staged_task / "task.yaml", projection)
+            rescanned = scan_authorityless_v6(root, task_id)
+            if rescanned["source_digest"] != expected_source_digest:
+                raise MacError(
+                    "MIGRATION_SOURCE_CHANGED",
+                    "authorityless v6 source changed before publication",
+                    exit_code=ExitCode.CONFLICT,
+                    task_id=task_id,
+                )
+            output_root.mkdir(parents=True, exist_ok=True)
+            if migrated_task_dir.exists() or _is_link_like(migrated_task_dir):
+                raise MacError(
+                    "MIGRATION_OUTPUT_CONFLICT",
+                    "authorityless migration output appeared during publication",
+                    exit_code=ExitCode.CONFLICT,
+                    path=migrated_task_dir.relative_to(root).as_posix(),
+                )
+            os.replace(staged_task, migrated_task_dir)
+            published = True
+        except BaseException:
+            if published and _existing_output_matches_source(migrated_task_dir, source_binding):
+                shutil.rmtree(migrated_task_dir)
+            raise
+        finally:
+            if staging_root.is_dir() and not _is_link_like(staging_root):
+                shutil.rmtree(staging_root)
+
+    manifest = {
+        "schema_version": 1,
+        "kind": "authorityless_v6_migration",
+        "source_task_id": task_id,
+        "source_path": scanned["source_path"],
+        "source_digest": scanned["source_digest"],
+        "classification": "metadata_only",
+        "verification_status": "unverifiable",
+        "reason": "EVENT_AUTHORITY_MISSING",
+        "migrated_task_id": migrated_task_id,
+        "migrated_task_path": f"tasks-v6/{migrated_task_id}",
+        "recorded_at": timestamp,
+    }
+    atomic_write_json(manifest_path, manifest)
+    return _authorityless_v6_result(scanned, action="created", migrated_task_id=migrated_task_id)
+
+
+def _authorityless_v6_warning(manifest: Mapping[str, Any]) -> MacIssue:
+    task_id = str(manifest["source_task_id"])
+    return MacIssue(
+        "LEGACY_TASK_UNVERIFIABLE",
+        "authorityless v6 history is preserved as metadata and cannot prove historical verification",
+        str(manifest["source_path"]),
+        severity="warning",
+        task_id=task_id,
+        details={
+            "source_format": "v6",
+            "legacy_integrity": "metadata_only",
+            "verification_status": "unverifiable",
+            "reason": "EVENT_AUTHORITY_MISSING",
+            "source_digest": manifest["source_digest"],
+            "migration_record": f"migration/v6-authorityless/{task_id}.json",
+            "migrated_task_id": manifest["migrated_task_id"],
+        },
+    )
+
+
+def validate_authorityless_v6_migrations(
+    repo: Path,
+    issues: list[MacIssue],
+    schema_set: SchemaSet,
+) -> list[MacIssue]:
+    """Replace only an exactly-bound authority error with an unverifiable warning."""
+
+    root = repo.resolve()
+    result = list(issues)
+    manifest_root = root / "migration" / "v6-authorityless"
+    if not manifest_root.exists():
+        return result
+    if not manifest_root.is_dir() or _is_link_like(manifest_root):
+        result.append(MacIssue(
+            "MIGRATION_MANIFEST_UNSAFE",
+            "authorityless migration manifest root must be a real repository directory",
+            "migration/v6-authorityless",
+        ))
+        return result
+    trusted_schemas = schema_set if type(schema_set) is SchemaSet else SchemaSet()
+    recognized: set[str] = set()
+    for manifest_path in sorted(manifest_root.iterdir()):
+        relative_manifest = manifest_path.relative_to(root).as_posix()
+        if (
+            manifest_path.suffix != ".json"
+            or not manifest_path.is_file()
+            or _is_link_like(manifest_path)
+        ):
+            result.append(MacIssue(
+                "MIGRATION_MANIFEST_UNSAFE",
+                "authorityless migration manifest entries must be real JSON files",
+                relative_manifest,
+            ))
+            continue
+        try:
+            manifest = load_data(manifest_path)
+        except Exception as exc:
+            result.append(MacIssue("MIGRATION_MANIFEST_INVALID", str(exc), relative_manifest))
+            continue
+        task_id = str(manifest.get("source_task_id", ""))
+        if task_id in recognized:
+            result.append(MacIssue(
+                "MIGRATION_MANIFEST_DUPLICATE",
+                "authorityless v6 source has more than one migration manifest",
+                relative_manifest,
+                task_id=task_id or None,
+            ))
+            continue
+        try:
+            scanned = scan_authorityless_v6(root, task_id)
+        except MacError as exc:
+            result.append(MacIssue(
+                exc.code,
+                str(exc),
+                exc.issue.path or f"tasks/{task_id}",
+                task_id=exc.issue.task_id or task_id or None,
+                details=exc.issue.details,
+            ))
+            continue
+        migrated_task_id, _scope_id, event_id = _authorityless_v6_identity(task_id)
+        if scanned["source_digest"] != manifest.get("source_digest"):
+            result.append(MacIssue(
+                "MIGRATION_SOURCE_CHANGED",
+                "authorityless v6 source no longer matches its migration record",
+                str(scanned["source_path"]),
+                task_id=task_id,
+                details={"expected": manifest.get("source_digest"), "actual": scanned["source_digest"]},
+            ))
+            continue
+        if not _authorityless_v6_manifest_matches(manifest, scanned, migrated_task_id):
+            result.append(MacIssue(
+                "MIGRATION_MANIFEST_PROVENANCE_MISMATCH",
+                "authorityless migration manifest is not canonical",
+                relative_manifest,
+                task_id=task_id or None,
+            ))
+            continue
+        migrated_dir = root / "tasks-v6" / migrated_task_id
+        expected_files = {
+            "task.yaml",
+            "scope-contract.yaml",
+            f"events/{event_id}.json",
+        }
+        actual_files = {
+            child.relative_to(migrated_dir).as_posix()
+            for child in migrated_dir.rglob("*")
+            if child.is_file() and not _is_link_like(child)
+        } if migrated_dir.is_dir() and not _is_link_like(migrated_dir) else set()
+        if actual_files != expected_files or not _existing_output_matches_source(
+            migrated_dir, {**scanned, "legacy_id": task_id},
+        ):
+            result.append(MacIssue(
+                "MIGRATION_OUTPUT_INVALID",
+                "authorityless migration output is missing, unsafe, or not bound to its source",
+                f"tasks-v6/{migrated_task_id}",
+                task_id=task_id,
+            ))
+            continue
+        output_issues: list[MacIssue] = []
+        for filename, schema_name in (
+            ("task.yaml", "task.schema.json"),
+            ("scope-contract.yaml", "scope-contract.schema.json"),
+            (f"events/{event_id}.json", "event.schema.json"),
+        ):
+            output_issues.extend(trusted_schemas.validate_file(
+                migrated_dir / filename,
+                schema_name,
+                root=root,
+            ))
+        if output_issues:
+            result.extend(output_issues)
+            continue
+        try:
+            migrated_task = load_data(migrated_dir / "task.yaml")
+            migrated_scope = load_data(migrated_dir / "scope-contract.yaml")
+            migrated_event = load_data(migrated_dir / "events" / f"{event_id}.json")
+            projection = replay_events([migrated_event])
+        except Exception as exc:
+            result.append(MacIssue(
+                "MIGRATION_OUTPUT_INVALID",
+                str(exc),
+                f"tasks-v6/{migrated_task_id}",
+                task_id=task_id,
+            ))
+            continue
+        payload = migrated_event.get("payload")
+        structurally_bound = bool(
+            isinstance(payload, Mapping)
+            and set(payload) == {
+                "task", "legacy_id", "legacy_status", "integrity",
+                "verification_status", "source_path", "source_digest",
+            }
+            and migrated_task == projection
+            and migrated_event.get("event_id") == event_id
+            and migrated_event.get("task_id") == migrated_task_id
+            and migrated_event.get("event_type") == "legacy_imported"
+            and migrated_event.get("actor") == {"id": "migration-automation", "kind": "automation"}
+            and migrated_event.get("run_id") is None
+            and migrated_event.get("expected_revision") == -1
+            and migrated_event.get("new_revision") == 0
+            and migrated_event.get("occurred_at") == manifest.get("recorded_at")
+            and migrated_task.get("legacy_id") == task_id
+            and migrated_task.get("legacy_integrity") == "metadata_only"
+            and migrated_task.get("state") == "failed"
+            and migrated_task.get("scope_contract_ref") == f"tasks-v6/{migrated_task_id}/scope-contract.yaml"
+            and migrated_scope.get("task_id") == migrated_task_id
+            and migrated_scope.get("allowed_operations") == ["read"]
+            and payload.get("task") == migrated_task
+            and payload.get("legacy_id") == task_id
+            and payload.get("integrity") == "metadata_only"
+            and payload.get("verification_status") == "unverifiable"
+            and payload.get("source_path") == scanned["source_path"]
+            and payload.get("source_digest") == scanned["source_digest"]
+        )
+        task_errors = [
+            item for item in result
+            if item.task_id == task_id and item.severity == "error"
+        ]
+        if not structurally_bound or not task_errors or any(
+            item.code != "EVENT_AUTHORITY_MISSING" for item in task_errors
+        ):
+            result.append(MacIssue(
+                "MIGRATION_OUTPUT_PROVENANCE_MISMATCH",
+                "authorityless migration cannot replace errors beyond the exact missing-authority condition",
+                f"tasks-v6/{migrated_task_id}",
+                task_id=task_id,
+            ))
+            continue
+        result = [
+            item for item in result
+            if not (
+                item.task_id == task_id
+                and item.severity == "error"
+                and item.code == "EVENT_AUTHORITY_MISSING"
+            )
+        ]
+        result.append(_authorityless_v6_warning(manifest))
+        recognized.add(task_id)
+    return result
 
 
 def _verify_sources(root: Path, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
