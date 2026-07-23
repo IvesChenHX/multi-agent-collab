@@ -912,6 +912,7 @@ def _bind_run_registration_facts(
     payload: dict[str, Any],
     materializations: list[tuple[Path, dict[str, Any]]],
     occurred_at: str,
+    verified: VerifiedAuthority,
 ) -> tuple[dict[str, Any], list[tuple[Path, dict[str, Any]]], str | None]:
     """Replace caller-reported Run Git facts with Store-derived values."""
 
@@ -933,6 +934,7 @@ def _bind_run_registration_facts(
         payload,
         runtime,
         require_current_checkout=True,
+        verified=verified,
     )
     if portable:
         if not portable_valid:
@@ -1013,6 +1015,7 @@ def _portable_run_binding_valid(
     *,
     require_current_checkout: bool,
     expected_repository_identity: str | None = None,
+    verified: VerifiedAuthority | None = None,
 ) -> tuple[bool, bool]:
     """Validate the path-independent form of a Run registration binding."""
 
@@ -1049,22 +1052,44 @@ def _portable_run_binding_valid(
         return True, False
     try:
         git = GitRepository(repo)
+        verified_source_subject = False
+        if (
+            verified is not None
+            and verified.signature_algorithm == "sigstore-keyless"
+            and verified.signed_bundle_json is not None
+            and verified.sigstore_policy_json is not None
+            and verified.repository_identity == repository_identity
+        ):
+            sigstore_policy = json.loads(verified.sigstore_policy_json)
+            verified_source_subject = (
+                isinstance(sigstore_policy, Mapping)
+                and sigstore_policy.get("repository_identity")
+                == repository_identity
+                and sigstore_policy.get("source_ref") == source_ref
+                and sigstore_policy.get("source_digest")
+                == baseline_subject.get("commit_sha")
+            )
+        use_frozen_source_subject = (
+            not require_current_checkout
+            or verified_source_subject
+        )
+        frozen_source_subject = {
+            "type": "commit",
+            "commit_sha": str(
+                binding.get("source_ref_commit_sha", "")
+            ),
+            "tree_sha": str(
+                binding.get("source_ref_tree_sha", "")
+            ),
+        }
         checks = git.portable_run_binding_checks(
             approved_base=str(scope.get("base_commit", "")),
             baseline_subject=baseline_subject,
-            source_ref=source_ref if require_current_checkout else None,
+            source_ref=source_ref,
             source_ref_subject=(
-                None
-                if require_current_checkout
-                else {
-                    "type": "commit",
-                    "commit_sha": str(
-                        binding.get("source_ref_commit_sha", "")
-                    ),
-                    "tree_sha": str(
-                        binding.get("source_ref_tree_sha", "")
-                    ),
-                }
+                frozen_source_subject
+                if use_frozen_source_subject
+                else None
             ),
         )
         expected_identity = {
@@ -1377,6 +1402,7 @@ def _validate_append_semantics(
             payload,
             runtime,
             require_current_checkout=True,
+            verified=verified,
         )
         if not portable:
             run_root = Path(str(runtime.get("worktree") or repo)).resolve()
@@ -5417,6 +5443,7 @@ class FilesystemTaskRepository:
                 payload,
                 bound_materializations,
                 occurred_at,
+                verified_authority,
             )
             payload, bound_materializations, _ = _bind_run_finish_facts(
                 self.repo,

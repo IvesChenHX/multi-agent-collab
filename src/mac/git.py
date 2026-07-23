@@ -174,6 +174,8 @@ class GitRepository:
                 checks["baseline_reachable_from_source_ref"] = False
                 if source_ref is not None:
                     self._run("check-ref-format", source_ref)
+                if source_ref_subject is None:
+                    assert source_ref is not None
                     source = self.commit_subject(source_ref)
                 else:
                     source = self.commit_subject(

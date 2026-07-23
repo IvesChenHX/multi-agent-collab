@@ -1264,17 +1264,6 @@ def test_execution_bootstrap_third_round_registers_a_portable_run(
         text=True,
         capture_output=True,
     ).stdout.strip()
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(tmp_path),
-            "branch",
-            "codex/governance-authority-sigstore",
-            head,
-        ],
-        check=True,
-    )
     task_id = "TASK-01KY58ZZZZZZZZZZZZZZZZZZZZ-full-regression-closure-successor"
     task, scope = _successor_documents(
         task_id,
@@ -1432,17 +1421,6 @@ def test_portable_run_plan_deserializes_and_is_allowlisted_in_another_worktree(
         text=True,
         capture_output=True,
     ).stdout.strip()
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(source),
-            "branch",
-            "codex/governance-authority-sigstore",
-            head,
-        ],
-        check=True,
-    )
     subprocess.run(
         ["git", "-C", str(source), "worktree", "add", "--detach", str(linked), head],
         check=True,
@@ -1889,8 +1867,9 @@ def test_execution_apply_installs_historical_sigstore_trust_before_allowlist(
         audience="mac-mutation-gateway/v1",
     )
     policy = {
-        "schema_version": 1,
+        "schema_version": 2,
         "repository": "IvesChenHX/multi-agent-collab",
+        "repository_identity": "github:repository-id:1290429577",
         "signer_workflow": (
             "IvesChenHX/multi-agent-collab/"
             ".github/workflows/governance-pr.yml"
@@ -2281,6 +2260,7 @@ def test_github_trusted_validate_requires_exact_host_and_restores_environment(
         governance_pr.SIGSTORE_VERIFIER_ARGV_ENV,
         governance_pr.SIGSTORE_VERIFIER_MANIFEST_ENV,
         governance_pr.SIGSTORE_REPOSITORY_ENV,
+        governance_pr.SIGSTORE_REPOSITORY_IDENTITY_ENV,
         governance_pr.SIGSTORE_SIGNER_WORKFLOW_ENV,
         governance_pr.SIGSTORE_PREDICATE_TYPE_ENV,
         governance_pr.SIGSTORE_ENVIRONMENT_ENV,
@@ -2298,6 +2278,9 @@ def test_github_trusted_validate_requires_exact_host_and_restores_environment(
         assert governance_pr.os.environ[
             governance_pr.SIGSTORE_REPOSITORY_ENV
         ] == "IvesChenHX/multi-agent-collab"
+        assert governance_pr.os.environ[
+            governance_pr.SIGSTORE_REPOSITORY_IDENTITY_ENV
+        ] == "github:repository-id:1290429577"
         return {
             "argv": argv,
             "exit_code": 0,
@@ -2532,8 +2515,9 @@ def test_attested_task_apply_revalidates_plan_before_atomic_execution(
         "request": request.as_dict(),
         "intent": intent,
         "verification_policy": {
-            "schema_version": 1,
+            "schema_version": 2,
             "repository": "IvesChenHX/multi-agent-collab",
+            "repository_identity": "github:repository-id:1290429577",
             "signer_workflow": "IvesChenHX/multi-agent-collab/.github/workflows/governance-pr.yml",
             "source_ref": "refs/heads/codex/governance-authority-sigstore",
             "source_digest": "a" * 40,
@@ -2668,8 +2652,9 @@ def test_attested_apply_accepts_only_the_exact_ready_transition(
         "request": request.as_dict(),
         "intent": intent,
         "verification_policy": {
-            "schema_version": 1,
+            "schema_version": 2,
             "repository": "IvesChenHX/multi-agent-collab",
+            "repository_identity": "github:repository-id:1290429577",
             "signer_workflow": "IvesChenHX/multi-agent-collab/.github/workflows/governance-pr.yml",
             "source_ref": "refs/heads/codex/governance-authority-sigstore",
             "source_digest": "a" * 40,
@@ -2888,8 +2873,9 @@ def test_attested_apply_accepts_only_the_exact_scope_amendment(
         "request": request.as_dict(),
         "intent": intent,
         "verification_policy": {
-            "schema_version": 1,
+            "schema_version": 2,
             "repository": "IvesChenHX/multi-agent-collab",
+            "repository_identity": "github:repository-id:1290429577",
             "signer_workflow": "IvesChenHX/multi-agent-collab/.github/workflows/governance-pr.yml",
             "source_ref": "refs/heads/codex/governance-authority-sigstore",
             "source_digest": "a" * 40,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 import json
@@ -41,7 +42,11 @@ from mac.repository import build_policy_ref
 from mac.io import atomic_write_json, load_data
 from mac.policy import ownership_source_path, policy_source_paths
 from mac.state_machine import TransitionContext
-from tests.security.test_authority_commands import configure_test_authority, remove_test_authority
+from tests.security.test_authority_commands import (
+    _configure_sigstore_authority,
+    configure_test_authority,
+    remove_test_authority,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1015,17 +1020,13 @@ def test_portable_run_event_replays_after_head_moves_and_in_another_worktree(
     )
 
     source_ref = "refs/heads/codex/portable-run"
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "branch", "codex/portable-run", "HEAD"],
-        check=True,
-    )
     git = GitRepository(tmp_path)
     baseline_subject = git.commit_subject("HEAD")
     scope = load_data(repository.task_dir(task_id) / "scope-contract.yaml")
     binding_checks = git.portable_run_binding_checks(
         approved_base=str(scope["base_commit"]),
         baseline_subject=baseline_subject,
-        source_ref=source_ref,
+        source_ref_subject=baseline_subject,
     )
     work_unit_path = (
         repository.task_dir(task_id) / "work-units" / f"{work_unit_id}.yaml"
@@ -1099,7 +1100,63 @@ def test_portable_run_event_replays_after_head_moves_and_in_another_worktree(
     )
 
     gateway = MutationGateway(tmp_path, repository=repository)
+    with pytest.raises(MacError) as unsigned:
+        gateway.execute(command)
+    assert unsigned.value.code == "MUTATION_RUN_PORTABLE_BINDING_INVALID"
+
+    revision_payload = deepcopy(command.payload)
+    revision_source_ref = f"{source_ref}~0"
+    revision_payload["worktree_identity"]["source_ref"] = revision_source_ref
+    revision_payload["repository_binding"]["source_ref"] = revision_source_ref
+    revision_command = replace(command, payload=revision_payload)
+    revision_prepared = gateway.prepare(revision_command)
+    authority_dir = tmp_path.parent / f"{tmp_path.name}-authority"
+    authority_dir.mkdir()
+    _configure_sigstore_authority(
+        authority_dir,
+        monkeypatch,
+        revision_prepared.request,
+        source_ref=revision_source_ref,
+        source_digest=str(baseline_subject["commit_sha"]),
+    )
+    with pytest.raises(MacError) as revision_expression:
+        gateway.execute(revision_command)
+    assert (
+        revision_expression.value.code
+        == "MUTATION_RUN_PORTABLE_BINDING_INVALID"
+    )
+
+    prepared = gateway.prepare(command)
+    _configure_sigstore_authority(
+        authority_dir,
+        monkeypatch,
+        prepared.request,
+        source_ref=source_ref,
+        source_digest=str(baseline_subject["commit_sha"]),
+        repository_identity="github:repository-id:1",
+    )
+    with pytest.raises(MacError) as repository_mismatch:
+        gateway.execute(command)
+    assert (
+        repository_mismatch.value.code
+        == "AUTHORITY_BINDING_MISMATCH"
+    )
+
+    _configure_sigstore_authority(
+        authority_dir,
+        monkeypatch,
+        prepared.request,
+        source_ref=source_ref,
+        source_digest=str(baseline_subject["commit_sha"]),
+    )
     gateway.execute(command)
+    for name in (
+        "MAC_AUTHORITY_SIGSTORE_BUNDLE",
+        "MAC_AUTHORITY_SIGSTORE_PREDICATE",
+        "MAC_AUTHORITY_SIGSTORE_SOURCE_REF",
+        "MAC_AUTHORITY_SIGSTORE_SOURCE_DIGEST",
+    ):
+        monkeypatch.delenv(name)
     actor = {"id": "a", "kind": "agent"}
     context = resolve_transition_context(
         tmp_path,
@@ -1132,18 +1189,6 @@ def test_portable_run_event_replays_after_head_moves_and_in_another_worktree(
     subprocess.run(["git", "-C", str(tmp_path), "add", "later.txt"], check=True)
     subprocess.run(
         ["git", "-C", str(tmp_path), "commit", "-m", "move head"],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(tmp_path),
-            "branch",
-            "-D",
-            "codex/portable-run",
-        ],
         check=True,
         capture_output=True,
     )

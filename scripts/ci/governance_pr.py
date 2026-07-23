@@ -32,6 +32,7 @@ from mac.authority import (
     SIGSTORE_PREDICATE_ENV,
     SIGSTORE_PREDICATE_TYPE_ENV,
     SIGSTORE_REPOSITORY_ENV,
+    SIGSTORE_REPOSITORY_IDENTITY_ENV,
     SIGSTORE_SIGNER_WORKFLOW_ENV,
     SIGSTORE_SOURCE_DIGEST_ENV,
     SIGSTORE_SOURCE_REF_ENV,
@@ -1065,8 +1066,11 @@ def _mutation_verification_policy(values: Mapping[str, str]) -> dict[str, Any]:
     ):
         raise ValueError("prepared mutation signer context is invalid")
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "repository": _EXPECTED_GITHUB_REPOSITORY,
+        "repository_identity": (
+            f"github:repository-id:{_EXPECTED_GITHUB_REPOSITORY_ID}"
+        ),
         "signer_workflow": _EXPECTED_GITHUB_SIGNER_WORKFLOW,
         "source_ref": source_ref,
         "source_digest": source_digest,
@@ -1622,6 +1626,7 @@ def _successor_execution_command(
             approved_base=str(_scope.get("base_commit", "")),
             baseline_subject=baseline_subject,
             source_ref=source_ref,
+            source_ref_subject=baseline_subject,
         )
         if not all(binding_checks.values()):
             raise ValueError("successor execution baseline is invalid")
@@ -1878,6 +1883,9 @@ def _sigstore_trust_environment() -> dict[str, str]:
         SIGSTORE_VERIFIER_ARGV_ENV: json.dumps(verifier_argv, separators=(",", ":")),
         SIGSTORE_VERIFIER_MANIFEST_ENV: command_manifest_digest(verifier_argv),
         SIGSTORE_REPOSITORY_ENV: _EXPECTED_GITHUB_REPOSITORY,
+        SIGSTORE_REPOSITORY_IDENTITY_ENV: (
+            f"github:repository-id:{_EXPECTED_GITHUB_REPOSITORY_ID}"
+        ),
         SIGSTORE_SIGNER_WORKFLOW_ENV: _EXPECTED_GITHUB_SIGNER_WORKFLOW,
         SIGSTORE_PREDICATE_TYPE_ENV: _MUTATION_ATTESTATION_PREDICATE_TYPE,
         SIGSTORE_ENVIRONMENT_ENV: "governance-authority",
@@ -2588,6 +2596,7 @@ def _allowlisted_successor_execution_command(
                 approved_base=str(_scope.get("base_commit", "")),
                 baseline_subject=expected_baseline,
                 source_ref=source_ref,
+                source_ref_subject=expected_baseline,
             )
             checkout_exact = (
                 git.commit_subject("HEAD") == expected_baseline
@@ -2726,13 +2735,16 @@ def github_attested_task_apply_main(
             raise ValueError("prepared mutation repository identity is invalid")
         policy = plan.get("verification_policy")
         if not isinstance(policy, dict) or set(policy) != {
-            "schema_version", "repository", "signer_workflow", "source_ref", "source_digest",
+            "schema_version", "repository", "repository_identity",
+            "signer_workflow", "source_ref", "source_digest",
             "predicate_type", "environment", "oidc_issuer", "deny_self_hosted_runners",
         }:
             raise ValueError("prepared mutation verification policy is invalid")
         if (
-            policy.get("schema_version") != 1
+            policy.get("schema_version") != 2
             or policy.get("repository") != _EXPECTED_GITHUB_REPOSITORY
+            or policy.get("repository_identity")
+            != expected_repository_identity
             or policy.get("signer_workflow") != _EXPECTED_GITHUB_SIGNER_WORKFLOW
             or policy.get("source_ref") not in {_EXPECTED_GITHUB_REF, _EXPECTED_GITHUB_BOOTSTRAP_REF}
             or _GIT_OBJECT_ID.fullmatch(str(policy.get("source_digest", ""))) is None
@@ -2749,6 +2761,9 @@ def github_attested_task_apply_main(
                 **_sigstore_trust_environment(),
                 AUTHORITY_REPOSITORY_IDENTITY_ENV: expected_repository_identity,
                 SIGSTORE_REPOSITORY_ENV: str(policy["repository"]),
+                SIGSTORE_REPOSITORY_IDENTITY_ENV: str(
+                    policy["repository_identity"]
+                ),
                 SIGSTORE_SIGNER_WORKFLOW_ENV: str(policy["signer_workflow"]),
                 SIGSTORE_SOURCE_REF_ENV: str(policy["source_ref"]),
                 SIGSTORE_SOURCE_DIGEST_ENV: str(policy["source_digest"]),

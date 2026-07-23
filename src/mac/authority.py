@@ -39,6 +39,7 @@ SIGSTORE_PREDICATE_ENV = "MAC_AUTHORITY_SIGSTORE_PREDICATE"
 SIGSTORE_VERIFIER_ARGV_ENV = "MAC_AUTHORITY_SIGSTORE_VERIFIER_ARGV"
 SIGSTORE_VERIFIER_MANIFEST_ENV = "MAC_AUTHORITY_SIGSTORE_VERIFIER_MANIFEST_SHA256"
 SIGSTORE_REPOSITORY_ENV = "MAC_AUTHORITY_SIGSTORE_REPOSITORY"
+SIGSTORE_REPOSITORY_IDENTITY_ENV = "MAC_AUTHORITY_SIGSTORE_REPOSITORY_IDENTITY"
 SIGSTORE_SIGNER_WORKFLOW_ENV = "MAC_AUTHORITY_SIGSTORE_SIGNER_WORKFLOW"
 SIGSTORE_SOURCE_REF_ENV = "MAC_AUTHORITY_SIGSTORE_SOURCE_REF"
 SIGSTORE_SOURCE_DIGEST_ENV = "MAC_AUTHORITY_SIGSTORE_SOURCE_DIGEST"
@@ -47,6 +48,9 @@ SIGSTORE_ENVIRONMENT_ENV = "MAC_AUTHORITY_SIGSTORE_ENVIRONMENT"
 SIGSTORE_OIDC_ISSUER_ENV = "MAC_AUTHORITY_SIGSTORE_OIDC_ISSUER"
 _MAX_SIGSTORE_BUNDLE_BYTES = 8_000_000
 _GIT_OBJECT_ID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
+_GITHUB_REPOSITORY_IDENTITY = re.compile(
+    r"github:repository-id:[1-9][0-9]{0,19}\Z"
+)
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -715,6 +719,7 @@ class SubprocessAuthorityAdapter:
 @dataclass(frozen=True, slots=True)
 class _SigstoreVerificationPolicy:
     repository: str
+    repository_identity: str | None
     signer_workflow: str
     source_ref: str
     source_digest: str
@@ -724,8 +729,10 @@ class _SigstoreVerificationPolicy:
     verifier_manifest: str
 
     def as_dict(self) -> dict[str, str | int | bool]:
-        return {
-            "schema_version": 1,
+        document: dict[str, str | int | bool] = {
+            "schema_version": (
+                2 if self.repository_identity is not None else 1
+            ),
             "repository": self.repository,
             "signer_workflow": self.signer_workflow,
             "source_ref": self.source_ref,
@@ -736,6 +743,9 @@ class _SigstoreVerificationPolicy:
             "deny_self_hosted_runners": True,
             "verifier_manifest": self.verifier_manifest,
         }
+        if self.repository_identity is not None:
+            document["repository_identity"] = self.repository_identity
+        return document
 
 
 def _safe_sigstore_name(value: object, field: str) -> str:
@@ -765,7 +775,7 @@ def _load_canonical_json_file(path_value: object, *, maximum: int, field: str) -
 def _sigstore_policy_from_document(
     document: Mapping[str, Any],
 ) -> _SigstoreVerificationPolicy:
-    required = {
+    required_v1 = {
         "schema_version",
         "repository",
         "signer_workflow",
@@ -777,9 +787,15 @@ def _sigstore_policy_from_document(
         "deny_self_hosted_runners",
         "verifier_manifest",
     }
+    schema_version = document.get("schema_version")
+    required = (
+        required_v1 | {"repository_identity"}
+        if schema_version == 2
+        else required_v1
+    )
     if (
         set(document) != required
-        or document.get("schema_version") != 1
+        or schema_version not in {1, 2}
         or document.get("deny_self_hosted_runners") is not True
     ):
         raise _security_error("AUTHORITY_CONFIGURATION_INVALID", "authority Sigstore policy is invalid")
@@ -789,8 +805,25 @@ def _sigstore_policy_from_document(
     source_digest = str(document.get("source_digest", "")).lower()
     if _GIT_OBJECT_ID.fullmatch(source_digest) is None:
         raise _security_error("AUTHORITY_CONFIGURATION_INVALID", "authority Sigstore source digest is invalid")
+    repository_identity = (
+        _safe_sigstore_name(
+            document.get("repository_identity"),
+            "Sigstore repository identity",
+        )
+        if schema_version == 2
+        else None
+    )
+    if (
+        repository_identity is not None
+        and _GITHUB_REPOSITORY_IDENTITY.fullmatch(repository_identity) is None
+    ):
+        raise _security_error(
+            "AUTHORITY_CONFIGURATION_INVALID",
+            "authority Sigstore repository identity is invalid",
+        )
     return _SigstoreVerificationPolicy(
         repository=_safe_sigstore_name(document.get("repository"), "Sigstore repository"),
+        repository_identity=repository_identity,
         signer_workflow=_safe_sigstore_name(document.get("signer_workflow"), "Sigstore signer workflow"),
         source_ref=_safe_sigstore_name(document.get("source_ref"), "Sigstore source ref"),
         source_digest=source_digest,
@@ -808,6 +841,7 @@ class SigstoreAuthorityAdapter:
         "_argv",
         "_verifier_manifest",
         "_expected_repository",
+        "_expected_repository_identity",
         "_expected_signer_workflow",
         "_expected_predicate_type",
         "_expected_environment",
@@ -824,6 +858,7 @@ class SigstoreAuthorityAdapter:
         argv: tuple[str, ...],
         verifier_manifest: str,
         expected_repository: str,
+        expected_repository_identity: str,
         expected_signer_workflow: str,
         expected_predicate_type: str,
         expected_environment: str,
@@ -838,6 +873,7 @@ class SigstoreAuthorityAdapter:
         self._argv = argv
         self._verifier_manifest = verifier_manifest
         self._expected_repository = expected_repository
+        self._expected_repository_identity = expected_repository_identity
         self._expected_signer_workflow = expected_signer_workflow
         self._expected_predicate_type = expected_predicate_type
         self._expected_environment = expected_environment
@@ -859,6 +895,7 @@ class SigstoreAuthorityAdapter:
         expected_manifest = os.environ.get(SIGSTORE_VERIFIER_MANIFEST_ENV)
         names = {
             "repository": SIGSTORE_REPOSITORY_ENV,
+            "repository_identity": SIGSTORE_REPOSITORY_IDENTITY_ENV,
             "signer_workflow": SIGSTORE_SIGNER_WORKFLOW_ENV,
             "predicate_type": SIGSTORE_PREDICATE_TYPE_ENV,
             "environment": SIGSTORE_ENVIRONMENT_ENV,
@@ -869,6 +906,16 @@ class SigstoreAuthorityAdapter:
             raise _security_error(
                 "AUTHORITY_CONFIGURATION_MISSING",
                 "trusted Sigstore authority verification configuration is unavailable",
+            )
+        if (
+            _GITHUB_REPOSITORY_IDENTITY.fullmatch(
+                values["repository_identity"]
+            )
+            is None
+        ):
+            raise _security_error(
+                "AUTHORITY_CONFIGURATION_INVALID",
+                "authority Sigstore repository identity is invalid",
             )
         try:
             decoded_argv = json.loads(raw_argv)
@@ -902,6 +949,7 @@ class SigstoreAuthorityAdapter:
             raise _security_error("AUTHORITY_CONFIGURATION_INVALID", "authority Sigstore source digest is invalid")
         policy = _SigstoreVerificationPolicy(
             repository=values["repository"],
+            repository_identity=values["repository_identity"],
             signer_workflow=values["signer_workflow"],
             source_ref=source_ref,
             source_digest=source_digest,
@@ -914,6 +962,7 @@ class SigstoreAuthorityAdapter:
             argv=argv,
             verifier_manifest=manifest,
             expected_repository=values["repository"],
+            expected_repository_identity=values["repository_identity"],
             expected_signer_workflow=values["signer_workflow"],
             expected_predicate_type=values["predicate_type"],
             expected_environment=values["environment"],
@@ -931,6 +980,7 @@ class SigstoreAuthorityAdapter:
             argv=argv,
             verifier_manifest=manifest,
             expected_repository=values["repository"],
+            expected_repository_identity=values["repository_identity"],
             expected_signer_workflow=values["signer_workflow"],
             expected_predicate_type=values["predicate_type"],
             expected_environment=values["environment"],
@@ -946,6 +996,16 @@ class SigstoreAuthorityAdapter:
     ) -> None:
         if (
             policy.repository != self._expected_repository
+            or (
+                not historical
+                and policy.repository_identity
+                != self._expected_repository_identity
+            )
+            or (
+                historical
+                and policy.repository_identity
+                not in {None, self._expected_repository_identity}
+            )
             or policy.signer_workflow != self._expected_signer_workflow
             or policy.predicate_type != self._expected_predicate_type
             or policy.environment != self._expected_environment
@@ -964,6 +1024,15 @@ class SigstoreAuthorityAdapter:
         historical: bool,
     ) -> tuple[Mapping[str, Any], str, str]:
         self._validate_policy(policy, historical=historical)
+        if (
+            policy.repository_identity is not None
+            and policy.repository_identity != request.repository_identity
+        ):
+            raise _security_error(
+                "AUTHORITY_BINDING_MISMATCH",
+                "Sigstore authority repository identity is not exactly bound",
+                task_id=request.task_id,
+            )
         expected_predicate_keys = {
             "schema_version", "allowed", "authenticated", "issuer", "actor_id",
             "actor_kind", "independence_level", "issued_at", "expires_at",

@@ -186,6 +186,7 @@ from mac.authority import (
     SIGSTORE_PREDICATE_ENV,
     SIGSTORE_PREDICATE_TYPE_ENV,
     SIGSTORE_REPOSITORY_ENV,
+    SIGSTORE_REPOSITORY_IDENTITY_ENV,
     SIGSTORE_SIGNER_WORKFLOW_ENV,
     SIGSTORE_SOURCE_DIGEST_ENV,
     SIGSTORE_SOURCE_REF_ENV,
@@ -285,6 +286,13 @@ def _authority_request() -> AuthorityRequest:
     )
 
 
+def _sigstore_authority_request() -> AuthorityRequest:
+    return replace(
+        _authority_request(),
+        repository_identity="github:repository-id:1290429577",
+    )
+
+
 def _configured_adapter(monkeypatch: pytest.MonkeyPatch) -> SubprocessAuthorityAdapter:
     configure_test_authority(monkeypatch)
     return current_authority_verifier()
@@ -294,6 +302,10 @@ def _configure_sigstore_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     request: AuthorityRequest,
+    *,
+    source_ref: str = "refs/heads/master",
+    source_digest: str = "a" * 40,
+    repository_identity: str = "github:repository-id:1290429577",
 ) -> None:
     now = datetime.now(timezone.utc)
     predicate = {
@@ -323,6 +335,10 @@ def _configure_sigstore_authority(
     monkeypatch.setenv(SIGSTORE_VERIFIER_MANIFEST_ENV, command_manifest_digest(argv))
     monkeypatch.setenv(SIGSTORE_REPOSITORY_ENV, "IvesChenHX/multi-agent-collab")
     monkeypatch.setenv(
+        SIGSTORE_REPOSITORY_IDENTITY_ENV,
+        repository_identity,
+    )
+    monkeypatch.setenv(
         SIGSTORE_SIGNER_WORKFLOW_ENV,
         "IvesChenHX/multi-agent-collab/.github/workflows/governance-pr.yml",
     )
@@ -332,8 +348,8 @@ def _configure_sigstore_authority(
     )
     monkeypatch.setenv(SIGSTORE_ENVIRONMENT_ENV, "governance-authority")
     monkeypatch.setenv(SIGSTORE_OIDC_ISSUER_ENV, "https://token.actions.githubusercontent.com")
-    monkeypatch.setenv(SIGSTORE_SOURCE_REF_ENV, "refs/heads/master")
-    monkeypatch.setenv(SIGSTORE_SOURCE_DIGEST_ENV, "a" * 40)
+    monkeypatch.setenv(SIGSTORE_SOURCE_REF_ENV, source_ref)
+    monkeypatch.setenv(SIGSTORE_SOURCE_DIGEST_ENV, source_digest)
     monkeypatch.setenv(SIGSTORE_PREDICATE_ENV, str(predicate_path))
     monkeypatch.setenv(SIGSTORE_BUNDLE_ENV, str(bundle_path))
 
@@ -398,7 +414,7 @@ def test_sigstore_bundle_creates_a_durable_non_secret_authority_fact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    request = _authority_request()
+    request = _sigstore_authority_request()
     _configure_sigstore_authority(tmp_path, monkeypatch, request)
 
     adapter = current_authority_verifier()
@@ -426,6 +442,13 @@ def test_sigstore_bundle_creates_a_durable_non_secret_authority_fact(
     monkeypatch.delenv(SIGSTORE_SOURCE_DIGEST_ENV)
     verify_authority_audit_record(audit, request)
 
+    legacy_audit = copy.deepcopy(audit)
+    legacy_policy = legacy_audit["signed_envelope"]["verification_policy"]
+    legacy_policy["schema_version"] = 1
+    legacy_policy.pop("repository_identity")
+    legacy_audit["broker_digest"] = canonical_digest(legacy_policy)
+    verify_authority_audit_record(legacy_audit, request)
+
     portable_verifier = tmp_path / "portable-sigstore-verifier.py"
     shutil.copyfile(_BROKER, portable_verifier)
     portable_argv = [
@@ -449,7 +472,7 @@ def test_sigstore_historical_verification_rejects_predicate_or_bundle_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    request = _authority_request()
+    request = _sigstore_authority_request()
     _configure_sigstore_authority(tmp_path, monkeypatch, request)
     fact = require_authority(current_authority_verifier(), request=request, minimum_independence="L2")
     audit = authority_audit_record(fact)
@@ -477,7 +500,7 @@ def test_sigstore_ready_signature_cannot_authorize_executing_transition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ready_request = replace(
-        _authority_request(),
+        _sigstore_authority_request(),
         operation="task.transition.ready",
         expected_revision=4,
         idempotency_key="github-sigstore-ready:987654:2",
