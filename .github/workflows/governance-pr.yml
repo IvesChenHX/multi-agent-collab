@@ -45,6 +45,11 @@ on:
         required: false
         type: boolean
         default: false
+      authority_transition_successor_ready:
+        description: Prepare, sign, and export the successor triage-to-ready mutation
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -81,7 +86,7 @@ jobs:
           --base "$PR_BASE" --head "$PR_HEAD" --json
 
   authority-probe:
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.authority_probe || inputs.authority_create_successor || inputs.authority_approve_successor_scope || inputs.authority_amend_successor_scope) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.authority_probe || inputs.authority_create_successor || inputs.authority_approve_successor_scope || inputs.authority_amend_successor_scope || inputs.authority_transition_successor_ready) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: governance-authority
@@ -150,8 +155,14 @@ jobs:
           uv run --frozen python scripts/ci/governance_pr.py
           --github-attested-scope-amend-prepare
           --out "$RUNNER_TEMP/mac-attested-task"
+      - name: Prepare the exact successor ready transition
+        if: ${{ inputs.authority_transition_successor_ready }}
+        run: >-
+          uv run --frozen python scripts/ci/governance_pr.py
+          --github-attested-ready-prepare
+          --out "$RUNNER_TEMP/mac-attested-task"
       - name: Sign the prepared mutation authority
-        if: ${{ inputs.authority_create_successor || inputs.authority_approve_successor_scope || inputs.authority_amend_successor_scope }}
+        if: ${{ inputs.authority_create_successor || inputs.authority_approve_successor_scope || inputs.authority_amend_successor_scope || inputs.authority_transition_successor_ready }}
         id: mutation-attestation
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
         with:
@@ -160,12 +171,12 @@ jobs:
           predicate-path: ${{ runner.temp }}/mac-attested-task/predicate.json
           show-summary: false
       - name: Collect the non-secret authority bundle
-        if: ${{ inputs.authority_create_successor || inputs.authority_approve_successor_scope || inputs.authority_amend_successor_scope }}
+        if: ${{ inputs.authority_create_successor || inputs.authority_approve_successor_scope || inputs.authority_amend_successor_scope || inputs.authority_transition_successor_ready }}
         run: >-
           cp "${{ steps.mutation-attestation.outputs.bundle-path }}"
           "$RUNNER_TEMP/mac-attested-task/bundle.json"
       - name: Export the prepared mutation for local atomic application
-        if: ${{ inputs.authority_create_successor || inputs.authority_approve_successor_scope || inputs.authority_amend_successor_scope }}
+        if: ${{ inputs.authority_create_successor || inputs.authority_approve_successor_scope || inputs.authority_amend_successor_scope || inputs.authority_transition_successor_ready }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: mac-attested-task-${{ github.run_id }}-${{ github.run_attempt }}

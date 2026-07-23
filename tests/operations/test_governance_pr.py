@@ -25,7 +25,8 @@ from scripts.ci.governance_pr import (
     github_oidc_probe_main,
 )
 from mac.authority import AuthorityRequest, canonical_digest
-from mac.repository import AppendEvent, CreateTask
+from mac.repository import AppendEvent, CreateTask, Transition
+from mac.state_machine import TransitionContext
 
 
 TASK_ID = "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q"
@@ -47,6 +48,34 @@ REGRESSION_SCOPE_PATHS = [
     "tests/test_scope_amendment_and_workflow.py",
     "tests/operations/test_release_artifacts.py",
     "examples/v6/**",
+]
+BOOTSTRAP_SCOPE_PATHS = [
+    "src/mac/authority.py",
+    "src/mac/repository.py",
+    "src/mac/application/task_service.py",
+    "src/mac/cli.py",
+    "scripts/ci/governance_pr.py",
+    ".github/workflows/governance-pr.yml",
+    "tests/operations/test_governance_pr.py",
+    "tests/security/test_authority_commands.py",
+    "docs/pilot/alpha-close-report.md",
+]
+SUCCESSOR_REQUIRED_GATES = [
+    "targeted_tests",
+    "negative_security_tests",
+    "secret_scan",
+    "scope_guard",
+    "compatibility_review",
+    "independent_review",
+    "rollback_plan",
+    "rollback_verification",
+    "evidence_matches_current_commit",
+]
+SUCCESSOR_ALLOWED_OPERATIONS = [
+    "read",
+    "write",
+    "execute_tests",
+    "generate_artifacts",
 ]
 
 
@@ -111,6 +140,118 @@ def _write_probe_task(repo: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _successor_documents(
+    task_id: str,
+    *,
+    profile: str,
+    version: int,
+) -> tuple[dict[str, object], dict[str, object]]:
+    if profile == "bootstrap":
+        title = "GitHub authority bootstrap successor"
+        objective = (
+            "Create the first GitHub-Sigstore-authorized governance successor and "
+            "complete the two-phase Mutation Gateway trust loop."
+        )
+        acceptance = [
+            "Every persisted mutation carries a verified non-secret Sigstore authority bundle.",
+            "Scope approval and replay succeed against the exact signed mutation intent.",
+            "No OIDC bearer token or GitHub token enters Task, Event, Evidence, logs, or Git.",
+            "Governance-sensitive changes receive L2 review before merge.",
+        ]
+        allowed_paths = list(BOOTSTRAP_SCOPE_PATHS)
+        allowed_paths.extend([
+            f"tasks/{task_id}/**",
+            f"tasks/private/{task_id}/**",
+        ])
+        owners = ["governance", "platform", "security", "devex", "tests", "docs"]
+        risk_tags: list[str] = []
+        if version >= 2:
+            allowed_paths.extend([
+                "src/mac/migration.py",
+                "tests/test_authorityless_v6_migration.py",
+                "migration/v6-authorityless/**",
+                "tasks-v6/**",
+            ])
+            risk_tags = ["data_migration"]
+        if version >= 3:
+            allowed_paths.append(".github/workflows/ci.yml")
+            risk_tags = ["auth_security", "data_migration"]
+    else:
+        title = "Full regression closure successor"
+        objective = (
+            "Close the full cross-platform regression suite while preserving the "
+            "GitHub-Sigstore authority and commit-bound evidence loop."
+        )
+        acceptance = [
+            "The full locked test suite passes on Linux, macOS, and Windows for every supported Python version.",
+            "Trusted repository validation remains green on every CI matrix entry.",
+            "Legacy Scope, migration, Git workspace, LFS, and YAML compatibility regressions are covered test-first.",
+            "All persisted mutations and completion evidence remain bound to approved Scope and the current commit.",
+        ]
+        allowed_paths = list(REGRESSION_SCOPE_PATHS)
+        allowed_paths.extend([
+            f"tasks/{task_id}/**",
+            f"tasks/private/{task_id}/**",
+        ])
+        owners = ["governance", "platform", "devex", "tests", "examples", "docs"]
+        risk_tags = ["auth_security", "compatibility", "data_migration"]
+    predecessor = TASK_ID
+    base_commit = "a" * 40
+    task: dict[str, object] = {
+        "id": task_id,
+        "schema_version": 6,
+        "title": title,
+        "mode": "high_risk",
+        "objective": objective,
+        "acceptance_criteria": [
+            {"id": f"AC-{index:03d}", "required": True, "text": text}
+            for index, text in enumerate(acceptance, start=1)
+        ],
+        "runtime_profile": "local-multi",
+        "required_gates": ["approved_scope", *SUCCESSOR_REQUIRED_GATES],
+        "state": "triage",
+        "revision": version * 2 - 1,
+        "legacy_integrity": "full",
+        "active_controller": None,
+        "terminal": None,
+        "scope_contract_ref": f"tasks/{task_id}/scope-contract.yaml",
+        "relationships": {
+            "parent_task": predecessor,
+            "superseded_by": None,
+            "supersedes": [predecessor],
+        },
+        "policy_ref": {"source_commit": base_commit},
+        "ownership_ref": {"source_commit": base_commit},
+    }
+    scope: dict[str, object] = {
+        "id": "SCOPE-01KY58ZZZZZZZZZZZZZZZZZZZZ",
+        "schema_version": 1,
+        "task_id": task_id,
+        "version": version,
+        "status": "approved",
+        "proposed_by": "governance-owner" if version == 1 else "repo-owner",
+        "approved_by": ["repo-owner" if version == 1 else "governance-owner"],
+        "base_commit": base_commit,
+        "allowed_paths": allowed_paths,
+        "allowed_operations": list(SUCCESSOR_ALLOWED_OPERATIONS),
+        "denied_paths": [],
+        "owners": owners,
+        "network_access": "none",
+        "secret_access": [],
+        "required_gates": list(SUCCESSOR_REQUIRED_GATES),
+        "amendment_policy": {
+            "max_amendments": 2,
+            "max_paths_per_amendment": 4,
+            "require_independent_approval_for": [
+                "auth_security",
+                "production_deploy",
+            ],
+        },
+        "risk_tags": risk_tags,
+    }
+    return task, scope
 
 
 def test_github_oidc_bridge_binds_token_audience_and_forwards_no_request_secret():
@@ -676,13 +817,17 @@ def test_attested_scope_plan_round_trips_one_exact_approval_command(
     command = AppendEvent(
         task_id=TASK_ID,
         event_type="scope_approved",
-        payload={"scope_id": "SCOPE-example", "approval_id": "APR-example"},
+        payload={
+            "scope_id": "SCOPE-example",
+            "approval_id": "APR-example",
+            "approval": {"id": "APR-example", "recorded_at": "unbound"},
+        },
         actor_claim={"id": "repo-owner", "kind": "human"},
         expected_revision=0,
         idempotency_key=request.idempotency_key,
         operation="scope.approve",
         materializations=(
-            (approval_path, {"id": "APR-example"}),
+            (approval_path, {"id": "APR-example", "recorded_at": "unbound"}),
             (scope_path, {"task_id": TASK_ID, "status": "approved"}),
         ),
         replace_existing=frozenset({scope_path}),
@@ -694,9 +839,39 @@ def test_attested_scope_plan_round_trips_one_exact_approval_command(
         intent={"schema_version": 1, "task_id": TASK_ID, "operation": "scope.approve"},
         command=command,
     )
-    monkeypatch.setattr(
-        governance_pr, "_successor_scope_approval_command", lambda *_: command,
-    )
+    def scope_command(
+        *_: object,
+        recorded_at: str,
+    ) -> AppendEvent:
+        payload = dict(command.payload)
+        payload["approval"] = {
+            **dict(payload["approval"]),
+            "recorded_at": recorded_at,
+        }
+        materializations = tuple(
+            (
+                path,
+                {**dict(value), "recorded_at": recorded_at}
+                if path == approval_path
+                else value,
+            )
+            for path, value in command.materializations
+        )
+        return AppendEvent(
+            task_id=command.task_id,
+            event_type=command.event_type,
+            payload=payload,
+            actor_claim=command.actor_claim,
+            expected_revision=command.expected_revision,
+            idempotency_key=command.idempotency_key,
+            operation=command.operation,
+            materializations=materializations,
+            replace_existing=command.replace_existing,
+            minimum_independence=command.minimum_independence,
+            replay_intent=command.replay_intent,
+        )
+
+    monkeypatch.setattr(governance_pr, "_successor_scope_approval_command", scope_command)
     monkeypatch.setattr(governance_pr, "_sigstore_trust_environment", lambda: {})
 
     class FakeGateway:
@@ -704,7 +879,9 @@ def test_attested_scope_plan_round_trips_one_exact_approval_command(
             pass
 
         def prepare(self, observed: AppendEvent):
-            assert governance_pr._serialize_append_event(observed, tmp_path) == governance_pr._serialize_append_event(command, tmp_path)
+            approval = observed.payload["approval"]
+            assert approval["recorded_at"] != "unbound"
+            assert observed.materializations[0][1]["recorded_at"] == approval["recorded_at"]
             return prepared
 
     monkeypatch.setattr(governance_pr, "MutationGateway", FakeGateway)
@@ -728,7 +905,332 @@ def test_attested_scope_plan_round_trips_one_exact_approval_command(
     restored = governance_pr._deserialize_append_event(plan["command"], tmp_path)
     assert governance_pr._serialize_append_event(restored, tmp_path) == plan["command"]
     assert plan["request"]["operation"] == "scope.approve"
+    predicate = json.loads((output_dir / "predicate.json").read_text(encoding="utf-8"))
+    assert plan["command"]["payload"]["approval"]["recorded_at"] == predicate["issued_at"]
+    assert plan["command"]["materializations"][0][1]["recorded_at"] == predicate["issued_at"]
     assert json.loads(stdout.getvalue())["operation"] == "scope.approve"
+
+
+def test_attested_ready_plan_round_trips_one_exact_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    context = TransitionContext(
+        triage_complete=True,
+        scope_approved=True,
+        gates_selected=True,
+    )
+    command = Transition(
+        task_id=TASK_ID,
+        target="ready",
+        context=context,
+        actor_claim={"id": "governance-owner", "kind": "human"},
+        expected_revision=1,
+        idempotency_key="github-sigstore-task-ready:987654:2",
+        operation="task.transition.ready",
+        transition_metadata={},
+        minimum_independence="L2",
+        replay_intent={
+            "target": "ready",
+            "condition": [],
+            "fact_id": None,
+            "reason": None,
+        },
+    )
+    request = AuthorityRequest(
+        repository_identity="github:repository-id:1290429577",
+        operation=command.operation,
+        task_id=TASK_ID,
+        actor_claim=command.actor_claim,
+        expected_revision=command.expected_revision,
+        idempotency_key=command.idempotency_key,
+        intent_digest=canonical_digest({"transition": "ready"}),
+        policy_digest="sha256:" + "1" * 64,
+        ownership_digest="sha256:" + "2" * 64,
+        audience="mac-mutation-gateway/v1",
+    )
+    prepared = SimpleNamespace(
+        request=request,
+        intent={"transition": "ready"},
+        command=command,
+    )
+    monkeypatch.setattr(
+        governance_pr,
+        "_successor_ready_transition_command",
+        lambda *_: command,
+        raising=False,
+    )
+
+    class FakeGateway:
+        def __init__(self, _repo: Path):
+            pass
+
+        def prepare(self, observed: Transition):
+            assert observed == command
+            return prepared
+
+    monkeypatch.setattr(governance_pr, "MutationGateway", FakeGateway)
+    output_dir = tmp_path / "prepared-ready"
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = governance_pr.github_attested_ready_prepare_main(
+        output_dir=output_dir,
+        repo=tmp_path,
+        stdout=stdout,
+        stderr=stderr,
+        environment=_probe_environment(
+            "refs/heads/codex/governance-authority-sigstore"
+        ),
+    )
+
+    assert exit_code == 0
+    assert stderr.getvalue() == ""
+    plan = json.loads((output_dir / "plan.json").read_text(encoding="utf-8"))
+    restored = governance_pr._deserialize_transition(plan["command"])
+    assert governance_pr._serialize_transition(restored) == plan["command"]
+    assert plan["command"]["command_type"] == "Transition"
+    assert plan["command"]["operation"] == "task.transition.ready"
+    assert plan["command"]["expected_revision"] == 1
+    assert plan["command"]["minimum_independence"] == "L2"
+    assert json.loads(stdout.getvalue())["operation"] == "task.transition.ready"
+
+
+def test_attested_ready_prepare_derives_exact_transition_from_successor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    task_id = "TASK-01KY58ZZZZZZZZZZZZZZZZZZZZ-full-regression-closure-successor"
+    task_dir = tmp_path / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    task, scope = _successor_documents(
+        task_id,
+        profile="full-regression",
+        version=1,
+    )
+    (task_dir / "task.yaml").write_text(yaml.safe_dump(task), encoding="utf-8")
+    (task_dir / "scope-contract.yaml").write_text(
+        yaml.safe_dump(scope),
+        encoding="utf-8",
+    )
+    context = TransitionContext(
+        triage_complete=True,
+        scope_approved=True,
+        gates_selected=True,
+    )
+    observed_commands: list[Transition] = []
+
+    def resolve_context(
+        repo: Path,
+        observed_task_id: str,
+        target: str,
+        actor: dict[str, str],
+    ) -> TransitionContext:
+        assert repo == tmp_path
+        assert observed_task_id == task_id
+        assert target == "ready"
+        assert actor == {"id": "governance-owner", "kind": "human"}
+        return context
+
+    monkeypatch.setattr(
+        governance_pr,
+        "resolve_transition_context",
+        resolve_context,
+        raising=False,
+    )
+    monkeypatch.setattr(governance_pr, "_sigstore_trust_environment", lambda: {})
+
+    class FakeGateway:
+        def __init__(self, _repo: Path):
+            pass
+
+        def prepare(self, observed: Transition):
+            observed_commands.append(observed)
+            request = AuthorityRequest(
+                repository_identity="github:repository-id:1290429577",
+                operation=observed.operation,
+                task_id=observed.task_id,
+                actor_claim=observed.actor_claim,
+                expected_revision=observed.expected_revision,
+                idempotency_key=observed.idempotency_key,
+                intent_digest=canonical_digest({"transition": "ready"}),
+                policy_digest="sha256:" + "1" * 64,
+                ownership_digest="sha256:" + "2" * 64,
+                audience="mac-mutation-gateway/v1",
+            )
+            return SimpleNamespace(
+                request=request,
+                intent={"transition": "ready"},
+                command=observed,
+            )
+
+    monkeypatch.setattr(governance_pr, "MutationGateway", FakeGateway)
+    environment = _probe_environment(
+        "refs/heads/codex/governance-authority-sigstore"
+    )
+    environment["MAC_AUTHORITY_PROBE_TASK_ID"] = task_id
+    environment["MAC_AUTHORITY_SUCCESSOR_PROFILE"] = "full-regression"
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = governance_pr.github_attested_ready_prepare_main(
+        output_dir=tmp_path / "prepared-ready",
+        repo=tmp_path,
+        stdout=stdout,
+        stderr=stderr,
+        environment=environment,
+    )
+
+    assert exit_code == 0
+    assert stderr.getvalue() == ""
+    assert len(observed_commands) == 1
+    command = observed_commands[0]
+    assert command.target == "ready"
+    assert command.context == context
+    assert command.expected_revision == 1
+    assert command.operation == "task.transition.ready"
+    assert command.minimum_independence == "L2"
+    assert command.replay_intent == {
+        "target": "ready",
+        "condition": [],
+        "fact_id": None,
+        "reason": None,
+    }
+
+
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_ready_transition_accepts_each_exact_bootstrap_scope_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    version: int,
+):
+    task_id = "TASK-01KY58ZZZZZZZZZZZZZZZZZZZZ-github-authority-bootstrap-successor"
+    task_dir = tmp_path / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    task, scope = _successor_documents(
+        task_id,
+        profile="bootstrap",
+        version=version,
+    )
+    (task_dir / "task.yaml").write_text(yaml.safe_dump(task), encoding="utf-8")
+    (task_dir / "scope-contract.yaml").write_text(
+        yaml.safe_dump(scope),
+        encoding="utf-8",
+    )
+    context = TransitionContext(
+        triage_complete=True,
+        scope_approved=True,
+        gates_selected=True,
+    )
+    monkeypatch.setattr(governance_pr, "resolve_transition_context", lambda *_: context)
+
+    command = governance_pr._successor_ready_transition_command(
+        {
+            "MAC_AUTHORITY_PROBE_TASK_ID": task_id,
+            "MAC_AUTHORITY_SUCCESSOR_PROFILE": "bootstrap",
+            "GITHUB_RUN_ID": "987654",
+            "GITHUB_RUN_ATTEMPT": "2",
+        },
+        tmp_path,
+    )
+
+    assert command.target == "ready"
+    assert command.expected_revision == version * 2 - 1
+    assert command.context == context
+
+
+@pytest.mark.parametrize(
+    ("entity", "field", "invalid"),
+    [
+        ("task", "objective", "tampered"),
+        ("task", "acceptance_criteria", []),
+        ("task", "required_gates", ["approved_scope"]),
+        ("task", "runtime_profile", "local-single"),
+        ("task", "relationships", {}),
+        ("scope", "owners", ["governance"]),
+        ("scope", "allowed_operations", ["read"]),
+        ("scope", "network_access", "full"),
+        ("scope", "required_gates", ["targeted_tests"]),
+        ("scope", "amendment_policy", {}),
+    ],
+)
+def test_ready_transition_rejects_successor_profile_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entity: str,
+    field: str,
+    invalid: object,
+):
+    task_id = "TASK-01KY58ZZZZZZZZZZZZZZZZZZZZ-full-regression-closure-successor"
+    task_dir = tmp_path / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    task, scope = _successor_documents(
+        task_id,
+        profile="full-regression",
+        version=1,
+    )
+    target = task if entity == "task" else scope
+    target[field] = invalid
+    (task_dir / "task.yaml").write_text(yaml.safe_dump(task), encoding="utf-8")
+    (task_dir / "scope-contract.yaml").write_text(
+        yaml.safe_dump(scope),
+        encoding="utf-8",
+    )
+    context = TransitionContext(
+        triage_complete=True,
+        scope_approved=True,
+        gates_selected=True,
+    )
+    monkeypatch.setattr(governance_pr, "resolve_transition_context", lambda *_: context)
+
+    with pytest.raises(
+        ValueError,
+        match="successor is not eligible for protected ready transition",
+    ):
+        governance_pr._successor_ready_transition_command(
+            {
+                "MAC_AUTHORITY_PROBE_TASK_ID": task_id,
+                "MAC_AUTHORITY_SUCCESSOR_PROFILE": "full-regression",
+                "GITHUB_RUN_ID": "987654",
+                "GITHUB_RUN_ATTEMPT": "2",
+            },
+            tmp_path,
+        )
+
+
+def test_ready_transition_rejects_failed_machine_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    task_id = "TASK-01KY58ZZZZZZZZZZZZZZZZZZZZ-full-regression-closure-successor"
+    task_dir = tmp_path / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    task, scope = _successor_documents(
+        task_id,
+        profile="full-regression",
+        version=1,
+    )
+    (task_dir / "task.yaml").write_text(yaml.safe_dump(task), encoding="utf-8")
+    (task_dir / "scope-contract.yaml").write_text(
+        yaml.safe_dump(scope),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        governance_pr,
+        "resolve_transition_context",
+        lambda *_: TransitionContext(triage_complete=True, scope_approved=True),
+    )
+
+    with pytest.raises(ValueError, match="ready transition guards are not satisfied"):
+        governance_pr._successor_ready_transition_command(
+            {
+                "MAC_AUTHORITY_PROBE_TASK_ID": task_id,
+                "MAC_AUTHORITY_SUCCESSOR_PROFILE": "full-regression",
+                "GITHUB_RUN_ID": "987654",
+                "GITHUB_RUN_ATTEMPT": "2",
+            },
+            tmp_path,
+        )
 
 
 def test_attested_scope_amend_plan_round_trips_one_exact_command(
@@ -1059,11 +1561,8 @@ def test_attested_v2_scope_approval_uses_a_distinct_authorized_logical_actor(
 def test_github_validation_trust_requires_exact_actions_repository(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    for name in (
-        governance_pr.AUTHORITY_REPOSITORY_IDENTITY_ENV,
-        governance_pr.SIGSTORE_REPOSITORY_ENV,
-    ):
-        monkeypatch.delenv(name, raising=False)
+    isolated_environment: dict[str, str] = {}
+    monkeypatch.setattr(governance_pr.os, "environ", isolated_environment)
     monkeypatch.setattr(
         governance_pr,
         "_sigstore_trust_environment",
@@ -1075,7 +1574,7 @@ def test_github_validation_trust_requires_exact_actions_repository(
         "GITHUB_REPOSITORY_ID": "1",
     }
     governance_pr._configure_github_validation_trust(wrong)
-    assert governance_pr.AUTHORITY_REPOSITORY_IDENTITY_ENV not in governance_pr.os.environ
+    assert governance_pr.AUTHORITY_REPOSITORY_IDENTITY_ENV not in isolated_environment
 
     exact = {
         "GITHUB_ACTIONS": "true",
@@ -1083,10 +1582,10 @@ def test_github_validation_trust_requires_exact_actions_repository(
         "GITHUB_REPOSITORY_ID": "1290429577",
     }
     governance_pr._configure_github_validation_trust(exact)
-    assert governance_pr.os.environ[governance_pr.AUTHORITY_REPOSITORY_IDENTITY_ENV] == (
+    assert isolated_environment[governance_pr.AUTHORITY_REPOSITORY_IDENTITY_ENV] == (
         "github:repository-id:1290429577"
     )
-    assert governance_pr.os.environ[governance_pr.SIGSTORE_REPOSITORY_ENV] == "trusted"
+    assert isolated_environment[governance_pr.SIGSTORE_REPOSITORY_ENV] == "trusted"
 
 
 def test_attested_task_apply_revalidates_plan_before_atomic_execution(
@@ -1196,6 +1695,196 @@ def test_attested_task_apply_revalidates_plan_before_atomic_execution(
     assert calls == ["prepare", "execute"]
     assert json.loads(stdout.getvalue())["task_id"] == TASK_ID
     assert stderr.getvalue() == ""
+
+
+def test_attested_apply_accepts_only_the_exact_ready_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    task_id = "TASK-01KY58ZZZZZZZZZZZZZZZZZZZZ-full-regression-closure-successor"
+    task_dir = tmp_path / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    task, scope = _successor_documents(
+        task_id,
+        profile="full-regression",
+        version=1,
+    )
+    (task_dir / "task.yaml").write_text(yaml.safe_dump(task), encoding="utf-8")
+    (task_dir / "scope-contract.yaml").write_text(
+        yaml.safe_dump(scope),
+        encoding="utf-8",
+    )
+    context = TransitionContext(
+        triage_complete=True,
+        scope_approved=True,
+        gates_selected=True,
+    )
+    command = Transition(
+        task_id=task_id,
+        target="ready",
+        context=context,
+        actor_claim={"id": "governance-owner", "kind": "human"},
+        expected_revision=1,
+        idempotency_key="github-sigstore-task-ready:987654:2",
+        operation="task.transition.ready",
+        transition_metadata={},
+        minimum_independence="L2",
+        replay_intent={
+            "target": "ready",
+            "condition": [],
+            "fact_id": None,
+            "reason": None,
+        },
+    )
+    intent = {"schema_version": 1, "task_id": task_id, "target": "ready"}
+    request = AuthorityRequest(
+        repository_identity="github:repository-id:1290429577",
+        operation=command.operation,
+        task_id=task_id,
+        actor_claim=command.actor_claim,
+        expected_revision=1,
+        idempotency_key=command.idempotency_key,
+        intent_digest=canonical_digest(intent),
+        policy_digest="sha256:" + "1" * 64,
+        ownership_digest="sha256:" + "2" * 64,
+        audience="mac-mutation-gateway/v1",
+    )
+    plan = {
+        "schema_version": 1,
+        "kind": "mac.prepared-mutation",
+        "command": governance_pr._serialize_transition(command),
+        "request": request.as_dict(),
+        "intent": intent,
+        "verification_policy": {
+            "schema_version": 1,
+            "repository": "IvesChenHX/multi-agent-collab",
+            "signer_workflow": "IvesChenHX/multi-agent-collab/.github/workflows/governance-pr.yml",
+            "source_ref": "refs/heads/codex/governance-authority-sigstore",
+            "source_digest": "a" * 40,
+            "predicate_type": (
+                "https://github.com/IvesChenHX/multi-agent-collab/"
+                "attestations/mutation-authority/v1"
+            ),
+            "environment": "governance-authority",
+            "oidc_issuer": "https://token.actions.githubusercontent.com",
+            "deny_self_hosted_runners": True,
+        },
+    }
+    predicate = {
+        "schema_version": 1,
+        "allowed": True,
+        "authenticated": True,
+        "issuer": "https://token.actions.githubusercontent.com",
+        "actor_id": "governance-owner",
+        "actor_kind": "human",
+        "independence_level": "L2",
+        "issued_at": "2026-07-22T00:00:00Z",
+        "expires_at": "2026-07-22T00:30:00Z",
+        "request_digest": request.request_digest,
+        "binding_digest": request.binding_digest,
+        "environment": "governance-authority",
+    }
+    plan_path = tmp_path / "plan.json"
+    predicate_path = tmp_path / "predicate.json"
+    bundle_path = tmp_path / "bundle.json"
+    plan_path.write_text(
+        json.dumps(plan, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    predicate_path.write_text(
+        json.dumps(predicate, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    bundle_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        governance_pr,
+        "resolve_transition_context",
+        lambda *_: context,
+    )
+    calls: list[str] = []
+
+    class FakeGateway:
+        def __init__(self, _repo: Path):
+            pass
+
+        def prepare(self, observed: Transition):
+            calls.append("prepare")
+            assert observed == command
+            return SimpleNamespace(request=request, intent=intent, command=observed)
+
+        def execute(self, observed: Transition):
+            calls.append("execute")
+            assert observed == command
+            return SimpleNamespace(
+                projection={"id": task_id, "revision": 2},
+                event={"event_id": "EVT-ready"},
+                authority={
+                    "attestation_id": "sigstore:ready",
+                    "binding_digest": request.binding_digest,
+                },
+            )
+
+    monkeypatch.setattr(governance_pr, "MutationGateway", FakeGateway)
+    monkeypatch.setattr(
+        governance_pr,
+        "command_manifest_digest",
+        lambda _: "sha256:" + "b" * 64,
+    )
+    stdout = StringIO()
+    stderr = StringIO()
+
+    accepted = github_attested_task_apply_main(
+        plan_path=plan_path,
+        predicate_path=predicate_path,
+        bundle_path=bundle_path,
+        repo=tmp_path,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert accepted == 0
+    assert calls == ["prepare", "execute"]
+    assert json.loads(stdout.getvalue())["revision"] == 2
+
+    tampered = json.loads(plan_path.read_text(encoding="utf-8"))
+    tampered["command"]["target"] = "executing"
+    plan_path.write_text(
+        json.dumps(tampered, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    calls.clear()
+    rejected = github_attested_task_apply_main(
+        plan_path=plan_path,
+        predicate_path=predicate_path,
+        bundle_path=bundle_path,
+        repo=tmp_path,
+        stdout=StringIO(),
+        stderr=StringIO(),
+    )
+
+    assert rejected == 2
+    assert calls == []
+
+    plan_path.write_text(
+        json.dumps(plan, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    task["objective"] = "tampered successor profile"
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(task),
+        encoding="utf-8",
+    )
+    profile_rejected = github_attested_task_apply_main(
+        plan_path=plan_path,
+        predicate_path=predicate_path,
+        bundle_path=bundle_path,
+        repo=tmp_path,
+        stdout=StringIO(),
+        stderr=StringIO(),
+    )
+
+    assert profile_rejected == 2
+    assert calls == []
 
 
 def test_attested_apply_accepts_only_the_exact_scope_amendment(
@@ -1364,6 +2053,14 @@ def test_governance_workflow_isolates_oidc_from_pull_request_code():
     workflow = yaml.safe_load(
         Path(".github/workflows/governance-pr.yml").read_text(encoding="utf-8")
     )
+    trigger = workflow.get("on", workflow.get(True))
+    dispatch_inputs = trigger["workflow_dispatch"]["inputs"]
+    assert dispatch_inputs["authority_transition_successor_ready"] == {
+        "description": "Prepare, sign, and export the successor triage-to-ready mutation",
+        "required": False,
+        "type": "boolean",
+        "default": False,
+    }
     assert workflow["permissions"] == {"contents": "read"}
     governance = workflow["jobs"]["governance"]
     assert "environment" not in governance
@@ -1405,6 +2102,50 @@ def test_governance_workflow_isolates_oidc_from_pull_request_code():
     assert "authority_create_successor" in authority["if"]
     assert "authority_approve_successor_scope" in authority["if"]
     assert "authority_amend_successor_scope" in authority["if"]
+    assert "authority_transition_successor_ready" in authority["if"]
+    ready_prepare = next(
+        step
+        for step in authority["steps"]
+        if step.get("name") == "Prepare the exact successor ready transition"
+    )
+    assert ready_prepare["if"] == "${{ inputs.authority_transition_successor_ready }}"
+    assert "--github-attested-ready-prepare" in ready_prepare["run"]
+    for step_id in ("mutation-attestation",):
+        step = next(step for step in authority["steps"] if step.get("id") == step_id)
+        assert "authority_transition_successor_ready" in step["if"]
+    collect = next(
+        step
+        for step in authority["steps"]
+        if step.get("name") == "Collect the non-secret authority bundle"
+    )
+    assert "authority_transition_successor_ready" in collect["if"]
+    assert "authority_transition_successor_ready" in upload["if"]
+
+
+def test_governance_entrypoint_routes_attested_ready_prepare(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    observed: list[Path] = []
+
+    def ready_prepare(*, output_dir: Path) -> int:
+        observed.append(output_dir)
+        return 17
+
+    monkeypatch.setattr(
+        governance_pr,
+        "github_attested_ready_prepare_main",
+        ready_prepare,
+    )
+
+    exit_code = governance_pr.main([
+        "--github-attested-ready-prepare",
+        "--out",
+        str(tmp_path / "ready"),
+    ])
+
+    assert exit_code == 17
+    assert observed == [tmp_path / "ready"]
 
 
 def test_discover_task_ids_from_changed_v6_task_metadata():

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -56,6 +56,9 @@ from mac.repository import (
     CreateTask,
     FilesystemTaskRepository,
     MutationGateway,
+    Transition,
+    _transition_context_snapshot,
+    resolve_transition_context,
     utc_now,
 )
 from mac.scope import amend_scope
@@ -140,6 +143,61 @@ _REGRESSION_SUCCESSOR_OWNERS = (
 _REGRESSION_SUCCESSOR_RISK_TAGS = (
     "auth_security", "compatibility", "data_migration",
 )
+_SUCCESSOR_ALLOWED_OPERATIONS = (
+    "read", "write", "execute_tests", "generate_artifacts",
+)
+_SUCCESSOR_REQUIRED_GATES = (
+    "targeted_tests", "negative_security_tests", "secret_scan", "scope_guard",
+    "compatibility_review", "independent_review", "rollback_plan",
+    "rollback_verification", "evidence_matches_current_commit",
+)
+_SUCCESSOR_AMENDMENT_POLICY = {
+    "max_amendments": 2,
+    "max_paths_per_amendment": 4,
+    "require_independent_approval_for": ["auth_security", "production_deploy"],
+}
+_BOOTSTRAP_SUCCESSOR_OBJECTIVE = (
+    "Create the first GitHub-Sigstore-authorized governance successor and "
+    "complete the two-phase Mutation Gateway trust loop."
+)
+_BOOTSTRAP_SUCCESSOR_ACCEPTANCE = (
+    "Every persisted mutation carries a verified non-secret Sigstore authority bundle.",
+    "Scope approval and replay succeed against the exact signed mutation intent.",
+    "No OIDC bearer token or GitHub token enters Task, Event, Evidence, logs, or Git.",
+    "Governance-sensitive changes receive L2 review before merge.",
+)
+_REGRESSION_SUCCESSOR_OBJECTIVE = (
+    "Close the full cross-platform regression suite while preserving the "
+    "GitHub-Sigstore authority and commit-bound evidence loop."
+)
+_REGRESSION_SUCCESSOR_ACCEPTANCE = (
+    "The full locked test suite passes on Linux, macOS, and Windows for every supported Python version.",
+    "Trusted repository validation remains green on every CI matrix entry.",
+    "Legacy Scope, migration, Git workspace, LFS, and YAML compatibility regressions are covered test-first.",
+    "All persisted mutations and completion evidence remain bound to approved Scope and the current commit.",
+)
+
+
+def _successor_profile_contract(profile: str) -> dict[str, Any]:
+    if profile == "bootstrap":
+        return {
+            "title": "GitHub authority bootstrap successor",
+            "objective": _BOOTSTRAP_SUCCESSOR_OBJECTIVE,
+            "acceptance": _BOOTSTRAP_SUCCESSOR_ACCEPTANCE,
+            "allowed_paths": _SUCCESSOR_SCOPE_BASE_PATHS,
+            "owners": ("governance", "platform", "security", "devex", "tests", "docs"),
+            "risk_tags": (),
+        }
+    if profile == _REGRESSION_SUCCESSOR_PROFILE:
+        return {
+            "title": _REGRESSION_SUCCESSOR_TITLE,
+            "objective": _REGRESSION_SUCCESSOR_OBJECTIVE,
+            "acceptance": _REGRESSION_SUCCESSOR_ACCEPTANCE,
+            "allowed_paths": _REGRESSION_SUCCESSOR_SCOPE_PATHS,
+            "owners": _REGRESSION_SUCCESSOR_OWNERS,
+            "risk_tags": _REGRESSION_SUCCESSOR_RISK_TAGS,
+        }
+    raise ValueError("successor profile is not allowlisted")
 
 
 class _RejectRedirects(HTTPRedirectHandler):
@@ -901,20 +959,100 @@ def _deserialize_append_event(document: object, repo: Path) -> AppendEvent:
     )
 
 
-def _serialize_mutation(command: CreateTask | AppendEvent, repo: Path) -> dict[str, Any]:
+def _serialize_transition(command: Transition) -> dict[str, Any]:
+    return {
+        "command_type": "Transition",
+        "task_id": command.task_id,
+        "target": command.target,
+        "context": asdict(command.context),
+        "actor_claim": dict(command.actor_claim),
+        "expected_revision": command.expected_revision,
+        "idempotency_key": command.idempotency_key,
+        "operation": command.operation,
+        "transition_metadata": (
+            dict(command.transition_metadata)
+            if command.transition_metadata is not None
+            else None
+        ),
+        "minimum_independence": command.minimum_independence,
+        "replay_intent": dict(command.replay_intent or {}),
+    }
+
+
+def _deserialize_transition(document: object) -> Transition:
+    required = {
+        "command_type", "task_id", "target", "context", "actor_claim",
+        "expected_revision", "idempotency_key", "operation",
+        "transition_metadata", "minimum_independence", "replay_intent",
+    }
+    if (
+        not isinstance(document, dict)
+        or set(document) != required
+        or document.get("command_type") != "Transition"
+    ):
+        raise ValueError("prepared mutation command is invalid")
+    task_id = document.get("task_id")
+    expected_revision = document.get("expected_revision")
+    context = document.get("context")
+    if (
+        not isinstance(task_id, str)
+        or _TASK_ID.fullmatch(task_id) is None
+        or not isinstance(document.get("target"), str)
+        or not isinstance(document.get("actor_claim"), dict)
+        or type(expected_revision) is not int
+        or not isinstance(document.get("idempotency_key"), str)
+        or not isinstance(document.get("operation"), str)
+        or not isinstance(document.get("replay_intent"), dict)
+        or document.get("transition_metadata") is not None
+        and not isinstance(document.get("transition_metadata"), dict)
+    ):
+        raise ValueError("prepared mutation command is invalid")
+    try:
+        decoded_context = _transition_context_snapshot(context, task_id=task_id)
+    except MacError as exc:
+        raise ValueError("prepared mutation command is invalid") from exc
+    return Transition(
+        task_id=task_id,
+        target=document["target"],
+        context=decoded_context,
+        actor_claim=document["actor_claim"],
+        expected_revision=expected_revision,
+        idempotency_key=document["idempotency_key"],
+        operation=document["operation"],
+        transition_metadata=document["transition_metadata"],
+        minimum_independence=(
+            str(document["minimum_independence"])
+            if document.get("minimum_independence") is not None
+            else None
+        ),
+        replay_intent=document["replay_intent"],
+    )
+
+
+def _serialize_mutation(
+    command: CreateTask | AppendEvent | Transition,
+    repo: Path,
+) -> dict[str, Any]:
     if isinstance(command, CreateTask):
         return _serialize_create_task(command)
     if isinstance(command, AppendEvent):
         return _serialize_append_event(command, repo)
+    if isinstance(command, Transition):
+        return _serialize_transition(command)
     raise ValueError("unsupported prepared mutation command")
 
 
-def _deserialize_mutation(document: object, repo: Path) -> CreateTask | AppendEvent:
+def _deserialize_mutation(
+    document: object,
+    repo: Path,
+) -> CreateTask | AppendEvent | Transition:
     command_type = document.get("command_type") if isinstance(document, dict) else None
     if command_type == "CreateTask":
         return _deserialize_create_task(document)
     if command_type == "AppendEvent":
         return _deserialize_append_event(document, repo)
+    if command_type == "Transition":
+        return _deserialize_transition(document)
     raise ValueError("prepared mutation command is invalid")
 
 
@@ -943,52 +1081,17 @@ def _successor_create_command(values: Mapping[str, str], repo: Path) -> CreateTa
     probe = _github_probe_request(values, repo)
     parent_task = probe.task_id
     profile = values.get(_SUCCESSOR_PROFILE_ENV, "bootstrap") or "bootstrap"
-    if profile == "bootstrap":
-        title = "GitHub authority bootstrap successor"
-        objective = (
-            "Create the first GitHub-Sigstore-authorized governance successor and "
-            "complete the two-phase Mutation Gateway trust loop."
-        )
-        acceptance = [
-            "Every persisted mutation carries a verified non-secret Sigstore authority bundle.",
-            "Scope approval and replay succeed against the exact signed mutation intent.",
-            "No OIDC bearer token or GitHub token enters Task, Event, Evidence, logs, or Git.",
-            "Governance-sensitive changes receive L2 review before merge.",
-        ]
-        allowed_paths = list(_SUCCESSOR_SCOPE_BASE_PATHS)
-        owners = ["governance", "platform", "security", "devex", "tests", "docs"]
-        risk_tags: list[str] = []
-    elif profile == _REGRESSION_SUCCESSOR_PROFILE:
-        title = _REGRESSION_SUCCESSOR_TITLE
-        objective = (
-            "Close the full cross-platform regression suite while preserving the "
-            "GitHub-Sigstore authority and commit-bound evidence loop."
-        )
-        acceptance = [
-            "The full locked test suite passes on Linux, macOS, and Windows for every supported Python version.",
-            "Trusted repository validation remains green on every CI matrix entry.",
-            "Legacy Scope, migration, Git workspace, LFS, and YAML compatibility regressions are covered test-first.",
-            "All persisted mutations and completion evidence remain bound to approved Scope and the current commit.",
-        ]
-        allowed_paths = list(_REGRESSION_SUCCESSOR_SCOPE_PATHS)
-        owners = list(_REGRESSION_SUCCESSOR_OWNERS)
-        risk_tags = list(_REGRESSION_SUCCESSOR_RISK_TAGS)
-    else:
-        raise ValueError("successor profile is not allowlisted")
+    contract = _successor_profile_contract(profile)
     command = TaskService(repo).build_create_command(
-        title=title,
+        title=str(contract["title"]),
         mode="high_risk",
-        objective=objective,
-        acceptance=acceptance,
-        allowed_paths=allowed_paths,
-        allowed_operations=["read", "write", "execute_tests", "generate_artifacts"],
-        owners=owners,
+        objective=str(contract["objective"]),
+        acceptance=list(contract["acceptance"]),
+        allowed_paths=list(contract["allowed_paths"]),
+        allowed_operations=list(_SUCCESSOR_ALLOWED_OPERATIONS),
+        owners=list(contract["owners"]),
         runtime_profile="local-multi",
-        required_gates=[
-            "targeted_tests", "negative_security_tests", "secret_scan", "scope_guard",
-            "compatibility_review", "independent_review", "rollback_plan",
-            "rollback_verification", "evidence_matches_current_commit",
-        ],
+        required_gates=list(_SUCCESSOR_REQUIRED_GATES),
         actor={"id": "governance-owner", "kind": "human"},
         idempotency_key=(
             "github-sigstore-task-create:"
@@ -1007,7 +1110,7 @@ def _successor_create_command(values: Mapping[str, str], repo: Path) -> CreateTa
         f"tasks/{task_id}/**",
         f"tasks/private/{task_id}/**",
     ]
-    adjusted_scope["risk_tags"] = risk_tags
+    adjusted_scope["risk_tags"] = list(contract["risk_tags"])
     return replace(
         command,
         initial_entities=((scope_path, adjusted_scope),),
@@ -1016,7 +1119,7 @@ def _successor_create_command(values: Mapping[str, str], repo: Path) -> CreateTa
 
 
 def _successor_scope_approval_command(
-    values: Mapping[str, str], repo: Path,
+    values: Mapping[str, str], repo: Path, *, recorded_at: str | None = None,
 ) -> AppendEvent:
     task_id = _required_environment(values, "MAC_AUTHORITY_PROBE_TASK_ID")
     if _TASK_ID.fullmatch(task_id) is None:
@@ -1093,7 +1196,7 @@ def _successor_scope_approval_command(
         "decision": "approved",
         "subject_ref": scope_approval_subject(task, scope),
         "independence_level": "L2",
-        "recorded_at": utc_now(),
+        "recorded_at": recorded_at or utc_now(),
     }
     config = load_data(repo / ".agents/config.yaml")
     ownership = load_data(repo / str(config["paths"]["ownership"]))
@@ -1126,6 +1229,134 @@ def _successor_scope_approval_command(
         replace_existing=frozenset({scope_path}),
         minimum_independence="L2",
         replay_intent={"independence_level_claim": "L2"},
+    )
+
+
+def _successor_ready_transition_command(
+    values: Mapping[str, str], repo: Path,
+) -> Transition:
+    task_id = _required_environment(values, "MAC_AUTHORITY_PROBE_TASK_ID")
+    if _TASK_ID.fullmatch(task_id) is None:
+        raise ValueError("ready transition task identifier is invalid")
+    repository = FilesystemTaskRepository(repo)
+    directory = repository.task_dir(task_id)
+    task = load_data(directory / "task.yaml")
+    scope = load_data(directory / "scope-contract.yaml")
+    profile = values.get(_SUCCESSOR_PROFILE_ENV, "bootstrap") or "bootstrap"
+    contract = _successor_profile_contract(profile)
+    version = scope.get("version")
+    if type(version) is not int or version < 1:
+        raise ValueError("successor Scope version is invalid")
+    expected_paths = [
+        *contract["allowed_paths"],
+        f"tasks/{task_id}/**",
+        f"tasks/private/{task_id}/**",
+    ]
+    expected_risk_tags = list(contract["risk_tags"])
+    if profile == "bootstrap":
+        if version >= 2:
+            expected_paths.extend(_SUCCESSOR_SCOPE_AMENDMENT_PATHS)
+            expected_risk_tags = ["data_migration"]
+        if version >= 3:
+            expected_paths.extend(_SUCCESSOR_SCOPE_SECOND_AMENDMENT_PATHS)
+            expected_risk_tags = ["auth_security", "data_migration"]
+        version_allowed = version in {1, 2, 3}
+    else:
+        version_allowed = version == 1
+    expected_approver = "repo-owner" if version == 1 else "governance-owner"
+    expected_proposer = "governance-owner" if version == 1 else "repo-owner"
+    expected_acceptance = [
+        {"id": f"AC-{index:03d}", "required": True, "text": text}
+        for index, text in enumerate(contract["acceptance"], start=1)
+    ]
+    relationships = task.get("relationships")
+    parent_task = (
+        relationships.get("parent_task")
+        if isinstance(relationships, Mapping)
+        else None
+    )
+    policy_ref = task.get("policy_ref")
+    ownership_ref = task.get("ownership_ref")
+    base_commit = scope.get("base_commit")
+    exact_lineage = bool(
+        isinstance(parent_task, str)
+        and _TASK_ID.fullmatch(parent_task) is not None
+        and relationships == {
+            "parent_task": parent_task,
+            "superseded_by": None,
+            "supersedes": [parent_task],
+        }
+    )
+    exact_frozen_sources = bool(
+        isinstance(base_commit, str)
+        and _GIT_OBJECT_ID.fullmatch(base_commit) is not None
+        and isinstance(policy_ref, Mapping)
+        and policy_ref.get("source_commit") == base_commit
+        and isinstance(ownership_ref, Mapping)
+        and ownership_ref.get("source_commit") == base_commit
+    )
+    if (
+        not version_allowed
+        or task.get("id") != task_id
+        or task.get("schema_version") != 6
+        or task.get("title") != contract["title"]
+        or task.get("mode") != "high_risk"
+        or task.get("objective") != contract["objective"]
+        or task.get("acceptance_criteria") != expected_acceptance
+        or task.get("runtime_profile") != "local-multi"
+        or task.get("required_gates") != ["approved_scope", *_SUCCESSOR_REQUIRED_GATES]
+        or task.get("state") != "triage"
+        or task.get("revision") != version * 2 - 1
+        or task.get("legacy_integrity") != "full"
+        or task.get("active_controller") is not None
+        or task.get("terminal") is not None
+        or task.get("scope_contract_ref") != f"tasks/{task_id}/scope-contract.yaml"
+        or not exact_lineage
+        or not exact_frozen_sources
+        or scope.get("schema_version") != 1
+        or scope.get("task_id") != task_id
+        or scope.get("status") != "approved"
+        or scope.get("proposed_by") != expected_proposer
+        or scope.get("approved_by") != [expected_approver]
+        or scope.get("allowed_paths") != expected_paths
+        or scope.get("allowed_operations") != list(_SUCCESSOR_ALLOWED_OPERATIONS)
+        or scope.get("denied_paths") != []
+        or scope.get("owners") != list(contract["owners"])
+        or scope.get("network_access") != "none"
+        or scope.get("secret_access") != []
+        or scope.get("required_gates") != list(_SUCCESSOR_REQUIRED_GATES)
+        or scope.get("amendment_policy") != _SUCCESSOR_AMENDMENT_POLICY
+        or scope.get("risk_tags") != expected_risk_tags
+    ):
+        raise ValueError("successor is not eligible for protected ready transition")
+    actor = {"id": "governance-owner", "kind": "human"}
+    context = resolve_transition_context(repo, task_id, "ready", actor)
+    if not (
+        context.triage_complete
+        and context.scope_approved
+        and context.gates_selected
+    ):
+        raise ValueError("successor ready transition guards are not satisfied")
+    return Transition(
+        task_id=task_id,
+        target="ready",
+        context=context,
+        actor_claim=actor,
+        expected_revision=int(task["revision"]),
+        idempotency_key=(
+            "github-sigstore-task-ready:"
+            f"{_required_environment(values, 'GITHUB_RUN_ID')}:"
+            f"{_required_environment(values, 'GITHUB_RUN_ATTEMPT')}"
+        ),
+        operation="task.transition.ready",
+        transition_metadata={},
+        minimum_independence="L2",
+        replay_intent={
+            "target": "ready",
+            "condition": [],
+            "fact_id": None,
+            "reason": None,
+        },
     )
 
 
@@ -1256,11 +1487,12 @@ def _configure_github_validation_trust(values: Mapping[str, str]) -> None:
 
 
 def _write_attested_mutation_plan(
-    command: CreateTask | AppendEvent,
+    command: CreateTask | AppendEvent | Transition,
     *,
     output_dir: Path,
     repo: Path,
     values: Mapping[str, str],
+    issued_at: str | None = None,
 ) -> tuple[AuthorityRequest, Mapping[str, Any]]:
     prepared = MutationGateway(repo).prepare(command)
     policy = _mutation_verification_policy(values)
@@ -1273,7 +1505,7 @@ def _write_attested_mutation_plan(
         "actor_id": prepared.request.actor_claim["id"],
         "actor_kind": prepared.request.actor_claim["kind"],
         "independence_level": "L2",
-        "issued_at": _render_time(now - timedelta(seconds=5)),
+        "issued_at": issued_at or _render_time(now - timedelta(seconds=5)),
         "expires_at": _render_time(now + timedelta(minutes=30)),
         "request_digest": prepared.request.request_digest,
         "binding_digest": prepared.request.binding_digest,
@@ -1339,9 +1571,18 @@ def github_attested_scope_prepare_main(
         for name, value in assignments.items():
             previous[name] = os.environ.get(name)
             os.environ[name] = value
-        command = _successor_scope_approval_command(values, repo)
+        issued_at = _render_time(datetime.now(timezone.utc) - timedelta(seconds=5))
+        command = _successor_scope_approval_command(
+            values,
+            repo,
+            recorded_at=issued_at,
+        )
         request, _ = _write_attested_mutation_plan(
-            command, output_dir=output_dir, repo=repo, values=values,
+            command,
+            output_dir=output_dir,
+            repo=repo,
+            values=values,
+            issued_at=issued_at,
         )
         stdout.write(json.dumps({
             "ok": True,
@@ -1354,6 +1595,57 @@ def github_attested_scope_prepare_main(
         return 0
     except (MacError, OSError, subprocess.SubprocessError, TypeError, ValueError, yaml.YAMLError):
         stderr.write("trusted attested scope preparation failed\n")
+        return 2
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def github_attested_ready_prepare_main(
+    *,
+    output_dir: Path,
+    repo: Path = Path("."),
+    stdout: TextIO = sys.stdout,
+    stderr: TextIO = sys.stderr,
+    environment: Mapping[str, str] | None = None,
+) -> int:
+    """Prepare one exact task.transition.ready plan after replaying authority."""
+
+    previous: dict[str, str | None] = {}
+    try:
+        values = os.environ if environment is None else environment
+        assignments = _sigstore_trust_environment()
+        for name, value in assignments.items():
+            previous[name] = os.environ.get(name)
+            os.environ[name] = value
+        command = _successor_ready_transition_command(values, repo)
+        request, _ = _write_attested_mutation_plan(
+            command,
+            output_dir=output_dir,
+            repo=repo,
+            values=values,
+        )
+        stdout.write(json.dumps({
+            "ok": True,
+            "task_id": command.task_id,
+            "operation": command.operation,
+            "request_digest": request.request_digest,
+            "binding_digest": request.binding_digest,
+            "predicate_type": _MUTATION_ATTESTATION_PREDICATE_TYPE,
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+        return 0
+    except (
+        MacError,
+        OSError,
+        subprocess.SubprocessError,
+        TypeError,
+        ValueError,
+        yaml.YAMLError,
+    ):
+        stderr.write("trusted attested ready transition preparation failed\n")
         return 2
     finally:
         for name, value in previous.items():
@@ -1571,6 +1863,44 @@ def _allowlisted_successor_scope_approval(command: AppendEvent) -> bool:
     )
 
 
+def _allowlisted_successor_ready_transition(
+    command: Transition,
+    repo: Path,
+) -> bool:
+    prefix = "github-sigstore-task-ready:"
+    if not command.idempotency_key.startswith(prefix):
+        return False
+    suffix = command.idempotency_key.removeprefix(prefix).split(":")
+    if len(suffix) != 2 or any(not value.isdigit() for value in suffix):
+        return False
+    try:
+        task = load_data(
+            FilesystemTaskRepository(repo).task_dir(command.task_id) / "task.yaml"
+        )
+        title = task.get("title")
+        profile = (
+            _REGRESSION_SUCCESSOR_PROFILE
+            if title == _REGRESSION_SUCCESSOR_TITLE
+            else "bootstrap"
+            if title == "GitHub authority bootstrap successor"
+            else ""
+        )
+        if not profile:
+            return False
+        expected = _successor_ready_transition_command(
+            {
+                "MAC_AUTHORITY_PROBE_TASK_ID": command.task_id,
+                _SUCCESSOR_PROFILE_ENV: profile,
+                "GITHUB_RUN_ID": suffix[0],
+                "GITHUB_RUN_ATTEMPT": suffix[1],
+            },
+            repo,
+        )
+    except (MacError, OSError, TypeError, ValueError, yaml.YAMLError):
+        return False
+    return _serialize_transition(command) == _serialize_transition(expected)
+
+
 def github_attested_task_apply_main(
     *,
     plan_path: Path,
@@ -1618,6 +1948,9 @@ def github_attested_task_apply_main(
         if isinstance(command, CreateTask):
             if command.operation != "task.create" or command.minimum_independence != "L2":
                 raise ValueError("prepared task mutation is not allowlisted")
+        elif isinstance(command, Transition):
+            if not _allowlisted_successor_ready_transition(command, repo):
+                raise ValueError("prepared ready transition is not allowlisted")
         elif command.operation == "scope.amend":
             if not _allowlisted_successor_scope_amendment(command):
                 raise ValueError("prepared scope amendment is not allowlisted")
@@ -1883,6 +2216,12 @@ def main(argv: list[str] | None = None) -> int:
         mutation_parser.add_argument("--out", type=Path, required=True)
         mutation_args = mutation_parser.parse_args(normalized_argv)
         return github_attested_scope_amend_prepare_main(output_dir=mutation_args.out)
+    if normalized_argv and normalized_argv[0] == "--github-attested-ready-prepare":
+        mutation_parser = argparse.ArgumentParser()
+        mutation_parser.add_argument("--github-attested-ready-prepare", action="store_true")
+        mutation_parser.add_argument("--out", type=Path, required=True)
+        mutation_args = mutation_parser.parse_args(normalized_argv)
+        return github_attested_ready_prepare_main(output_dir=mutation_args.out)
     if normalized_argv and normalized_argv[0] == "--github-attested-task-apply":
         mutation_parser = argparse.ArgumentParser()
         mutation_parser.add_argument("--github-attested-task-apply", action="store_true")
