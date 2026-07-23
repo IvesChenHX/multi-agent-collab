@@ -25,6 +25,6 @@ expected_result: tasks/TASK-01KY76SVSJX1AK8R08MFP0DBEQ-full-regression-closure-s
 id: WU-01KY77JW56G58SFC2BZWK848P2
 owner: tests
 schema_version: 1
-status: ready
+status: running
 task_id: TASK-01KY76SVSJX1AK8R08MFP0DBEQ-full-regression-closure-successor
 title: Close the full regression suite
