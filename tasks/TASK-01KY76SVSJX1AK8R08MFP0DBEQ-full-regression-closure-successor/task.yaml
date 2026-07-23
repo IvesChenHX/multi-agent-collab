@@ -55,11 +55,11 @@ required_gates:
 - rollback_plan
 - rollback_verification
 - evidence_matches_current_commit
-revision: 2
+revision: 3
 runtime_profile: local-multi
 schema_version: 6
 scope_contract_ref: tasks/TASK-01KY76SVSJX1AK8R08MFP0DBEQ-full-regression-closure-successor/scope-contract.yaml
 state: ready
 terminal: null
 title: Full regression closure successor
-updated_at: '2026-07-23T10:11:48.086750Z'
+updated_at: '2026-07-23T10:15:27.644977Z'
