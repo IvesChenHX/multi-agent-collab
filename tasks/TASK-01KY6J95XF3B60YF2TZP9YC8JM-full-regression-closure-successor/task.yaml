@@ -1,0 +1,65 @@
+acceptance_criteria:
+- id: AC-001
+  required: true
+  text: The full locked test suite passes on Linux, macOS, and Windows for every supported
+    Python version.
+- id: AC-002
+  required: true
+  text: Trusted repository validation remains green on every CI matrix entry.
+- id: AC-003
+  required: true
+  text: Legacy Scope, migration, Git workspace, LFS, and YAML compatibility regressions
+    are covered test-first.
+- id: AC-004
+  required: true
+  text: All persisted mutations and completion evidence remain bound to approved Scope
+    and the current commit.
+active_controller: null
+created_at: '2026-07-23T04:03:33.423793Z'
+id: TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor
+legacy_integrity: full
+mode: high_risk
+objective: Close the full cross-platform regression suite while preserving the GitHub-Sigstore
+  authority and commit-bound evidence loop.
+ownership_ref:
+  combined_digest: sha256:291efd0cb181d3cc9b6577111be30ced1d44965b84836ae2d6e16c696b8ec50e
+  files:
+  - digest: sha256:c6cc7140ddf72200e06b9afabfb0518a8b4011d71d61287a2ed304fc5a4d26c1
+    path: .agents/ownership.yaml
+  source_commit: b0189a10ba187e0ffda30a3d16583c72b7e36dfd
+policy_ref:
+  combined_digest: sha256:ba3639b86091734159c865fd65aeea4e5a583b532231206ab7676b53e954ce43
+  files:
+  - digest: sha256:c7898fc4c8bfd17d5d8c3a1a1c197b3423d2bb269a4919764fb5aa84cafac365
+    path: .agents/config.yaml
+  - digest: sha256:506399f876fc666cc2be68b22bc07f9f5af1d50afd970582af90d73f00c364fb
+    path: .agents/runtime-profiles/local-multi.yaml
+  - digest: sha256:c2c71fd57e8878263068d1d2d4a4d5bbdee805824747dec0a54d6eeccd00964d
+    path: .agents/workflows/evidence-driven-development.yaml
+  - digest: sha256:ad92a772d42ce2732bba07510424714c3d6f94d1f0a5055902eb4ea7842e3c22
+    path: AGENTS.md
+  source_commit: b0189a10ba187e0ffda30a3d16583c72b7e36dfd
+relationships:
+  parent_task: TASK-01KY58Y04M91GQ177Y3NVK6PS6-full-regression-closure-successor
+  superseded_by: null
+  supersedes:
+  - TASK-01KY58Y04M91GQ177Y3NVK6PS6-full-regression-closure-successor
+required_gates:
+- approved_scope
+- targeted_tests
+- negative_security_tests
+- secret_scan
+- scope_guard
+- compatibility_review
+- independent_review
+- rollback_plan
+- rollback_verification
+- evidence_matches_current_commit
+revision: 0
+runtime_profile: local-multi
+schema_version: 6
+scope_contract_ref: tasks/TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor/scope-contract.yaml
+state: triage
+terminal: null
+title: Full regression closure successor
+updated_at: '2026-07-23T04:03:28.630574Z'

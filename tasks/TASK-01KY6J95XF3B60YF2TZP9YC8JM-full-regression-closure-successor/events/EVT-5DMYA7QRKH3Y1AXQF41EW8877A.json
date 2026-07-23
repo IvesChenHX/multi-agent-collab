@@ -1,0 +1,493 @@
+{
+  "actor": {
+    "id": "governance-owner",
+    "kind": "human"
+  },
+  "event_id": "EVT-5DMYA7QRKH3Y1AXQF41EW8877A",
+  "event_type": "task_created",
+  "expected_revision": -1,
+  "idempotency_key": "github-sigstore-task-create:29978522622:1:full-regression",
+  "new_revision": 0,
+  "occurred_at": "2026-07-23T04:03:28.630574Z",
+  "payload": {
+    "authority": {
+      "actor_id": "governance-owner",
+      "actor_kind": "human",
+      "allowed": true,
+      "attestation_id": "sigstore:sha256:43159c99187ecc79397709a5fd0d0e635f6c0987b94fde98de1595c806e97f9f",
+      "audience": "mac-mutation-gateway/v1",
+      "authenticated": true,
+      "authorized_intent": {
+        "expected_revision": -1,
+        "idempotency_key": "github-sigstore-task-create:29978522622:1:full-regression",
+        "initial_entities": [
+          [
+            "scope-contract.yaml",
+            {
+              "allowed_operations": [
+                "read",
+                "write",
+                "execute_tests",
+                "generate_artifacts"
+              ],
+              "allowed_paths": [
+                "src/mac/authority.py",
+                "src/mac/cli.py",
+                "src/mac/git.py",
+                "src/mac/migration.py",
+                "src/mac/repository.py",
+                "src/mac/schema_validation.py",
+                "src/mac/scope.py",
+                "tests/test_event_store.py",
+                "tests/test_examples_v6.py",
+                "tests/test_migration_and_services.py",
+                "tests/test_repair_round4.py",
+                "tests/test_repair_round5_platform.py",
+                "tests/test_schema_validation.py",
+                "tests/test_scope_amendment_and_workflow.py",
+                "tests/operations/test_release_artifacts.py",
+                "examples/v6/**",
+                "tasks/TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor/**",
+                "tasks/private/TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor/**"
+              ],
+              "amendment_policy": {
+                "max_amendments": 2,
+                "max_paths_per_amendment": 4,
+                "require_independent_approval_for": [
+                  "auth_security",
+                  "production_deploy"
+                ]
+              },
+              "approved_by": [],
+              "base_commit": "b0189a10ba187e0ffda30a3d16583c72b7e36dfd",
+              "denied_paths": [],
+              "id": "SCOPE-01KY6J95XF3B60YF2TZP9YC8JN",
+              "network_access": "none",
+              "owners": [
+                "governance",
+                "platform",
+                "devex",
+                "tests",
+                "examples",
+                "docs"
+              ],
+              "proposed_by": "governance-owner",
+              "required_gates": [
+                "targeted_tests",
+                "negative_security_tests",
+                "secret_scan",
+                "scope_guard",
+                "compatibility_review",
+                "independent_review",
+                "rollback_plan",
+                "rollback_verification",
+                "evidence_matches_current_commit"
+              ],
+              "risk_tags": [
+                "auth_security",
+                "compatibility",
+                "data_migration"
+              ],
+              "schema_version": 1,
+              "secret_access": [],
+              "status": "proposed",
+              "task_id": "TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor",
+              "version": 1
+            }
+          ]
+        ],
+        "minimum_independence": "L2",
+        "operation": "task.create",
+        "replay_digest": "sha256:7410ce0b5d5ba3f66428b3f8ae02da119a7501fa0dbe6cce929a7002a4e5ed27",
+        "schema_version": 1,
+        "task": {
+          "acceptance_criteria": [
+            {
+              "id": "AC-001",
+              "required": true,
+              "text": "The full locked test suite passes on Linux, macOS, and Windows for every supported Python version."
+            },
+            {
+              "id": "AC-002",
+              "required": true,
+              "text": "Trusted repository validation remains green on every CI matrix entry."
+            },
+            {
+              "id": "AC-003",
+              "required": true,
+              "text": "Legacy Scope, migration, Git workspace, LFS, and YAML compatibility regressions are covered test-first."
+            },
+            {
+              "id": "AC-004",
+              "required": true,
+              "text": "All persisted mutations and completion evidence remain bound to approved Scope and the current commit."
+            }
+          ],
+          "active_controller": null,
+          "created_at": "2026-07-23T04:03:33.423793Z",
+          "id": "TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor",
+          "legacy_integrity": "full",
+          "mode": "high_risk",
+          "objective": "Close the full cross-platform regression suite while preserving the GitHub-Sigstore authority and commit-bound evidence loop.",
+          "ownership_ref": {
+            "combined_digest": "sha256:291efd0cb181d3cc9b6577111be30ced1d44965b84836ae2d6e16c696b8ec50e",
+            "files": [
+              {
+                "digest": "sha256:c6cc7140ddf72200e06b9afabfb0518a8b4011d71d61287a2ed304fc5a4d26c1",
+                "path": ".agents/ownership.yaml"
+              }
+            ],
+            "source_commit": "b0189a10ba187e0ffda30a3d16583c72b7e36dfd"
+          },
+          "policy_ref": {
+            "combined_digest": "sha256:ba3639b86091734159c865fd65aeea4e5a583b532231206ab7676b53e954ce43",
+            "files": [
+              {
+                "digest": "sha256:c7898fc4c8bfd17d5d8c3a1a1c197b3423d2bb269a4919764fb5aa84cafac365",
+                "path": ".agents/config.yaml"
+              },
+              {
+                "digest": "sha256:506399f876fc666cc2be68b22bc07f9f5af1d50afd970582af90d73f00c364fb",
+                "path": ".agents/runtime-profiles/local-multi.yaml"
+              },
+              {
+                "digest": "sha256:c2c71fd57e8878263068d1d2d4a4d5bbdee805824747dec0a54d6eeccd00964d",
+                "path": ".agents/workflows/evidence-driven-development.yaml"
+              },
+              {
+                "digest": "sha256:ad92a772d42ce2732bba07510424714c3d6f94d1f0a5055902eb4ea7842e3c22",
+                "path": "AGENTS.md"
+              }
+            ],
+            "source_commit": "b0189a10ba187e0ffda30a3d16583c72b7e36dfd"
+          },
+          "relationships": {
+            "parent_task": "TASK-01KY58Y04M91GQ177Y3NVK6PS6-full-regression-closure-successor",
+            "superseded_by": null,
+            "supersedes": [
+              "TASK-01KY58Y04M91GQ177Y3NVK6PS6-full-regression-closure-successor"
+            ]
+          },
+          "required_gates": [
+            "approved_scope",
+            "targeted_tests",
+            "negative_security_tests",
+            "secret_scan",
+            "scope_guard",
+            "compatibility_review",
+            "independent_review",
+            "rollback_plan",
+            "rollback_verification",
+            "evidence_matches_current_commit"
+          ],
+          "revision": 0,
+          "runtime_profile": "local-multi",
+          "schema_version": 6,
+          "scope_contract_ref": "tasks/TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor/scope-contract.yaml",
+          "state": "triage",
+          "terminal": null,
+          "title": "Full regression closure successor",
+          "updated_at": "2026-07-23T04:03:33.423793Z"
+        },
+        "task_id": "TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor"
+      },
+      "binding_digest": "sha256:e921bb5192ec20c3778216b2c2f83b436900a9c3c61846f64adc8aaf2889fe2f",
+      "broker_digest": "sha256:89ac2d7267cea4363e0a5df465edbee9320a364106727d488b4326e1707d7a57",
+      "expected_revision": -1,
+      "expires_at": "2026-07-23T04:33:33.630574Z",
+      "idempotency_key": "github-sigstore-task-create:29978522622:1:full-regression",
+      "independence_level": "L2",
+      "intent_digest": "sha256:2c03a688b096a6653af5d77d85418ce52a8d2fd494f398c1415fc51cbbba99cc",
+      "issued_at": "2026-07-23T04:03:28.630574Z",
+      "issuer": "https://token.actions.githubusercontent.com",
+      "key_id": "sha256:43159c99187ecc79397709a5fd0d0e635f6c0987b94fde98de1595c806e97f9f",
+      "minimum_independence": "L2",
+      "operation": "task.create",
+      "ownership_digest": "sha256:291efd0cb181d3cc9b6577111be30ced1d44965b84836ae2d6e16c696b8ec50e",
+      "policy_digest": "sha256:ba3639b86091734159c865fd65aeea4e5a583b532231206ab7676b53e954ce43",
+      "replay_digest": "sha256:7410ce0b5d5ba3f66428b3f8ae02da119a7501fa0dbe6cce929a7002a4e5ed27",
+      "repository_identity": "github:repository-id:1290429577",
+      "request_digest": "sha256:3e323f2d904c20d5829f19cfc1ce9d470cd45408f9caa394c604a8543509e206",
+      "signature_algorithm": "sigstore-keyless",
+      "signed_envelope": {
+        "bundle": {
+          "dsseEnvelope": {
+            "payload": "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJuYW1lIjoic3ViamVjdC5qc29uIiwiZGlnZXN0Ijp7InNoYTI1NiI6IjNlMzIzZjJkOTA0YzIwZDU4MjlmMTljZmMxY2U5ZDQ3MGNkNDU0MDhmOWNhYTM5NGM2MDRhODU0MzUwOWUyMDYifX1dLCJwcmVkaWNhdGVUeXBlIjoiaHR0cHM6Ly9naXRodWIuY29tL0l2ZXNDaGVuSFgvbXVsdGktYWdlbnQtY29sbGFiL2F0dGVzdGF0aW9ucy9tdXRhdGlvbi1hdXRob3JpdHkvdjEiLCJwcmVkaWNhdGUiOnsiYWN0b3JfaWQiOiJnb3Zlcm5hbmNlLW93bmVyIiwiYWN0b3Jfa2luZCI6Imh1bWFuIiwiYWxsb3dlZCI6dHJ1ZSwiYXV0aGVudGljYXRlZCI6dHJ1ZSwiYmluZGluZ19kaWdlc3QiOiJzaGEyNTY6ZTkyMWJiNTE5MmVjMjBjMzc3ODIxNmIyYzJmODNiNDM2OTAwYTljM2M2MTg0NmY2NGFkYzhhYWYyODg5ZmUyZiIsImVudmlyb25tZW50IjoiZ292ZXJuYW5jZS1hdXRob3JpdHkiLCJleHBpcmVzX2F0IjoiMjAyNi0wNy0yM1QwNDozMzozMy42MzA1NzRaIiwiaW5kZXBlbmRlbmNlX2xldmVsIjoiTDIiLCJpc3N1ZWRfYXQiOiIyMDI2LTA3LTIzVDA0OjAzOjI4LjYzMDU3NFoiLCJpc3N1ZXIiOiJodHRwczovL3Rva2VuLmFjdGlvbnMuZ2l0aHVidXNlcmNvbnRlbnQuY29tIiwicmVxdWVzdF9kaWdlc3QiOiJzaGEyNTY6M2UzMjNmMmQ5MDRjMjBkNTgyOWYxOWNmYzFjZTlkNDcwY2Q0NTQwOGY5Y2FhMzk0YzYwNGE4NTQzNTA5ZTIwNiIsInNjaGVtYV92ZXJzaW9uIjoxfX0=",
+            "payloadType": "application/vnd.in-toto+json",
+            "signatures": [
+              {
+                "sig": "MEUCIQDY1Y1l4wEy/89nmiMn5qqy2BDEYhuiHhuBHiSLvYRdWwIgBvlBDVC7BQ1FWM85fzcrIlRak7KHZgZU4e+vln7m/xs="
+              }
+            ]
+          },
+          "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+          "verificationMaterial": {
+            "certificate": {
+              "rawBytes": "MIIIRDCCB8mgAwIBAgIUF7msNAd1HW+1VsObLxZ5LdAGMLYwCgYIKoZIzj0EAwMwNzEVMBMGA1UEChMMc2lnc3RvcmUuZGV2MR4wHAYDVQQDExVzaWdzdG9yZS1pbnRlcm1lZGlhdGUwHhcNMjYwNzIzMDQwMzM0WhcNMjYwNzIzMDQxMzM0WjAAMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEpAJpPnBit6by3CPSWS3vuSvOuWboFx8KymXFi4zM5GgJi2/XQzMofyzIXaXE8B9Alr1NRlOhmlG6OmG/JqwH96OCBugwggbkMA4GA1UdDwEB/wQEAwIHgDATBgNVHSUEDDAKBggrBgEFBQcDAzAdBgNVHQ4EFgQUBTsSPE/5cVFjD//exHAGLckq3cYwHwYDVR0jBBgwFoAU39Ppz1YkEZb5qNjpKFWixi4YZD8wgZQGA1UdEQEB/wSBiTCBhoaBg2h0dHBzOi8vZ2l0aHViLmNvbS9JdmVzQ2hlbkhYL211bHRpLWFnZW50LWNvbGxhYi8uZ2l0aHViL3dvcmtmbG93cy9nb3Zlcm5hbmNlLXByLnltbEByZWZzL2hlYWRzL2NvZGV4L2dvdmVybmFuY2UtYXV0aG9yaXR5LXNpZ3N0b3JlMDkGCisGAQQBg78wAQEEK2h0dHBzOi8vdG9rZW4uYWN0aW9ucy5naXRodWJ1c2VyY29udGVudC5jb20wHwYKKwYBBAGDvzABAgQRd29ya2Zsb3dfZGlzcGF0Y2gwNgYKKwYBBAGDvzABAwQoYjAxODlhMTBiYTE4N2UwZmZkYTMwYTNkMTY1ODNjNzJiN2UzNmRmZDAbBgorBgEEAYO/MAEEBA1Hb3Zlcm5hbmNlIFBSMCsGCisGAQQBg78wAQUEHUl2ZXNDaGVuSFgvbXVsdGktYWdlbnQtY29sbGFiMDwGCisGAQQBg78wAQYELnJlZnMvaGVhZHMvY29kZXgvZ292ZXJuYW5jZS1hdXRob3JpdHktc2lnc3RvcmUwOwYKKwYBBAGDvzABCAQtDCtodHRwczovL3Rva2VuLmFjdGlvbnMuZ2l0aHVidXNlcmNvbnRlbnQuY29tMIGVBgorBgEEAYO/MAEJBIGGDIGDaHR0cHM6Ly9naXRodWIuY29tL0l2ZXNDaGVuSFgvbXVsdGktYWdlbnQtY29sbGFiLy5naXRodWIvd29ya2Zsb3dzL2dvdmVybmFuY2UtcHIueW1sQHJlZnMvaGVhZHMvY29kZXgvZ292ZXJuYW5jZS1hdXRob3JpdHktc2lnc3RvcmUwOAYKKwYBBAGDvzABCgQqDChiMDE4OWExMGJhMTg3ZTBmZmRhMzBhM2QxNjU4M2M3MmI3ZTM2ZGZkMB0GCisGAQQBg78wAQsEDwwNZ2l0aHViLWhvc3RlZDBABgorBgEEAYO/MAEMBDIMMGh0dHBzOi8vZ2l0aHViLmNvbS9JdmVzQ2hlbkhYL211bHRpLWFnZW50LWNvbGxhYjA4BgorBgEEAYO/MAENBCoMKGIwMTg5YTEwYmExODdlMGZmZGEzMGEzZDE2NTgzYzcyYjdlMzZkZmQwPgYKKwYBBAGDvzABDgQwDC5yZWZzL2hlYWRzL2NvZGV4L2dvdmVybmFuY2UtYXV0aG9yaXR5LXNpZ3N0b3JlMBoGCisGAQQBg78wAQ8EDAwKMTI5MDQyOTU3NzAtBgorBgEEAYO/MAEQBB8MHWh0dHBzOi8vZ2l0aHViLmNvbS9JdmVzQ2hlbkhYMBkGCisGAQQBg78wAREECwwJMTY2MzE3MTM4MIGVBgorBgEEAYO/MAESBIGGDIGDaHR0cHM6Ly9naXRodWIuY29tL0l2ZXNDaGVuSFgvbXVsdGktYWdlbnQtY29sbGFiLy5naXRodWIvd29ya2Zsb3dzL2dvdmVybmFuY2UtcHIueW1sQHJlZnMvaGVhZHMvY29kZXgvZ292ZXJuYW5jZS1hdXRob3JpdHktc2lnc3RvcmUwOAYKKwYBBAGDvzABEwQqDChiMDE4OWExMGJhMTg3ZTBmZmRhMzBhM2QxNjU4M2M3MmI3ZTM2ZGZkMCEGCisGAQQBg78wARQEEwwRd29ya2Zsb3dfZGlzcGF0Y2gwZAYKKwYBBAGDvzABFQRWDFRodHRwczovL2dpdGh1Yi5jb20vSXZlc0NoZW5IWC9tdWx0aS1hZ2VudC1jb2xsYWIvYWN0aW9ucy9ydW5zLzI5OTc4NTIyNjIyL2F0dGVtcHRzLzEwFgYKKwYBBAGDvzABFgQIDAZwdWJsaWMwJAYKKwYBBAGDvzABFwQWDBRnb3Zlcm5hbmNlLWF1dGhvcml0eTBTBgorBgEEAYO/MAEYBEUMQ3JlcG86SXZlc0NoZW5IWC9tdWx0aS1hZ2VudC1jb2xsYWI6ZW52aXJvbm1lbnQ6Z292ZXJuYW5jZS1hdXRob3JpdHkwgYsGCisGAQQB1nkCBAIEfQR7AHkAdwDdPTBqxscRMmMZHhyZZzcCokpeuN48rf+HinKALynujgAAAZ+NJJpYAAAEAwBIMEYCIQDd0W8cBFEFvTPBpDSwfMBkscw/oeOyywRRm25YfRFIHgIhAOkCVnsmZL0LoZ8tTXjaovspDa/Q+AM1jrQv8Y9AaCEgMAoGCCqGSM49BAMDA2kAMGYCMQDuVMNxO951FNUKo6Ns4ue3gih8ULSWlKCBG0Ay28rt8c766Y9AbRIMTVhCDlMI+C8CMQC6X5hTISOdRTRSU8wq2VIfXEgUFIa3F3fjWQr/31/Q7aY80uS/Gq9ONQN9iE/1pPA="
+            },
+            "timestampVerificationData": {},
+            "tlogEntries": [
+              {
+                "canonicalizedBody": "eyJhcGlWZXJzaW9uIjoiMC4wLjEiLCJraW5kIjoiZHNzZSIsInNwZWMiOnsiZW52ZWxvcGVIYXNoIjp7ImFsZ29yaXRobSI6InNoYTI1NiIsInZhbHVlIjoiMWIxNjZkYTJmZGNiNWY1ODdiZWRjNzM1MmEyMGE0N2NhZDUxODFiNzJhOGNhZjg1Yjk4OGRhOGJhZDE3Yzc2NCJ9LCJwYXlsb2FkSGFzaCI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJ2YWx1ZSI6ImZhODEwY2JjMGNjYTJiMDBmNTBmMjAzZTJkYWViZTEzOGFhZTdlNzA2MzFjNWFkZDllZGUyMWE5ZGEwMTRiN2IifSwic2lnbmF0dXJlcyI6W3sic2lnbmF0dXJlIjoiTUVVQ0lRRFkxWTFsNHdFeS84OW5taU1uNXFxeTJCREVZaHVpSGh1QkhpU0x2WVJkV3dJZ0J2bEJEVkM3QlExRldNODVmemNySWxSYWs3S0haZ1pVNGUrdmxuN20veHM9IiwidmVyaWZpZXIiOiJMUzB0TFMxQ1JVZEpUaUJEUlZKVVNVWkpRMEZVUlMwdExTMHRDazFKU1VsU1JFTkRRamh0WjBGM1NVSkJaMGxWUmpkdGMwNUJaREZJVnlzeFZuTlBZa3g0V2pWTVpFRkhUVXhaZDBObldVbExiMXBKZW1vd1JVRjNUWGNLVG5wRlZrMUNUVWRCTVZWRlEyaE5UV015Ykc1ak0xSjJZMjFWZFZwSFZqSk5ValIzU0VGWlJGWlJVVVJGZUZaNllWZGtlbVJIT1hsYVV6RndZbTVTYkFwamJURnNXa2RzYUdSSFZYZElhR05PVFdwWmQwNTZTWHBOUkZGM1RYcE5NRmRvWTA1TmFsbDNUbnBKZWsxRVVYaE5lazB3VjJwQlFVMUdhM2RGZDFsSUNrdHZXa2w2YWpCRFFWRlpTVXR2V2tsNmFqQkVRVkZqUkZGblFVVndRVXB3VUc1Q2FYUTJZbmt6UTFCVFYxTXpkblZUZGs5MVYySnZSbmc0UzNsdFdFWUthVFI2VFRWSFowcHBNaTlZVVhwTmIyWjVla2xZWVZoRk9FSTVRV3h5TVU1U2JFOW9iV3hITms5dFJ5OUtjWGRJT1RaUFEwSjFaM2RuWjJKclRVRTBSd3BCTVZWa1JIZEZRaTkzVVVWQmQwbElaMFJCVkVKblRsWklVMVZGUkVSQlMwSm5aM0pDWjBWR1FsRmpSRUY2UVdSQ1owNVdTRkUwUlVablVWVkNWSE5UQ2xCRkx6VmpWa1pxUkM4dlpYaElRVWRNWTJ0eE0yTlpkMGgzV1VSV1VqQnFRa0puZDBadlFWVXpPVkJ3ZWpGWmEwVmFZalZ4VG1wd1MwWlhhWGhwTkZrS1drUTRkMmRhVVVkQk1WVmtSVkZGUWk5M1UwSnBWRU5DYUc5aFFtY3lhREJrU0VKNlQyazRkbG95YkRCaFNGWnBURzFPZG1KVE9VcGtiVlo2VVRKb2JBcGlhMmhaVERJeE1XSklVbkJNVjBadVdsYzFNRXhYVG5aaVIzaG9XV2s0ZFZveWJEQmhTRlpwVEROa2RtTnRkRzFpUnprelkzazVibUl6V214amJUVm9DbUp0VG14TVdFSjVURzVzZEdKRlFubGFWMXA2VERKb2JGbFhVbnBNTWs1MldrZFdORXd5Wkhaa2JWWjVZbTFHZFZreVZYUlpXRll3WVVjNWVXRllValVLVEZoT2NGb3pUakJpTTBwc1RVUnJSME5wYzBkQlVWRkNaemM0ZDBGUlJVVkxNbWd3WkVoQ2VrOXBPSFprUnpseVdsYzBkVmxYVGpCaFZ6bDFZM2sxYmdwaFdGSnZaRmRLTVdNeVZubFpNamwxWkVkV2RXUkROV3BpTWpCM1NIZFpTMHQzV1VKQ1FVZEVkbnBCUWtGblVWSmtNamw1WVRKYWMySXpaR1phUjJ4NkNtTkhSakJaTW1kM1RtZFpTMHQzV1VKQ1FVZEVkbnBCUWtGM1VXOVpha0Y0VDBSc2FFMVVRbWxaVkVVMFRqSlZkMXB0V210WlZFMTNXVlJPYTAxVVdURUtUMFJPYWs1NlNtbE9NbFY2VG0xU2JWcEVRV0pDWjI5eVFtZEZSVUZaVHk5TlFVVkZRa0V4U0dJeldteGpiVFZvWW0xT2JFbEdRbE5OUTNOSFEybHpSd3BCVVZGQ1p6YzRkMEZSVlVWSVZXd3lXbGhPUkdGSFZuVlRSbWQyWWxoV2MyUkhhM1JaVjJSc1ltNVJkRmt5T1hOaVIwWnBUVVIzUjBOcGMwZEJVVkZDQ21jM09IZEJVVmxGVEc1S2JGcHVUWFpoUjFab1draE5kbGt5T1d0YVdHZDJXakk1TWxwWVNuVlpWelZxV2xNeGFHUllVbTlpTTBwd1pFaHJkR015Ykc0S1l6TlNkbU50VlhkUGQxbExTM2RaUWtKQlIwUjJla0ZDUTBGUmRFUkRkRzlrU0ZKM1kzcHZka3d6VW5aaE1sWjFURzFHYW1SSGJIWmliazExV2pKc01BcGhTRlpwWkZoT2JHTnRUblppYmxKc1ltNVJkVmt5T1hSTlNVZFdRbWR2Y2tKblJVVkJXVTh2VFVGRlNrSkpSMGRFU1VkRVlVaFNNR05JVFRaTWVUbHVDbUZZVW05a1YwbDFXVEk1ZEV3d2JESmFXRTVFWVVkV2RWTkdaM1ppV0ZaelpFZHJkRmxYWkd4aWJsRjBXVEk1YzJKSFJtbE1lVFZ1WVZoU2IyUlhTWFlLWkRJNWVXRXlXbk5pTTJSNlRESmtkbVJ0Vm5saWJVWjFXVEpWZEdOSVNYVmxWekZ6VVVoS2JGcHVUWFpoUjFab1draE5kbGt5T1d0YVdHZDJXakk1TWdwYVdFcDFXVmMxYWxwVE1XaGtXRkp2WWpOS2NHUklhM1JqTW14dVl6TlNkbU50VlhkUFFWbExTM2RaUWtKQlIwUjJla0ZDUTJkUmNVUkRhR2xOUkVVMENrOVhSWGhOUjBwb1RWUm5NMXBVUW0xYWJWSm9UWHBDYUUweVVYaE9hbFUwVFRKTk0wMXRTVE5hVkUweVdrZGFhMDFDTUVkRGFYTkhRVkZSUW1jM09IY0tRVkZ6UlVSM2QwNWFNbXd3WVVoV2FVeFhhSFpqTTFKc1drUkNRVUpuYjNKQ1owVkZRVmxQTDAxQlJVMUNSRWxOVFVkb01HUklRbnBQYVRoMldqSnNNQXBoU0ZacFRHMU9kbUpUT1Vwa2JWWjZVVEpvYkdKcmFGbE1NakV4WWtoU2NFeFhSbTVhVnpVd1RGZE9kbUpIZUdoWmFrRTBRbWR2Y2tKblJVVkJXVTh2Q2sxQlJVNUNRMjlOUzBkSmQwMVVaelZaVkVWM1dXMUZlRTlFWkd4TlIxcHRXa2RGZWsxSFJYcGFSRVV5VGxSbmVsbDZZM2xaYW1Sc1RYcGFhMXB0VVhjS1VHZFpTMHQzV1VKQ1FVZEVkbnBCUWtSblVYZEVRelY1V2xkYWVrd3lhR3haVjFKNlRESk9kbHBIVmpSTU1tUjJaRzFXZVdKdFJuVlpNbFYwV1ZoV01BcGhSemw1WVZoU05VeFlUbkJhTTA0d1lqTktiRTFDYjBkRGFYTkhRVkZSUW1jM09IZEJVVGhGUkVGM1MwMVVTVFZOUkZGNVQxUlZNMDU2UVhSQ1oyOXlDa0puUlVWQldVOHZUVUZGVVVKQ09FMUlWMmd3WkVoQ2VrOXBPSFphTW13d1lVaFdhVXh0VG5aaVV6bEtaRzFXZWxFeWFHeGlhMmhaVFVKclIwTnBjMGNLUVZGUlFtYzNPSGRCVWtWRlEzZDNTazFVV1RKTmVrVXpUVlJOTkUxSlIxWkNaMjl5UW1kRlJVRlpUeTlOUVVWVFFrbEhSMFJKUjBSaFNGSXdZMGhOTmdwTWVUbHVZVmhTYjJSWFNYVlpNamwwVERCc01scFlUa1JoUjFaMVUwWm5kbUpZVm5Oa1IydDBXVmRrYkdKdVVYUlpNamx6WWtkR2FVeDVOVzVoV0ZKdkNtUlhTWFprTWpsNVlUSmFjMkl6WkhwTU1tUjJaRzFXZVdKdFJuVlpNbFYwWTBoSmRXVlhNWE5SU0Vwc1dtNU5kbUZIVm1oYVNFMTJXVEk1YTFwWVozWUtXakk1TWxwWVNuVlpWelZxV2xNeGFHUllVbTlpTTBwd1pFaHJkR015Ykc1ak0xSjJZMjFWZDA5QldVdExkMWxDUWtGSFJIWjZRVUpGZDFGeFJFTm9hUXBOUkVVMFQxZEZlRTFIU21oTlZHY3pXbFJDYlZwdFVtaE5la0pvVFRKUmVFNXFWVFJOTWswelRXMUpNMXBVVFRKYVIxcHJUVU5GUjBOcGMwZEJVVkZDQ21jM09IZEJVbEZGUlhkM1VtUXlPWGxoTWxwellqTmtabHBIYkhwalIwWXdXVEpuZDFwQldVdExkMWxDUWtGSFJIWjZRVUpHVVZKWFJFWlNiMlJJVW5jS1kzcHZka3d5WkhCa1IyZ3hXV2sxYW1JeU1IWlRXRnBzWXpCT2IxcFhOVWxYUXpsMFpGZDRNR0ZUTVdoYU1sWjFaRU14YW1JeWVITlpWMGwyV1ZkT01BcGhWemwxWTNrNWVXUlhOWHBNZWtrMVQxUmpORTVVU1hsT2FrbDVUREpHTUdSSFZuUmpTRko2VEhwRmQwWm5XVXRMZDFsQ1FrRkhSSFo2UVVKR1oxRkpDa1JCV25ka1YwcHpZVmROZDBwQldVdExkMWxDUWtGSFJIWjZRVUpHZDFGWFJFSlNibUl6V214amJUVm9ZbTFPYkV4WFJqRmtSMmgyWTIxc01HVlVRbFFLUW1kdmNrSm5SVVZCV1U4dlRVRkZXVUpGVlUxUk0wcHNZMGM0TmxOWVdteGpNRTV2V2xjMVNWZERPWFJrVjNnd1lWTXhhRm95Vm5Wa1F6RnFZako0Y3dwWlYwazJXbGMxTW1GWVNuWmliVEZzWW01Uk5sb3lPVEphV0VwMVdWYzFhbHBUTVdoa1dGSnZZak5LY0dSSWEzZG5XWE5IUTJselIwRlJVVUl4Ym10RENrSkJTVVZtVVZJM1FVaHJRV1IzUkdSUVZFSnhlSE5qVWsxdFRWcElhSGxhV25walEyOXJjR1YxVGpRNGNtWXJTR2x1UzBGTWVXNTFhbWRCUVVGYUswNEtTa3B3V1VGQlFVVkJkMEpKVFVWWlEwbFJSR1F3VnpoalFrWkZSblpVVUVKd1JGTjNaazFDYTNOamR5OXZaVTk1ZVhkU1VtMHlOVmxtVWtaSlNHZEphQXBCVDJ0RFZtNXpiVnBNTUV4dldqaDBWRmhxWVc5MmMzQkVZUzlSSzBGTk1XcHlVWFk0V1RsQllVTkZaMDFCYjBkRFEzRkhVMDAwT1VKQlRVUkJNbXRCQ2sxSFdVTk5VVVIxVmsxT2VFODVOVEZHVGxWTGJ6Wk9jelIxWlRObmFXZzRWVXhUVjJ4TFEwSkhNRUY1TWpoeWREaGpOelkyV1RsQllsSkpUVlJXYUVNS1JHeE5TU3RET0VOTlVVTTJXRFZvVkVsVFQyUlNWRkpUVlRoM2NUSldTV1pZUldkVlJrbGhNMFl6Wm1wWFVYSXZNekV2VVRkaFdUZ3dkVk12UjNFNVR3cE9VVTQ1YVVVdk1YQlFRVDBLTFMwdExTMUZUa1FnUTBWU1ZFbEdTVU5CVkVVdExTMHRMUW89In1dfX0=",
+                "inclusionPromise": {
+                  "signedEntryTimestamp": "MEYCIQClvpTXYzKuS1F5nhz368ZI3lg3LjD1ERjVTfrDoJztJAIhAMzfESYDf1/2SIuOF4ixWi8xXHjcIkLaV3pfLCk3l+mT"
+                },
+                "inclusionProof": {
+                  "checkpoint": {
+                    "envelope": "rekor.sigstore.dev - 1193050959916656506\n2100482158\n/SlFnwpavcxYPNMjPv1/LIMial0en1lqqNh7ymoh3ys=\n\n— rekor.sigstore.dev wNI9ajBEAiBMEU0CdrrNDcssoVoBont4dCCuT9kO9LSX2jbZuQ+PTwIgc7l8uuWR2mb4PoSDhmVb3U7faiG8zT/f95fyo1BUEa0=\n"
+                  },
+                  "hashes": [
+                    "LvC6m3GiA3N8N19xm7LdsPiTfq1NEgQ8Z8jLT0wl/ws=",
+                    "Ns0E8BNXD/hNrDpBVS6ZnvaQebfKCgp7bm8qIe3Yszg=",
+                    "SyLrtWRjhXpi192ZjerBki+mzrESRLdfigw9JcTVxMs=",
+                    "M/k0Tu+SLBtN5gDkggFb+rnQjoNI6rrnPfb9cGDxUik=",
+                    "jcLom2aPm5ouGomqrQrzY8npUN3WyP67yOyVnqV1Cpg=",
+                    "MdgZIsBdHnq0fwNkjPhwSTGhh0VeUD/Xq9xAUQ2xIOc=",
+                    "EtckCRyS+92YmfPLTVRjBo3172NfZDv2uDpTFFyJCAA=",
+                    "M0XygvADaqsOcYjx/Lj/WE0gilDnVCJdm6oNEKNXUv0=",
+                    "wy483jT2mun8Pr3q8pQuDk8pmXiu2Y7gbgFNyap2GlE=",
+                    "rkF7rzPQm0GteN8OBSyIjyKm0WmTMS01Az8G41ur+h0=",
+                    "Pzf/uouuyLd+svXxZ2LOXGLklmh3cn7qzjVWmxdYF9g=",
+                    "m9B9WmS9dt6S3PxRiDjQnqerU2bh06RVZwLZEheoIGg=",
+                    "7Z8qGwvZpid+B4rR/LyBJs8xHlhkER1JmhptMiu6dE4=",
+                    "okz4ES8RJKOkQdYgmAsPWUJaLHsWDVcNAjAmc/1qtrw=",
+                    "aeVAatKBw6YiA5eiV2W+I7RHH8MO5KzYd4Jt0u134BQ=",
+                    "0pPvrw9+rUCvGWAF7gf2mi04ec4nC07NQtOZ1UdECTk=",
+                    "2xq2hgkraKLJCtaUxEO/nUOUabxYkyx2Ob1gCl7aIOg=",
+                    "ErXNa9cnvX+/QF1RDHdJQiiTynb1tLKGGXEQ9ugDtBo=",
+                    "n3FrhrLV+aX3gf/a4yempn9Y+XjQCkkJAiMuDNnVN1k=",
+                    "GxT6+CEXxY8Ak/besnRW/IK3DhneHQ5X5rIcw8L01DQ=",
+                    "Rq/A2aTC9e54ldNjcpsJ26rX/h8JlN6ZHxgw7yEa6C0=",
+                    "+/VZ56MsIPxMiyLAodzKXo5TEWdQp36z89qLhpzloAo=",
+                    "daxmZaajRpZV+JxHiOYZhJBiSKN5ucqjh2WnGbHhirw=",
+                    "DOCeoSMovIvLExkhIvisow9AuNXgeWs4ECkyR6EcqYU="
+                  ],
+                  "logIndex": "2100481980",
+                  "rootHash": "/SlFnwpavcxYPNMjPv1/LIMial0en1lqqNh7ymoh3ys=",
+                  "treeSize": "2100482158"
+                },
+                "integratedTime": "1784779416",
+                "kindVersion": {
+                  "kind": "dsse",
+                  "version": "0.0.1"
+                },
+                "logId": {
+                  "keyId": "wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0="
+                },
+                "logIndex": "2222386242"
+              }
+            ]
+          }
+        },
+        "predicate": {
+          "actor_id": "governance-owner",
+          "actor_kind": "human",
+          "allowed": true,
+          "authenticated": true,
+          "binding_digest": "sha256:e921bb5192ec20c3778216b2c2f83b436900a9c3c61846f64adc8aaf2889fe2f",
+          "environment": "governance-authority",
+          "expires_at": "2026-07-23T04:33:33.630574Z",
+          "independence_level": "L2",
+          "issued_at": "2026-07-23T04:03:28.630574Z",
+          "issuer": "https://token.actions.githubusercontent.com",
+          "request_digest": "sha256:3e323f2d904c20d5829f19cfc1ce9d470cd45408f9caa394c604a8543509e206",
+          "schema_version": 1
+        },
+        "subject": {
+          "actor_claim": {
+            "id": "governance-owner",
+            "kind": "human"
+          },
+          "audience": "mac-mutation-gateway/v1",
+          "expected_revision": -1,
+          "idempotency_key": "github-sigstore-task-create:29978522622:1:full-regression",
+          "intent_digest": "sha256:2c03a688b096a6653af5d77d85418ce52a8d2fd494f398c1415fc51cbbba99cc",
+          "operation": "task.create",
+          "ownership_digest": "sha256:291efd0cb181d3cc9b6577111be30ced1d44965b84836ae2d6e16c696b8ec50e",
+          "policy_digest": "sha256:ba3639b86091734159c865fd65aeea4e5a583b532231206ab7676b53e954ce43",
+          "repository_identity": "github:repository-id:1290429577",
+          "schema_version": 1,
+          "task_id": "TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor"
+        },
+        "verification_policy": {
+          "deny_self_hosted_runners": true,
+          "environment": "governance-authority",
+          "oidc_issuer": "https://token.actions.githubusercontent.com",
+          "predicate_type": "https://github.com/IvesChenHX/multi-agent-collab/attestations/mutation-authority/v1",
+          "repository": "IvesChenHX/multi-agent-collab",
+          "schema_version": 1,
+          "signer_workflow": "IvesChenHX/multi-agent-collab/.github/workflows/governance-pr.yml",
+          "source_digest": "b0189a10ba187e0ffda30a3d16583c72b7e36dfd",
+          "source_ref": "refs/heads/codex/governance-authority-sigstore",
+          "verifier_manifest": "sha256:59a47cba2ee2f3497dc9dc3f36db010d738f394bb3935ce7801ec92ed235cfce"
+        }
+      },
+      "store_contract_version": 3,
+      "task_id": "TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor",
+      "trust_digest": "sha256:0ab8976286ebe3e3517335df6297ec3082d775d8f191946b2c82c2af262aad04"
+    },
+    "scope": {
+      "allowed_operations": [
+        "read",
+        "write",
+        "execute_tests",
+        "generate_artifacts"
+      ],
+      "allowed_paths": [
+        "src/mac/authority.py",
+        "src/mac/cli.py",
+        "src/mac/git.py",
+        "src/mac/migration.py",
+        "src/mac/repository.py",
+        "src/mac/schema_validation.py",
+        "src/mac/scope.py",
+        "tests/test_event_store.py",
+        "tests/test_examples_v6.py",
+        "tests/test_migration_and_services.py",
+        "tests/test_repair_round4.py",
+        "tests/test_repair_round5_platform.py",
+        "tests/test_schema_validation.py",
+        "tests/test_scope_amendment_and_workflow.py",
+        "tests/operations/test_release_artifacts.py",
+        "examples/v6/**",
+        "tasks/TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor/**",
+        "tasks/private/TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor/**"
+      ],
+      "amendment_policy": {
+        "max_amendments": 2,
+        "max_paths_per_amendment": 4,
+        "require_independent_approval_for": [
+          "auth_security",
+          "production_deploy"
+        ]
+      },
+      "approved_by": [],
+      "base_commit": "b0189a10ba187e0ffda30a3d16583c72b7e36dfd",
+      "denied_paths": [],
+      "id": "SCOPE-01KY6J95XF3B60YF2TZP9YC8JN",
+      "network_access": "none",
+      "owners": [
+        "governance",
+        "platform",
+        "devex",
+        "tests",
+        "examples",
+        "docs"
+      ],
+      "proposed_by": "governance-owner",
+      "required_gates": [
+        "targeted_tests",
+        "negative_security_tests",
+        "secret_scan",
+        "scope_guard",
+        "compatibility_review",
+        "independent_review",
+        "rollback_plan",
+        "rollback_verification",
+        "evidence_matches_current_commit"
+      ],
+      "risk_tags": [
+        "auth_security",
+        "compatibility",
+        "data_migration"
+      ],
+      "schema_version": 1,
+      "secret_access": [],
+      "status": "proposed",
+      "task_id": "TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor",
+      "version": 1
+    },
+    "task": {
+      "acceptance_criteria": [
+        {
+          "id": "AC-001",
+          "required": true,
+          "text": "The full locked test suite passes on Linux, macOS, and Windows for every supported Python version."
+        },
+        {
+          "id": "AC-002",
+          "required": true,
+          "text": "Trusted repository validation remains green on every CI matrix entry."
+        },
+        {
+          "id": "AC-003",
+          "required": true,
+          "text": "Legacy Scope, migration, Git workspace, LFS, and YAML compatibility regressions are covered test-first."
+        },
+        {
+          "id": "AC-004",
+          "required": true,
+          "text": "All persisted mutations and completion evidence remain bound to approved Scope and the current commit."
+        }
+      ],
+      "active_controller": null,
+      "created_at": "2026-07-23T04:03:33.423793Z",
+      "id": "TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor",
+      "legacy_integrity": "full",
+      "mode": "high_risk",
+      "objective": "Close the full cross-platform regression suite while preserving the GitHub-Sigstore authority and commit-bound evidence loop.",
+      "ownership_ref": {
+        "combined_digest": "sha256:291efd0cb181d3cc9b6577111be30ced1d44965b84836ae2d6e16c696b8ec50e",
+        "files": [
+          {
+            "digest": "sha256:c6cc7140ddf72200e06b9afabfb0518a8b4011d71d61287a2ed304fc5a4d26c1",
+            "path": ".agents/ownership.yaml"
+          }
+        ],
+        "source_commit": "b0189a10ba187e0ffda30a3d16583c72b7e36dfd"
+      },
+      "policy_ref": {
+        "combined_digest": "sha256:ba3639b86091734159c865fd65aeea4e5a583b532231206ab7676b53e954ce43",
+        "files": [
+          {
+            "digest": "sha256:c7898fc4c8bfd17d5d8c3a1a1c197b3423d2bb269a4919764fb5aa84cafac365",
+            "path": ".agents/config.yaml"
+          },
+          {
+            "digest": "sha256:506399f876fc666cc2be68b22bc07f9f5af1d50afd970582af90d73f00c364fb",
+            "path": ".agents/runtime-profiles/local-multi.yaml"
+          },
+          {
+            "digest": "sha256:c2c71fd57e8878263068d1d2d4a4d5bbdee805824747dec0a54d6eeccd00964d",
+            "path": ".agents/workflows/evidence-driven-development.yaml"
+          },
+          {
+            "digest": "sha256:ad92a772d42ce2732bba07510424714c3d6f94d1f0a5055902eb4ea7842e3c22",
+            "path": "AGENTS.md"
+          }
+        ],
+        "source_commit": "b0189a10ba187e0ffda30a3d16583c72b7e36dfd"
+      },
+      "relationships": {
+        "parent_task": "TASK-01KY58Y04M91GQ177Y3NVK6PS6-full-regression-closure-successor",
+        "superseded_by": null,
+        "supersedes": [
+          "TASK-01KY58Y04M91GQ177Y3NVK6PS6-full-regression-closure-successor"
+        ]
+      },
+      "required_gates": [
+        "approved_scope",
+        "targeted_tests",
+        "negative_security_tests",
+        "secret_scan",
+        "scope_guard",
+        "compatibility_review",
+        "independent_review",
+        "rollback_plan",
+        "rollback_verification",
+        "evidence_matches_current_commit"
+      ],
+      "revision": 0,
+      "runtime_profile": "local-multi",
+      "schema_version": 6,
+      "scope_contract_ref": "tasks/TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor/scope-contract.yaml",
+      "state": "triage",
+      "terminal": null,
+      "title": "Full regression closure successor",
+      "updated_at": "2026-07-23T04:03:33.423793Z"
+    }
+  },
+  "run_id": null,
+  "schema_version": 1,
+  "task_id": "TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor"
+}
