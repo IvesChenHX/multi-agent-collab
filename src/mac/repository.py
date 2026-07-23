@@ -926,6 +926,43 @@ def _bind_run_registration_facts(
             exit_code=ExitCode.SECURITY,
             task_id=command.task_id,
         )
+    portable, portable_valid = _portable_run_binding_valid(
+        repo,
+        command.task_id,
+        scope,
+        payload,
+        runtime,
+        require_current_checkout=True,
+    )
+    if portable:
+        if not portable_valid:
+            raise MacError(
+                "MUTATION_RUN_PORTABLE_BINDING_INVALID",
+                "portable Run identity is not bound to the verified repository and checkout",
+                exit_code=ExitCode.SECURITY,
+                task_id=command.task_id,
+            )
+        run["started_at"] = occurred_at
+        run["finished_at"] = None
+        run["exit_code"] = None
+        payload["run"] = run
+        rebound = [
+            (
+                path,
+                deepcopy(run)
+                if _materialization_directory(
+                    _materialization_relative(
+                        repo,
+                        command.task_id,
+                        path,
+                    )
+                )
+                == "runs"
+                else value,
+            )
+            for path, value in materializations
+        ]
+        return payload, rebound, occurred_at
     run_root = Path(str(runtime.get("worktree") or repo)).resolve()
     task_git = GitRepository(repo)
     run_git = GitRepository(run_root)
@@ -965,6 +1002,97 @@ def _bind_run_registration_facts(
         for path, value in materializations
     ]
     return payload, rebound, occurred_at
+
+
+def _portable_run_binding_valid(
+    repo: Path,
+    task_id: str,
+    scope: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+    *,
+    require_current_checkout: bool,
+    expected_repository_identity: str | None = None,
+) -> tuple[bool, bool]:
+    """Validate the path-independent form of a Run registration binding."""
+
+    identity = payload.get("worktree_identity")
+    binding = payload.get("repository_binding")
+    portable = (
+        isinstance(identity, Mapping)
+        and identity.get("kind") == "portable"
+    ) or (
+        isinstance(binding, Mapping)
+        and binding.get("kind") == "portable"
+    )
+    if not portable:
+        return False, False
+    if not isinstance(identity, Mapping) or not isinstance(binding, Mapping):
+        return True, False
+    repository_identity = str(identity.get("repository_identity", ""))
+    source_ref = str(identity.get("source_ref", ""))
+    if (
+        repository_identity
+        != (expected_repository_identity or _repository_identity(repo))
+        or not source_ref.startswith("refs/heads/")
+        or source_ref.endswith(("/", "."))
+        or ".." in source_ref
+        or "//" in source_ref
+        or "\\" in source_ref
+        or "\x00" in source_ref
+        or len(source_ref) > 255
+        or set(runtime).intersection({"worktree", "branch"})
+    ):
+        return True, False
+    baseline_subject = payload.get("baseline_subject")
+    if not isinstance(baseline_subject, dict):
+        return True, False
+    try:
+        git = GitRepository(repo)
+        checks = git.portable_run_binding_checks(
+            approved_base=str(scope.get("base_commit", "")),
+            baseline_subject=baseline_subject,
+            source_ref=source_ref if require_current_checkout else None,
+            source_ref_subject=(
+                None
+                if require_current_checkout
+                else {
+                    "type": "commit",
+                    "commit_sha": str(
+                        binding.get("source_ref_commit_sha", "")
+                    ),
+                    "tree_sha": str(
+                        binding.get("source_ref_tree_sha", "")
+                    ),
+                }
+            ),
+        )
+        expected_identity = {
+            "kind": "portable",
+            "repository_identity": repository_identity,
+            "source_ref": source_ref,
+        }
+        expected_binding = {
+            "kind": "portable",
+            "repository_identity": repository_identity,
+            "source_ref": source_ref,
+            "source_digest": baseline_subject.get("commit_sha"),
+            **checks,
+        }
+        current_checkout_valid = True
+        if require_current_checkout:
+            current_checkout_valid = (
+                git.commit_subject("HEAD") == baseline_subject
+                and not git.workspace_changes(task_id=task_id)
+            )
+        return True, bool(
+            dict(identity) == expected_identity
+            and dict(binding) == expected_binding
+            and all(checks.values())
+            and current_checkout_valid
+        )
+    except (MacError, OSError, TypeError, ValueError):
+        return True, False
 
 
 def _bind_run_finish_facts(
@@ -1242,35 +1370,46 @@ def _validate_append_semantics(
             or any(snapshots["work-units"].get(str(item), {}).get("status") != "completed" for item in dependencies)
         )
         runtime = run.get("runtime") or {}
-        run_root = Path(str(runtime.get("worktree") or repo)).resolve()
-        binding_valid = False
-        try:
-            task_git = GitRepository(repo)
-            run_git = GitRepository(run_root)
-            baseline_subject = run_git.commit_subject("HEAD")
-            binding_checks = task_git.run_worktree_binding_checks(
-                run_git,
-                approved_base=str(scope.get("base_commit", "")),
-                baseline_subject=baseline_subject,
-            )
-            branch_result = subprocess.run(
-                ["git", "-C", str(run_root), "rev-parse", "--abbrev-ref", "HEAD"],
-                shell=False,
-                text=True,
-                capture_output=True,
-            )
-            actual_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
-            binding_valid = (
-                all(binding_checks.values())
-                and payload.get("baseline_subject") == baseline_subject
-                and payload.get("worktree_identity") == {"path": str(run_root), "branch": actual_branch}
-                and payload.get("repository_binding") == binding_checks
-                and runtime.get("worktree") == str(run_root)
-                and runtime.get("branch") == actual_branch
-                and runtime.get("profile") == task.get("runtime_profile")
-            )
-        except (MacError, OSError, TypeError, ValueError):
-            binding_valid = False
+        portable, binding_valid = _portable_run_binding_valid(
+            repo,
+            command.task_id,
+            scope,
+            payload,
+            runtime,
+            require_current_checkout=True,
+        )
+        if not portable:
+            run_root = Path(str(runtime.get("worktree") or repo)).resolve()
+            try:
+                task_git = GitRepository(repo)
+                run_git = GitRepository(run_root)
+                baseline_subject = run_git.commit_subject("HEAD")
+                binding_checks = task_git.run_worktree_binding_checks(
+                    run_git,
+                    approved_base=str(scope.get("base_commit", "")),
+                    baseline_subject=baseline_subject,
+                )
+                branch_result = subprocess.run(
+                    ["git", "-C", str(run_root), "rev-parse", "--abbrev-ref", "HEAD"],
+                    shell=False,
+                    text=True,
+                    capture_output=True,
+                )
+                actual_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
+                binding_valid = (
+                    all(binding_checks.values())
+                    and payload.get("baseline_subject") == baseline_subject
+                    and payload.get("worktree_identity") == {"path": str(run_root), "branch": actual_branch}
+                    and payload.get("repository_binding") == binding_checks
+                    and runtime.get("worktree") == str(run_root)
+                    and runtime.get("branch") == actual_branch
+                )
+            except (MacError, OSError, TypeError, ValueError):
+                binding_valid = False
+        binding_valid = (
+            binding_valid
+            and runtime.get("profile") == task.get("runtime_profile")
+        )
         if (
             scope.get("status") != "approved"
             or str(task.get("state", "")) not in {"ready", "executing", "repairing"}
@@ -3511,20 +3650,36 @@ def _validate_governed_event_contract(
         binding_valid = False
         try:
             if repo is not None and isinstance(prior_scope, Mapping):
-                run_root = Path(str(runtime.get("worktree", ""))).resolve()
-                baseline_subject = dict(payload.get("baseline_subject") or {})
-                binding_checks = GitRepository(repo).run_worktree_binding_checks(
-                    GitRepository(run_root),
-                    approved_base=str(prior_scope.get("base_commit", "")),
-                    baseline_subject=baseline_subject,
+                portable, binding_valid = _portable_run_binding_valid(
+                    repo,
+                    task_id,
+                    prior_scope,
+                    payload,
+                    runtime,
+                    require_current_checkout=False,
+                    expected_repository_identity=str(
+                        authority.get("repository_identity", "")
+                    ),
                 )
+                if not portable:
+                    run_root = Path(str(runtime.get("worktree", ""))).resolve()
+                    baseline_subject = dict(payload.get("baseline_subject") or {})
+                    binding_checks = GitRepository(repo).run_worktree_binding_checks(
+                        GitRepository(run_root),
+                        approved_base=str(prior_scope.get("base_commit", "")),
+                        baseline_subject=baseline_subject,
+                    )
+                    binding_valid = (
+                        all(binding_checks.values())
+                        and payload.get("repository_binding") == binding_checks
+                        and payload.get("worktree_identity")
+                        == {"path": str(run_root), "branch": runtime.get("branch")}
+                        and runtime.get("worktree") == str(run_root)
+                    )
                 binding_valid = (
-                    all(binding_checks.values())
-                    and payload.get("repository_binding") == binding_checks
-                    and payload.get("worktree_identity")
-                    == {"path": str(run_root), "branch": runtime.get("branch")}
-                    and runtime.get("worktree") == str(run_root)
-                    and runtime.get("profile") == prior_task.get("runtime_profile")
+                    binding_valid
+                    and runtime.get("profile")
+                    == prior_task.get("runtime_profile")
                 )
         except (MacError, OSError, TypeError, ValueError):
             binding_valid = False
@@ -3992,10 +4147,32 @@ def _validate_loaded_event_stream(
     """Validate an already frozen Event byte stream before any replay consumer."""
 
     schemas = schema_set or SchemaSet()
-    verified_repository_identity = repository_identity or _repository_identity(repo)
     events = sorted(
         (deepcopy(dict(event)) for event in loaded),
         key=lambda item: int(item.get("new_revision", -2)),
+    )
+    promoted_identities: set[str] = set()
+    for event in events:
+        if event.get("event_type") == "legacy_imported":
+            continue
+        try:
+            identity = str(_event_authority(event).get("repository_identity", ""))
+        except MacError:
+            promoted_identities.clear()
+            break
+        if re.fullmatch(r"github:repository-id:[1-9][0-9]{0,19}", identity) is None:
+            promoted_identities.clear()
+            break
+        promoted_identities.add(identity)
+    promoted_identity = (
+        next(iter(promoted_identities))
+        if len(promoted_identities) == 1
+        else None
+    )
+    verified_repository_identity = (
+        repository_identity
+        or promoted_identity
+        or _repository_identity(repo)
     )
     for index, event in enumerate(events):
         event_id = str(event.get("event_id", ""))

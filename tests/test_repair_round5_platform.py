@@ -231,6 +231,67 @@ def test_workspace_subject_separates_index_from_unstaged_diff_and_promotion_reje
     )
 
 
+def test_portable_run_binding_survives_worktree_and_head_changes(tmp_path: Path) -> None:
+    _git_repo(tmp_path)
+    source = tmp_path / "tracked.txt"
+    source.write_text("base\n", encoding="utf-8")
+    approved_base = _commit_all(tmp_path, "base")
+    source.write_text("run baseline\n", encoding="utf-8")
+    baseline_commit = _commit_all(tmp_path, "run baseline")
+    baseline_subject = GitRepository(tmp_path).commit_subject(baseline_commit)
+    source_ref = "refs/heads/codex/portable-run"
+    _git(tmp_path, "branch", "codex/portable-run", baseline_commit)
+    _git(tmp_path, "branch", "codex/unrelated", approved_base)
+
+    linked = tmp_path.parent / f"{tmp_path.name}-linked"
+    _git(tmp_path, "worktree", "add", "--detach", str(linked), baseline_commit)
+    source.write_text("later head\n", encoding="utf-8")
+    _commit_all(tmp_path, "later head")
+
+    checks = GitRepository(tmp_path).portable_run_binding_checks(
+        approved_base=approved_base,
+        baseline_subject=baseline_subject,
+        source_ref=source_ref,
+    )
+    linked_checks = GitRepository(linked).portable_run_binding_checks(
+        approved_base=approved_base,
+        baseline_subject=baseline_subject,
+        source_ref=source_ref,
+    )
+
+    assert checks == {
+        "approved_base_resolved": True,
+        "baseline_subject_bound": True,
+        "baseline_descends_from_approved_base": True,
+        "source_ref_resolved": True,
+        "baseline_reachable_from_source_ref": True,
+        "source_ref_commit_sha": baseline_commit,
+        "source_ref_tree_sha": baseline_subject["tree_sha"],
+    }
+    assert linked_checks == checks
+    assert not all(
+        GitRepository(tmp_path).portable_run_binding_checks(
+            approved_base=approved_base,
+            baseline_subject=baseline_subject,
+            source_ref="refs/heads/codex/missing",
+        ).values()
+    )
+    assert not all(
+        GitRepository(tmp_path).portable_run_binding_checks(
+            approved_base=approved_base,
+            baseline_subject=baseline_subject,
+            source_ref="refs/heads/codex/unrelated",
+        ).values()
+    )
+    assert not all(
+        GitRepository(tmp_path).portable_run_binding_checks(
+            approved_base=approved_base,
+            baseline_subject=baseline_subject,
+            source_ref=f"{source_ref}~0",
+        ).values()
+    )
+
+
 def test_command_evidence_rejects_a_command_that_mutates_the_bound_workspace(tmp_path: Path) -> None:
     _initialized_v6_repo(tmp_path)
     created = TaskService(tmp_path).create(

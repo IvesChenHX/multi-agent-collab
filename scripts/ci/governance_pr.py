@@ -48,7 +48,7 @@ from mac.authority import (
 from mac.application.task_service import TaskService
 from mac.errors import ExitCode, MacError
 from mac.git import GitRepository
-from mac.ids import prefixed
+from mac.ids import is_identifier, prefixed
 from mac.io import load_data
 from mac.repository import (
     AUTHORITY_REPOSITORY_IDENTITY_ENV,
@@ -1360,6 +1360,428 @@ def _successor_ready_transition_command(
     )
 
 
+def _successor_execution_aggregate(
+    values: Mapping[str, str],
+    repo: Path,
+) -> tuple[
+    str,
+    Mapping[str, Any],
+    Mapping[str, Any],
+    Mapping[str, Mapping[str, Any]],
+    Mapping[str, Mapping[str, Any]],
+]:
+    """Load the exact full-regression successor execution bootstrap state."""
+
+    task_id = _required_environment(values, "MAC_AUTHORITY_PROBE_TASK_ID")
+    profile = values.get(_SUCCESSOR_PROFILE_ENV, "bootstrap") or "bootstrap"
+    if (
+        _TASK_ID.fullmatch(task_id) is None
+        or profile != _REGRESSION_SUCCESSOR_PROFILE
+    ):
+        raise ValueError("successor execution bootstrap is not allowlisted")
+    aggregate = FilesystemTaskRepository(repo).load_verified_aggregate(task_id)
+    task = aggregate.task
+    scope = aggregate.scope
+    if not isinstance(scope, Mapping) or aggregate.projection_drift:
+        raise ValueError("successor execution aggregate is not clean")
+    contract = _successor_profile_contract(profile)
+    expected_paths = [
+        *contract["allowed_paths"],
+        f"tasks/{task_id}/**",
+        f"tasks/private/{task_id}/**",
+    ]
+    expected_acceptance = [
+        {"id": f"AC-{index:03d}", "required": True, "text": text}
+        for index, text in enumerate(contract["acceptance"], start=1)
+    ]
+    relationships = task.get("relationships")
+    parent_task = (
+        relationships.get("parent_task")
+        if isinstance(relationships, Mapping)
+        else None
+    )
+    base_commit = scope.get("base_commit")
+    policy_ref = task.get("policy_ref")
+    ownership_ref = task.get("ownership_ref")
+    if (
+        task.get("id") != task_id
+        or task.get("schema_version") != 6
+        or task.get("title") != contract["title"]
+        or task.get("mode") != "high_risk"
+        or task.get("objective") != contract["objective"]
+        or task.get("acceptance_criteria") != expected_acceptance
+        or task.get("runtime_profile") != "local-multi"
+        or task.get("required_gates")
+        != ["approved_scope", *_SUCCESSOR_REQUIRED_GATES]
+        or task.get("state") != "ready"
+        or task.get("revision") not in {2, 3, 4, 5}
+        or task.get("legacy_integrity") != "full"
+        or task.get("active_controller") is not None
+        or task.get("terminal") is not None
+        or task.get("scope_contract_ref")
+        != f"tasks/{task_id}/scope-contract.yaml"
+        or not isinstance(parent_task, str)
+        or _TASK_ID.fullmatch(parent_task) is None
+        or relationships
+        != {
+            "parent_task": parent_task,
+            "superseded_by": None,
+            "supersedes": [parent_task],
+        }
+        or not isinstance(base_commit, str)
+        or _GIT_OBJECT_ID.fullmatch(base_commit) is None
+        or not isinstance(policy_ref, Mapping)
+        or policy_ref.get("source_commit") != base_commit
+        or not isinstance(ownership_ref, Mapping)
+        or ownership_ref.get("source_commit") != base_commit
+        or scope.get("schema_version") != 1
+        or scope.get("task_id") != task_id
+        or scope.get("version") != 1
+        or scope.get("status") != "approved"
+        or scope.get("proposed_by") != "governance-owner"
+        or scope.get("approved_by") != ["repo-owner"]
+        or scope.get("allowed_paths") != expected_paths
+        or scope.get("allowed_operations")
+        != list(_SUCCESSOR_ALLOWED_OPERATIONS)
+        or scope.get("denied_paths") != []
+        or scope.get("owners") != list(contract["owners"])
+        or scope.get("network_access") != "none"
+        or scope.get("secret_access") != []
+        or scope.get("required_gates")
+        != list(_SUCCESSOR_REQUIRED_GATES)
+        or scope.get("amendment_policy") != _SUCCESSOR_AMENDMENT_POLICY
+        or scope.get("risk_tags") != list(contract["risk_tags"])
+    ):
+        raise ValueError("successor is not eligible for execution bootstrap")
+    work_units = aggregate.entities.get("work-units", {})
+    runs = aggregate.entities.get("runs", {})
+    if not isinstance(work_units, Mapping) or not isinstance(runs, Mapping):
+        raise ValueError("successor execution entities are invalid")
+    return task_id, task, scope, work_units, runs
+
+
+def _successor_execution_command(
+    values: Mapping[str, str],
+    repo: Path,
+    *,
+    occurred_at: str | None = None,
+) -> AppendEvent | Transition:
+    """Prepare exactly the next mutation in the four-round execution bootstrap."""
+
+    task_id, task, _scope, work_units, runs = _successor_execution_aggregate(
+        values,
+        repo,
+    )
+    run_id = _required_environment(values, "GITHUB_RUN_ID")
+    run_attempt = _required_environment(values, "GITHUB_RUN_ATTEMPT")
+    if not run_id.isdigit() or not run_attempt.isdigit():
+        raise ValueError("successor execution workflow identity is invalid")
+    actor = {"id": "governance-owner", "kind": "human"}
+    expected_allowed_paths = list(_REGRESSION_SUCCESSOR_SCOPE_PATHS)
+    expected_acceptance = [
+        f"AC-{index:03d}"
+        for index in range(
+            1,
+            len(_REGRESSION_SUCCESSOR_ACCEPTANCE) + 1,
+        )
+    ]
+
+    def exact_work_unit(
+        value: Mapping[str, Any],
+        *,
+        status: str,
+    ) -> bool:
+        work_unit_id = str(value.get("id", ""))
+        expected_result = str(value.get("expected_result", ""))
+        result_prefix = f"tasks/{task_id}/results/"
+        result_id = (
+            expected_result.removeprefix(result_prefix).removesuffix(".json")
+        )
+        return bool(
+            is_identifier(work_unit_id, "WU")
+            and value.get("schema_version") == 1
+            and value.get("task_id") == task_id
+            and value.get("title") == "Close the full regression suite"
+            and value.get("status") == status
+            and value.get("owner") == "tests"
+            and value.get("allowed_paths") == expected_allowed_paths
+            and value.get("depends_on") == []
+            and value.get("acceptance_criteria") == expected_acceptance
+            and expected_result.startswith(result_prefix)
+            and expected_result.endswith(".json")
+            and is_identifier(result_id, "RESULT")
+        )
+
+    if task.get("revision") == 2 and not work_units and not runs:
+        work_unit_id = prefixed("WU")
+        result_id = prefixed("RESULT")
+        work_unit = {
+            "schema_version": 1,
+            "id": work_unit_id,
+            "task_id": task_id,
+            "title": "Close the full regression suite",
+            "status": "pending",
+            "owner": "tests",
+            "allowed_paths": expected_allowed_paths,
+            "depends_on": [],
+            "acceptance_criteria": expected_acceptance,
+            "expected_result": (
+                f"tasks/{task_id}/results/{result_id}.json"
+            ),
+        }
+        path = (
+            FilesystemTaskRepository(repo).task_dir(task_id)
+            / "work-units"
+            / f"{work_unit_id}.yaml"
+        )
+        return AppendEvent(
+            task_id=task_id,
+            event_type="work_unit_created",
+            payload={
+                "work_unit_id": work_unit_id,
+                "work_unit": work_unit,
+            },
+            actor_claim=actor,
+            expected_revision=2,
+            idempotency_key=(
+                "github-sigstore-execution:work-unit-create:"
+                f"{run_id}:{run_attempt}"
+            ),
+            operation="work_unit.create",
+            materializations=((path, work_unit),),
+            minimum_independence="L2",
+            replay_intent={"work_unit": work_unit},
+        )
+    if task.get("revision") == 3 and len(work_units) == 1 and not runs:
+        work_unit = next(iter(work_units.values()))
+        if not isinstance(work_unit, Mapping) or not exact_work_unit(
+            work_unit,
+            status="pending",
+        ):
+            raise ValueError("successor execution Work Unit is not exact")
+        readied = deepcopy(dict(work_unit))
+        readied["status"] = "ready"
+        path = (
+            FilesystemTaskRepository(repo).task_dir(task_id)
+            / "work-units"
+            / f"{work_unit['id']}.yaml"
+        )
+        return AppendEvent(
+            task_id=task_id,
+            event_type="work_unit_created",
+            payload={
+                "work_unit_id": work_unit["id"],
+                "work_unit": readied,
+            },
+            actor_claim=actor,
+            expected_revision=3,
+            idempotency_key=(
+                "github-sigstore-execution:work-unit-ready:"
+                f"{run_id}:{run_attempt}"
+            ),
+            operation="work_unit.ready",
+            materializations=((path, readied),),
+            replace_existing=frozenset({path}),
+            minimum_independence="L2",
+            replay_intent={"work_unit": readied},
+        )
+    if task.get("revision") == 4 and len(work_units) == 1 and not runs:
+        work_unit = next(iter(work_units.values()))
+        if not isinstance(work_unit, Mapping) or not exact_work_unit(
+            work_unit,
+            status="ready",
+        ):
+            raise ValueError("successor execution Work Unit is not exact")
+        repository = _required_environment(values, "GITHUB_REPOSITORY")
+        repository_id = _required_environment(values, "GITHUB_REPOSITORY_ID")
+        actor_id = _required_environment(values, "GITHUB_ACTOR_ID")
+        event_name = _required_environment(values, "GITHUB_EVENT_NAME")
+        source_ref = _required_environment(values, "GITHUB_REF")
+        workflow_ref = _required_environment(values, "GITHUB_WORKFLOW_REF")
+        source_digest = _required_environment(values, "GITHUB_SHA").lower()
+        if (
+            repository != _EXPECTED_GITHUB_REPOSITORY
+            or repository_id != _EXPECTED_GITHUB_REPOSITORY_ID
+            or actor_id != _EXPECTED_GITHUB_ACTOR_ID
+            or event_name != "workflow_dispatch"
+            or source_ref
+            not in {_EXPECTED_GITHUB_REF, _EXPECTED_GITHUB_BOOTSTRAP_REF}
+            or workflow_ref
+            != f"{_EXPECTED_GITHUB_SIGNER_WORKFLOW}@{source_ref}"
+            or _GIT_OBJECT_ID.fullmatch(source_digest) is None
+        ):
+            raise ValueError("successor execution GitHub source is invalid")
+        git = GitRepository(repo)
+        baseline_subject = git.commit_subject(source_digest)
+        if (
+            git.commit_subject("HEAD") != baseline_subject
+            or git.workspace_changes()
+        ):
+            raise ValueError("successor execution checkout is not exact")
+        binding_checks = git.portable_run_binding_checks(
+            approved_base=str(_scope.get("base_commit", "")),
+            baseline_subject=baseline_subject,
+            source_ref=source_ref,
+        )
+        if not all(binding_checks.values()):
+            raise ValueError("successor execution baseline is invalid")
+        registered_run_id = prefixed("RUN")
+        context_id = f"github-actions-{run_id}-{run_attempt}"
+        run = {
+            "schema_version": 1,
+            "id": registered_run_id,
+            "task_id": task_id,
+            "work_unit_id": work_unit["id"],
+            "status": "running",
+            "actor": actor,
+            "runtime": {
+                "profile": "local-multi",
+                "execution_context_id": context_id,
+            },
+            "independence_level": "L0",
+            "started_at": occurred_at or utc_now(),
+            "finished_at": None,
+            "exit_code": None,
+        }
+        running_work_unit = deepcopy(dict(work_unit))
+        running_work_unit["status"] = "running"
+        repository_identity = f"github:repository-id:{repository_id}"
+        worktree_identity = {
+            "kind": "portable",
+            "repository_identity": repository_identity,
+            "source_ref": source_ref,
+        }
+        repository_binding = {
+            "kind": "portable",
+            "repository_identity": repository_identity,
+            "source_ref": source_ref,
+            "source_digest": source_digest,
+            **binding_checks,
+        }
+        task_dir = FilesystemTaskRepository(repo).task_dir(task_id)
+        work_unit_path = (
+            task_dir / "work-units" / f"{work_unit['id']}.yaml"
+        )
+        run_path = task_dir / "runs" / f"{registered_run_id}.json"
+        return AppendEvent(
+            task_id=task_id,
+            event_type="run_started",
+            payload={
+                "run_id": registered_run_id,
+                "work_unit_id": work_unit["id"],
+                "run": run,
+                "work_unit": running_work_unit,
+                "baseline_subject": baseline_subject,
+                "worktree_identity": worktree_identity,
+                "repository_binding": repository_binding,
+            },
+            actor_claim=actor,
+            expected_revision=4,
+            idempotency_key=(
+                "github-sigstore-execution:run-register:"
+                f"{run_id}:{run_attempt}"
+            ),
+            operation="run.register",
+            run_id=registered_run_id,
+            materializations=(
+                (run_path, run),
+                (work_unit_path, running_work_unit),
+            ),
+            replace_existing=frozenset({work_unit_path}),
+            minimum_independence="L2",
+            replay_intent={
+                "work_unit_id": work_unit["id"],
+                "profile": "local-multi",
+                "context_id": context_id,
+                "provider": None,
+                "model": None,
+                "worktree": None,
+                "branch": None,
+                "actor_kind": "human",
+                "independence_level": "L0",
+            },
+        )
+    if task.get("revision") == 5 and len(work_units) == 1 and len(runs) == 1:
+        work_unit = next(iter(work_units.values()))
+        run = next(iter(runs.values()))
+        runtime = run.get("runtime") if isinstance(run, Mapping) else None
+        if (
+            not isinstance(work_unit, Mapping)
+            or not exact_work_unit(work_unit, status="running")
+            or not isinstance(run, Mapping)
+            or set(run)
+            != {
+                "schema_version",
+                "id",
+                "task_id",
+                "work_unit_id",
+                "status",
+                "actor",
+                "runtime",
+                "independence_level",
+                "started_at",
+                "finished_at",
+                "exit_code",
+            }
+            or run.get("schema_version") != 1
+            or not is_identifier(str(run.get("id", "")), "RUN")
+            or run.get("task_id") != task_id
+            or run.get("work_unit_id") != work_unit.get("id")
+            or run.get("status") != "running"
+            or run.get("actor") != actor
+            or not isinstance(runtime, Mapping)
+            or set(runtime) != {"profile", "execution_context_id"}
+            or runtime.get("profile") != "local-multi"
+            or re.fullmatch(
+                r"github-actions-[1-9][0-9]*-[1-9][0-9]*",
+                str(runtime.get("execution_context_id", "")),
+            )
+            is None
+            or run.get("independence_level") != "L0"
+            or not isinstance(run.get("started_at"), str)
+            or run.get("finished_at") is not None
+            or run.get("exit_code") is not None
+        ):
+            raise ValueError("successor execution Run is not exact")
+        context = resolve_transition_context(
+            repo,
+            task_id,
+            "executing",
+            actor,
+        )
+        if not (
+            context.runtime_satisfied
+            and context.executor_run_created
+            and context.work_unit_dependencies_complete
+            and context.dependencies_complete
+            and context.baseline_recorded
+        ):
+            raise ValueError(
+                "successor executing transition guards are not satisfied"
+            )
+        return Transition(
+            task_id=task_id,
+            target="executing",
+            context=context,
+            actor_claim=actor,
+            expected_revision=5,
+            idempotency_key=(
+                "github-sigstore-execution:task-executing:"
+                f"{run_id}:{run_attempt}"
+            ),
+            operation="task.transition.executing",
+            transition_metadata={},
+            minimum_independence="L2",
+            replay_intent={
+                "target": "executing",
+                "condition": [],
+                "fact_id": None,
+                "reason": None,
+            },
+        )
+    raise ValueError("successor execution bootstrap phase is not exact")
+
+
 def _successor_scope_amend_command(
     values: Mapping[str, str], repo: Path,
 ) -> AppendEvent:
@@ -1655,6 +2077,68 @@ def github_attested_ready_prepare_main(
                 os.environ[name] = value
 
 
+def github_attested_execution_prepare_main(
+    *,
+    output_dir: Path,
+    repo: Path = Path("."),
+    stdout: TextIO = sys.stdout,
+    stderr: TextIO = sys.stderr,
+    environment: Mapping[str, str] | None = None,
+) -> int:
+    """Prepare one exact next mutation in the execution bootstrap sequence."""
+
+    previous: dict[str, str | None] = {}
+    try:
+        values = os.environ if environment is None else environment
+        assignments = _sigstore_trust_environment()
+        for name, value in assignments.items():
+            previous[name] = os.environ.get(name)
+            os.environ[name] = value
+        issued_at = _render_time(
+            datetime.now(timezone.utc) - timedelta(seconds=5)
+        )
+        command = _successor_execution_command(
+            values,
+            repo,
+            occurred_at=issued_at,
+        )
+        request, _ = _write_attested_mutation_plan(
+            command,
+            output_dir=output_dir,
+            repo=repo,
+            values=values,
+            issued_at=issued_at,
+        )
+        stdout.write(json.dumps({
+            "ok": True,
+            "task_id": command.task_id,
+            "operation": command.operation,
+            "expected_revision": command.expected_revision,
+            "request_digest": request.request_digest,
+            "binding_digest": request.binding_digest,
+            "predicate_type": _MUTATION_ATTESTATION_PREDICATE_TYPE,
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+        return 0
+    except (
+        MacError,
+        OSError,
+        subprocess.SubprocessError,
+        TypeError,
+        ValueError,
+        yaml.YAMLError,
+    ):
+        stderr.write(
+            "trusted attested execution bootstrap preparation failed\n"
+        )
+        return 2
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 def github_attested_scope_amend_prepare_main(
     *,
     output_dir: Path,
@@ -1901,6 +2385,320 @@ def _allowlisted_successor_ready_transition(
     return _serialize_transition(command) == _serialize_transition(expected)
 
 
+def _allowlisted_successor_execution_command(
+    command: AppendEvent | Transition,
+    repo: Path,
+    policy: Mapping[str, Any],
+) -> bool:
+    """Allow only one exact mutation for the aggregate's current bootstrap phase."""
+
+    match = re.fullmatch(
+        r"github-sigstore-execution:"
+        r"(work-unit-create|work-unit-ready|run-register|task-executing):"
+        r"([1-9][0-9]*):([1-9][0-9]*)",
+        command.idempotency_key,
+    )
+    source_ref = str(policy.get("source_ref", ""))
+    source_digest = str(policy.get("source_digest", ""))
+    if (
+        match is None
+        or source_ref
+        not in {_EXPECTED_GITHUB_REF, _EXPECTED_GITHUB_BOOTSTRAP_REF}
+        or _GIT_OBJECT_ID.fullmatch(source_digest) is None
+        or dict(command.actor_claim)
+        != {"id": "governance-owner", "kind": "human"}
+        or command.minimum_independence != "L2"
+    ):
+        return False
+    values = {
+        "MAC_AUTHORITY_PROBE_TASK_ID": command.task_id,
+        _SUCCESSOR_PROFILE_ENV: _REGRESSION_SUCCESSOR_PROFILE,
+        "GITHUB_REPOSITORY": _EXPECTED_GITHUB_REPOSITORY,
+        "GITHUB_REPOSITORY_ID": _EXPECTED_GITHUB_REPOSITORY_ID,
+        "GITHUB_ACTOR_ID": _EXPECTED_GITHUB_ACTOR_ID,
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_REF": source_ref,
+        "GITHUB_WORKFLOW_REF": (
+            f"{_EXPECTED_GITHUB_SIGNER_WORKFLOW}@{source_ref}"
+        ),
+        "GITHUB_RUN_ID": match.group(2),
+        "GITHUB_RUN_ATTEMPT": match.group(3),
+        "GITHUB_SHA": source_digest,
+    }
+    try:
+        task_id, task, _scope, work_units, runs = (
+            _successor_execution_aggregate(values, repo)
+        )
+    except (MacError, OSError, TypeError, ValueError, yaml.YAMLError):
+        return False
+
+    def exact_work_unit(value: Mapping[str, Any], status: str) -> bool:
+        unit_id = str(value.get("id", ""))
+        expected_result = str(value.get("expected_result", ""))
+        result_prefix = f"tasks/{task_id}/results/"
+        result_id = (
+            expected_result.removeprefix(result_prefix).removesuffix(".json")
+        )
+        return bool(
+            is_identifier(unit_id, "WU")
+            and value.get("schema_version") == 1
+            and value.get("task_id") == task_id
+            and value.get("title") == "Close the full regression suite"
+            and value.get("status") == status
+            and value.get("owner") == "tests"
+            and value.get("allowed_paths")
+            == list(_REGRESSION_SUCCESSOR_SCOPE_PATHS)
+            and value.get("depends_on") == []
+            and value.get("acceptance_criteria")
+            == [
+                f"AC-{index:03d}"
+                for index in range(
+                    1,
+                    len(_REGRESSION_SUCCESSOR_ACCEPTANCE) + 1,
+                )
+            ]
+            and expected_result.startswith(result_prefix)
+            and expected_result.endswith(".json")
+            and is_identifier(result_id, "RESULT")
+        )
+
+    if match.group(1) == "work-unit-create":
+        if (
+            not isinstance(command, AppendEvent)
+            or task.get("revision") != 2
+            or work_units
+            or runs
+            or command.operation != "work_unit.create"
+            or command.event_type != "work_unit_created"
+            or command.expected_revision != 2
+            or command.run_id is not None
+            or command.event_id is not None
+            or command.replace_existing
+            or len(command.materializations) != 1
+        ):
+            return False
+        unit = command.payload.get("work_unit")
+        if not isinstance(unit, Mapping):
+            return False
+        unit_id = str(unit.get("id", ""))
+        expected_path = (
+            FilesystemTaskRepository(repo).task_dir(task_id)
+            / "work-units"
+            / f"{unit_id}.yaml"
+        )
+        return bool(
+            exact_work_unit(unit, "pending")
+            and dict(command.payload)
+            == {"work_unit_id": unit_id, "work_unit": dict(unit)}
+            and command.materializations
+            == ((expected_path, dict(unit)),)
+            and command.replay_intent == {"work_unit": dict(unit)}
+        )
+    if match.group(1) == "work-unit-ready":
+        if (
+            not isinstance(command, AppendEvent)
+            or task.get("revision") != 3
+            or len(work_units) != 1
+            or runs
+            or command.operation != "work_unit.ready"
+            or command.event_type != "work_unit_created"
+            or command.expected_revision != 3
+            or command.run_id is not None
+            or command.event_id is not None
+            or len(command.materializations) != 1
+            or len(command.replace_existing) != 1
+        ):
+            return False
+        prior = next(iter(work_units.values()))
+        readied = command.payload.get("work_unit")
+        if (
+            not isinstance(prior, Mapping)
+            or not exact_work_unit(prior, "pending")
+            or not isinstance(readied, Mapping)
+            or not exact_work_unit(readied, "ready")
+            or {key: value for key, value in prior.items() if key != "status"}
+            != {
+                key: value
+                for key, value in readied.items()
+                if key != "status"
+            }
+        ):
+            return False
+        path = (
+            FilesystemTaskRepository(repo).task_dir(task_id)
+            / "work-units"
+            / f"{prior['id']}.yaml"
+        )
+        return bool(
+            dict(command.payload)
+            == {
+                "work_unit_id": prior["id"],
+                "work_unit": dict(readied),
+            }
+            and command.materializations == ((path, dict(readied)),)
+            and command.replace_existing == frozenset({path})
+            and command.replay_intent == {"work_unit": dict(readied)}
+        )
+    if match.group(1) == "run-register":
+        if (
+            not isinstance(command, AppendEvent)
+            or task.get("revision") != 4
+            or len(work_units) != 1
+            or runs
+            or command.operation != "run.register"
+            or command.event_type != "run_started"
+            or command.expected_revision != 4
+            or command.event_id is not None
+            or len(command.materializations) != 2
+            or len(command.replace_existing) != 1
+        ):
+            return False
+        prior = next(iter(work_units.values()))
+        run = command.payload.get("run")
+        running = command.payload.get("work_unit")
+        baseline = command.payload.get("baseline_subject")
+        identity = command.payload.get("worktree_identity")
+        binding = command.payload.get("repository_binding")
+        if (
+            not isinstance(prior, Mapping)
+            or not exact_work_unit(prior, "ready")
+            or not isinstance(running, Mapping)
+            or not exact_work_unit(running, "running")
+            or {key: value for key, value in prior.items() if key != "status"}
+            != {
+                key: value
+                for key, value in running.items()
+                if key != "status"
+            }
+            or not isinstance(run, Mapping)
+            or not isinstance(baseline, Mapping)
+            or not isinstance(identity, Mapping)
+            or not isinstance(binding, Mapping)
+        ):
+            return False
+        registered_run_id = str(run.get("id", ""))
+        runtime = run.get("runtime")
+        repository_identity = (
+            f"github:repository-id:{_EXPECTED_GITHUB_REPOSITORY_ID}"
+        )
+        try:
+            git = GitRepository(repo)
+            expected_baseline = git.commit_subject(source_digest)
+            checks = git.portable_run_binding_checks(
+                approved_base=str(_scope.get("base_commit", "")),
+                baseline_subject=expected_baseline,
+                source_ref=source_ref,
+            )
+            checkout_exact = (
+                git.commit_subject("HEAD") == expected_baseline
+                and not git.workspace_changes()
+            )
+        except (MacError, OSError, TypeError, ValueError):
+            return False
+        expected_identity = {
+            "kind": "portable",
+            "repository_identity": repository_identity,
+            "source_ref": source_ref,
+        }
+        expected_binding = {
+            "kind": "portable",
+            "repository_identity": repository_identity,
+            "source_ref": source_ref,
+            "source_digest": source_digest,
+            **checks,
+        }
+        expected_context_id = f"github-actions-{match.group(2)}-{match.group(3)}"
+        expected_replay_intent = {
+            "work_unit_id": prior["id"],
+            "profile": "local-multi",
+            "context_id": expected_context_id,
+            "provider": None,
+            "model": None,
+            "worktree": None,
+            "branch": None,
+            "actor_kind": "human",
+            "independence_level": "L0",
+        }
+        run_path = (
+            FilesystemTaskRepository(repo).task_dir(task_id)
+            / "runs"
+            / f"{registered_run_id}.json"
+        )
+        work_unit_path = (
+            FilesystemTaskRepository(repo).task_dir(task_id)
+            / "work-units"
+            / f"{prior['id']}.yaml"
+        )
+        return bool(
+            checkout_exact
+            and all(checks.values())
+            and is_identifier(registered_run_id, "RUN")
+            and set(run)
+            == {
+                "schema_version",
+                "id",
+                "task_id",
+                "work_unit_id",
+                "status",
+                "actor",
+                "runtime",
+                "independence_level",
+                "started_at",
+                "finished_at",
+                "exit_code",
+            }
+            and run.get("schema_version") == 1
+            and run.get("task_id") == task_id
+            and run.get("work_unit_id") == prior.get("id")
+            and run.get("status") == "running"
+            and run.get("actor")
+            == {"id": "governance-owner", "kind": "human"}
+            and runtime
+            == {
+                "profile": "local-multi",
+                "execution_context_id": expected_context_id,
+            }
+            and run.get("independence_level") == "L0"
+            and isinstance(run.get("started_at"), str)
+            and run.get("finished_at") is None
+            and run.get("exit_code") is None
+            and command.run_id == registered_run_id
+            and dict(baseline) == expected_baseline
+            and dict(identity) == expected_identity
+            and dict(binding) == expected_binding
+            and dict(command.payload)
+            == {
+                "run_id": registered_run_id,
+                "work_unit_id": prior["id"],
+                "run": dict(run),
+                "work_unit": dict(running),
+                "baseline_subject": expected_baseline,
+                "worktree_identity": expected_identity,
+                "repository_binding": expected_binding,
+            }
+            and command.materializations
+            == (
+                (run_path, dict(run)),
+                (work_unit_path, dict(running)),
+            )
+            and command.replace_existing == frozenset({work_unit_path})
+            and command.replay_intent == expected_replay_intent
+        )
+    if match.group(1) == "task-executing":
+        if not isinstance(command, Transition) or task.get("revision") != 5:
+            return False
+        try:
+            expected = _successor_execution_command(values, repo)
+        except (MacError, OSError, TypeError, ValueError, yaml.YAMLError):
+            return False
+        return (
+            isinstance(expected, Transition)
+            and _serialize_transition(command)
+            == _serialize_transition(expected)
+        )
+    return False
+
+
 def github_attested_task_apply_main(
     *,
     plan_path: Path,
@@ -1944,18 +2742,6 @@ def github_attested_task_apply_main(
             or policy.get("deny_self_hosted_runners") is not True
         ):
             raise ValueError("prepared mutation verification policy is invalid")
-        command = _deserialize_mutation(plan["command"], repo)
-        if isinstance(command, CreateTask):
-            if command.operation != "task.create" or command.minimum_independence != "L2":
-                raise ValueError("prepared task mutation is not allowlisted")
-        elif isinstance(command, Transition):
-            if not _allowlisted_successor_ready_transition(command, repo):
-                raise ValueError("prepared ready transition is not allowlisted")
-        elif command.operation == "scope.amend":
-            if not _allowlisted_successor_scope_amendment(command):
-                raise ValueError("prepared scope amendment is not allowlisted")
-        elif not _allowlisted_successor_scope_approval(command):
-            raise ValueError("prepared scope mutation is not allowlisted")
         with tempfile.TemporaryDirectory(prefix="mac-attested-task-") as directory:
             canonical_bundle = Path(directory) / "bundle.json"
             canonical_bundle.write_bytes(_canonical_document_bytes(bundle))
@@ -1976,6 +2762,41 @@ def github_attested_task_apply_main(
                 if name not in previous:
                     previous[name] = os.environ.get(name)
                 os.environ[name] = value
+            command = _deserialize_mutation(plan["command"], repo)
+            if isinstance(command, CreateTask):
+                if (
+                    command.operation != "task.create"
+                    or command.minimum_independence != "L2"
+                ):
+                    raise ValueError(
+                        "prepared task mutation is not allowlisted"
+                    )
+            elif isinstance(command, Transition):
+                if not (
+                    _allowlisted_successor_ready_transition(command, repo)
+                    or _allowlisted_successor_execution_command(
+                        command,
+                        repo,
+                        policy,
+                    )
+                ):
+                    raise ValueError(
+                        "prepared transition is not allowlisted"
+                    )
+            elif command.operation == "scope.amend":
+                if not _allowlisted_successor_scope_amendment(command):
+                    raise ValueError(
+                        "prepared scope amendment is not allowlisted"
+                    )
+            elif not (
+                _allowlisted_successor_scope_approval(command)
+                or _allowlisted_successor_execution_command(
+                    command,
+                    repo,
+                    policy,
+                )
+            ):
+                raise ValueError("prepared mutation is not allowlisted")
             prepared = MutationGateway(repo).prepare(command)
             if prepared.request.as_dict() != plan.get("request") or dict(prepared.intent) != plan.get("intent"):
                 raise ValueError("prepared mutation plan no longer matches repository state")
@@ -2222,6 +3043,12 @@ def main(argv: list[str] | None = None) -> int:
         mutation_parser.add_argument("--out", type=Path, required=True)
         mutation_args = mutation_parser.parse_args(normalized_argv)
         return github_attested_ready_prepare_main(output_dir=mutation_args.out)
+    if normalized_argv and normalized_argv[0] == "--github-attested-execution-prepare":
+        mutation_parser = argparse.ArgumentParser()
+        mutation_parser.add_argument("--github-attested-execution-prepare", action="store_true")
+        mutation_parser.add_argument("--out", type=Path, required=True)
+        mutation_args = mutation_parser.parse_args(normalized_argv)
+        return github_attested_execution_prepare_main(output_dir=mutation_args.out)
     if normalized_argv and normalized_argv[0] == "--github-attested-task-apply":
         mutation_parser = argparse.ArgumentParser()
         mutation_parser.add_argument("--github-attested-task-apply", action="store_true")

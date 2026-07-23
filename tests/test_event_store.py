@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 import json
@@ -12,8 +13,15 @@ import pytest
 
 from mac.errors import ExitCode, MacError
 from mac.events import replay_entity_snapshots, replay_events
-from mac.cli import init_command, scope_approve, task_transition
+from mac.cli import (
+    init_command,
+    scope_approve,
+    task_transition,
+    work_unit_new,
+    work_unit_ready,
+)
 from mac.application.task_service import TaskService
+from mac.git import GitRepository
 import mac.repository as repository_module
 from mac.repository import (
     AppendEvent,
@@ -960,6 +968,214 @@ def test_transition_mutation_validates_the_event_stream_only_twice(
     MutationGateway(tmp_path, repository=repository).execute(command)
 
     assert calls == 2
+
+
+def test_portable_run_event_replays_after_head_moves_and_in_another_worktree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_identity = "github:repository-id:1290429577"
+    monkeypatch.setenv(
+        repository_module.AUTHORITY_REPOSITORY_IDENTITY_ENV,
+        repository_identity,
+    )
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    repository, created = create_governed_task(tmp_path)
+    task_id = str(created["task"]["id"])
+    approve_and_ready_task(tmp_path, task_id)
+    work_unit_new(
+        task_id,
+        title="portable execution",
+        owner="governance",
+        allow=["AGENTS.md"],
+        depends_on=[],
+        expected_revision=2,
+        idempotency_key="portable-work-unit",
+        actor="a",
+        repo=tmp_path,
+        json_output=True,
+    )
+    work_unit_id = next(
+        (repository.task_dir(task_id) / "work-units").glob("*.yaml")
+    ).stem
+    work_unit_ready(
+        task_id,
+        work_unit_id,
+        expected_revision=3,
+        idempotency_key="portable-work-unit-ready",
+        actor="a",
+        repo=tmp_path,
+        json_output=True,
+    )
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-m", "ready portable run"],
+        check=True,
+        capture_output=True,
+    )
+
+    source_ref = "refs/heads/codex/portable-run"
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "branch", "codex/portable-run", "HEAD"],
+        check=True,
+    )
+    git = GitRepository(tmp_path)
+    baseline_subject = git.commit_subject("HEAD")
+    scope = load_data(repository.task_dir(task_id) / "scope-contract.yaml")
+    binding_checks = git.portable_run_binding_checks(
+        approved_base=str(scope["base_commit"]),
+        baseline_subject=baseline_subject,
+        source_ref=source_ref,
+    )
+    work_unit_path = (
+        repository.task_dir(task_id) / "work-units" / f"{work_unit_id}.yaml"
+    )
+    work_unit = load_data(work_unit_path)
+    running_work_unit = deepcopy(work_unit)
+    running_work_unit["status"] = "running"
+    run_id = "RUN-01K0W4Z36K3W5C2R0A3M8N9P7V"
+    run = {
+        "schema_version": 1,
+        "id": run_id,
+        "task_id": task_id,
+        "work_unit_id": work_unit_id,
+        "status": "running",
+        "actor": {"id": "a", "kind": "agent"},
+        "runtime": {
+            "profile": "local-single",
+            "execution_context_id": "portable-run",
+        },
+        "independence_level": "L0",
+        "started_at": utc_now(),
+        "finished_at": None,
+        "exit_code": None,
+    }
+    worktree_identity = {
+        "kind": "portable",
+        "repository_identity": repository_identity,
+        "source_ref": source_ref,
+    }
+    repository_binding = {
+        "kind": "portable",
+        "repository_identity": repository_identity,
+        "source_ref": source_ref,
+        "source_digest": baseline_subject["commit_sha"],
+        **binding_checks,
+    }
+    run_path = repository.task_dir(task_id) / "runs" / f"{run_id}.json"
+    command = AppendEvent(
+        task_id=task_id,
+        event_type="run_started",
+        payload={
+            "run_id": run_id,
+            "work_unit_id": work_unit_id,
+            "run": run,
+            "work_unit": running_work_unit,
+            "baseline_subject": baseline_subject,
+            "worktree_identity": worktree_identity,
+            "repository_binding": repository_binding,
+        },
+        actor_claim={"id": "a", "kind": "agent"},
+        expected_revision=4,
+        idempotency_key="portable-run-register",
+        operation="run.register",
+        run_id=run_id,
+        materializations=(
+            (run_path, run),
+            (work_unit_path, running_work_unit),
+        ),
+        replace_existing=frozenset({work_unit_path}),
+        replay_intent={
+            "work_unit_id": work_unit_id,
+            "profile": "local-single",
+            "context_id": "portable-run",
+            "provider": None,
+            "model": None,
+            "worktree": None,
+            "branch": None,
+            "actor_kind": "agent",
+            "independence_level": "L0",
+        },
+    )
+
+    gateway = MutationGateway(tmp_path, repository=repository)
+    gateway.execute(command)
+    actor = {"id": "a", "kind": "agent"}
+    context = resolve_transition_context(
+        tmp_path,
+        task_id,
+        "executing",
+        actor,
+    )
+    assert context.executor_run_created
+    assert context.work_unit_dependencies_complete
+    assert context.dependencies_complete
+    gateway.execute(
+        Transition(
+            task_id=task_id,
+            target="executing",
+            context=context,
+            actor_claim=actor,
+            expected_revision=5,
+            idempotency_key="portable-task-executing",
+            operation="task.transition.executing",
+            replay_intent={"target": "executing"},
+        )
+    )
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-m", "record portable run"],
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "later.txt").write_text("later\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "later.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-m", "move head"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "branch",
+            "-D",
+            "codex/portable-run",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    monkeypatch.delenv(
+        repository_module.AUTHORITY_REPOSITORY_IDENTITY_ENV,
+    )
+    monkeypatch.delenv("GITHUB_ACTIONS")
+
+    run_event = next(
+        event
+        for event in repository.list_events(task_id)
+        if event["event_type"] == "run_started"
+    )
+    assert run_event["payload"]["worktree_identity"] == worktree_identity
+    linked = tmp_path.parent / f"{tmp_path.name}-portable-replay"
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "worktree",
+            "add",
+            "--detach",
+            str(linked),
+            "HEAD",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    replayed = FilesystemTaskRepository(linked).list_events(task_id)
+    assert replayed[-1]["event_type"] == "state_transitioned"
+    assert replayed[-1]["payload"]["to"] == "executing"
 
 
 def test_raw_event_writer_cannot_be_called_with_a_forged_capability(tmp_path: Path) -> None:

@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -469,6 +470,40 @@ def test_sigstore_historical_verification_rejects_predicate_or_bundle_drift(
     with pytest.raises(MacError) as bundle_error:
         verify_authority_audit_record(bundle_drift, request)
     assert bundle_error.value.code == "AUTHORITY_BINDING_MISMATCH"
+
+
+def test_sigstore_ready_signature_cannot_authorize_executing_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready_request = replace(
+        _authority_request(),
+        operation="task.transition.ready",
+        expected_revision=4,
+        idempotency_key="github-sigstore-ready:987654:2",
+        intent_digest=canonical_digest({"target": "ready"}),
+    )
+    _configure_sigstore_authority(tmp_path, monkeypatch, ready_request)
+    ready_fact = require_authority(
+        current_authority_verifier(),
+        request=ready_request,
+        minimum_independence="L2",
+    )
+    ready_audit = authority_audit_record(ready_fact)
+    monkeypatch.delenv(SIGSTORE_BUNDLE_ENV)
+    monkeypatch.delenv(SIGSTORE_PREDICATE_ENV)
+    executing_request = replace(
+        ready_request,
+        operation="task.transition.executing",
+        expected_revision=5,
+        idempotency_key="github-sigstore-execution:task-executing:987654:2",
+        intent_digest=canonical_digest({"target": "executing"}),
+    )
+
+    with pytest.raises(MacError) as captured:
+        verify_authority_audit_record(ready_audit, executing_request)
+
+    assert captured.value.code == "AUTHORITY_BINDING_MISMATCH"
 
 
 @pytest.mark.parametrize(

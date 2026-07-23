@@ -132,6 +132,68 @@ class GitRepository:
             pass
         return checks
 
+    def portable_run_binding_checks(
+        self,
+        *,
+        approved_base: str,
+        baseline_subject: dict[str, str],
+        source_ref: str | None = None,
+        source_ref_subject: dict[str, str] | None = None,
+    ) -> dict[str, bool | str]:
+        """Verify immutable Run Git facts without binding a host worktree path.
+
+        Portable Run Events identify a repository through their verified
+        mutation authority.  Historical validation therefore needs only the
+        frozen commit/tree pair and its ancestry from the approved Scope base;
+        it must not depend on the machine or worktree where the Event was
+        created.
+        """
+
+        checks = {
+            "approved_base_resolved": False,
+            "baseline_subject_bound": False,
+            "baseline_descends_from_approved_base": False,
+        }
+        try:
+            approved = self.commit_subject(approved_base)
+            baseline = self.commit_subject(
+                str(baseline_subject.get("commit_sha", ""))
+            )
+            checks["approved_base_resolved"] = (
+                approved["commit_sha"] == approved_base
+            )
+            checks["baseline_subject_bound"] = baseline_subject == baseline
+            checks["baseline_descends_from_approved_base"] = (
+                self.commit_is_ancestor(
+                    approved["commit_sha"],
+                    baseline["commit_sha"],
+                )
+            )
+            if source_ref is not None or source_ref_subject is not None:
+                checks["source_ref_resolved"] = False
+                checks["baseline_reachable_from_source_ref"] = False
+                if source_ref is not None:
+                    self._run("check-ref-format", source_ref)
+                    source = self.commit_subject(source_ref)
+                else:
+                    source = self.commit_subject(
+                        str((source_ref_subject or {}).get("commit_sha", ""))
+                    )
+                    if source != source_ref_subject:
+                        return checks
+                checks["source_ref_commit_sha"] = source["commit_sha"]
+                checks["source_ref_tree_sha"] = source["tree_sha"]
+                checks["source_ref_resolved"] = True
+                checks["baseline_reachable_from_source_ref"] = (
+                    self.commit_is_ancestor(
+                        baseline["commit_sha"],
+                        source["commit_sha"],
+                    )
+                )
+        except (MacError, KeyError, TypeError, ValueError):
+            pass
+        return checks
+
     def _inside_nested_repository(self, relative: str) -> bool:
         candidate = self.root / relative
         for parent in (candidate, *candidate.parents):
