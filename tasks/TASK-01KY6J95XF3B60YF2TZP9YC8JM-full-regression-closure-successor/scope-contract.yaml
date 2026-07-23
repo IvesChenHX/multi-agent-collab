@@ -28,7 +28,8 @@ amendment_policy:
   require_independent_approval_for:
   - auth_security
   - production_deploy
-approved_by: []
+approved_by:
+- repo-owner
 base_commit: b0189a10ba187e0ffda30a3d16583c72b7e36dfd
 denied_paths: []
 id: SCOPE-01KY6J95XF3B60YF2TZP9YC8JN
@@ -57,6 +58,6 @@ risk_tags:
 - data_migration
 schema_version: 1
 secret_access: []
-status: proposed
+status: approved
 task_id: TASK-01KY6J95XF3B60YF2TZP9YC8JM-full-regression-closure-successor
 version: 1
