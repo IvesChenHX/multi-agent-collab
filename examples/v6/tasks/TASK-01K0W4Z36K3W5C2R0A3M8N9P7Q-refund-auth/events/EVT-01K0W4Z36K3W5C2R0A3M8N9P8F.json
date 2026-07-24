@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "event_id": "EVT-01K0W4Z36K3W5C2R0A3M8N9P8F",
+  "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+  "event_type": "evidence_recorded",
+  "occurred_at": "2026-07-17T11:25:00Z",
+  "actor": {"id": "human-security-reviewer", "kind": "human", "display_name": "Security Reviewer"},
+  "run_id": "RUN-01K0W4Z36K3W5C2R0A3M8N9P7V",
+  "expected_revision": 13,
+  "new_revision": 14,
+  "idempotency_key": "example-14",
+  "payload": {
+    "evidence_id": "EVD-01K0W4Z36K3W5C2R0A3M8N9P7Y",
+    "evidence": {
+      "schema_version": 1,
+      "id": "EVD-01K0W4Z36K3W5C2R0A3M8N9P7Y",
+      "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+      "kind": "review",
+      "subject": {
+        "type": "commit",
+        "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "policy_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "run_id": "RUN-01K0W4Z36K3W5C2R0A3M8N9P7V",
+      "claims": [{"gate": "independent_review"}],
+      "review": {
+        "independence_level": "L3",
+        "reviewed_diff_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "recorded_at": "2026-07-17T11:25:00Z",
+      "validity": {"status": "valid", "invalidated_by": []}
+    }
+  }
+}

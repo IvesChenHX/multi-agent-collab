@@ -1,0 +1,60 @@
+allowed_operations:
+- read
+- write
+- execute_tests
+- generate_artifacts
+allowed_paths:
+- src/mac/authority.py
+- src/mac/repository.py
+- src/mac/application/task_service.py
+- src/mac/cli.py
+- scripts/ci/governance_pr.py
+- .github/workflows/governance-pr.yml
+- tests/operations/test_governance_pr.py
+- tests/security/test_authority_commands.py
+- docs/pilot/alpha-close-report.md
+- tasks/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/**
+- tasks/private/TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor/**
+- src/mac/migration.py
+- tests/test_authorityless_v6_migration.py
+- migration/v6-authorityless/**
+- tasks-v6/**
+- .github/workflows/ci.yml
+amendment_policy:
+  max_amendments: 2
+  max_paths_per_amendment: 4
+  require_independent_approval_for:
+  - auth_security
+  - production_deploy
+approved_by:
+- governance-owner
+base_commit: a5eafdf308401a3b659e8d8f7e49f36c06a83592
+denied_paths: []
+id: SCOPE-01KY4P812NAHXDYZDFJ2X3QK9J
+network_access: none
+owners:
+- governance
+- platform
+- security
+- devex
+- tests
+- docs
+proposed_by: repo-owner
+required_gates:
+- targeted_tests
+- negative_security_tests
+- secret_scan
+- scope_guard
+- compatibility_review
+- independent_review
+- rollback_plan
+- rollback_verification
+- evidence_matches_current_commit
+risk_tags:
+- auth_security
+- data_migration
+schema_version: 1
+secret_access: []
+status: approved
+task_id: TASK-01KY4P812NAHXDYZDFJ2X3QK9H-github-authority-bootstrap-successor
+version: 3

@@ -1,0 +1,283 @@
+{
+  "actor": {
+    "id": "governance-owner",
+    "kind": "human"
+  },
+  "event_id": "EVT-2HR7H327G3PY7DN17QC92MA4A5",
+  "event_type": "work_unit_created",
+  "expected_revision": 3,
+  "idempotency_key": "github-sigstore-execution:work-unit-ready:30061555528:1",
+  "new_revision": 4,
+  "occurred_at": "2026-07-24T02:26:08.789385Z",
+  "payload": {
+    "authority": {
+      "actor_id": "governance-owner",
+      "actor_kind": "human",
+      "allowed": true,
+      "attestation_id": "sigstore:sha256:f6d99c60b088c87f640c5f385142949b7c12cb0b22607cd416c25890ff0116de",
+      "audience": "mac-mutation-gateway/v1",
+      "authenticated": true,
+      "authorized_intent": {
+        "event_id": null,
+        "event_type": "work_unit_created",
+        "expected_revision": 3,
+        "idempotency_key": "github-sigstore-execution:work-unit-ready:30061555528:1",
+        "materializations": [
+          [
+            "tasks/TASK-01KY8XTC5CMEQPH338PFS46MHD-full-regression-closure-successor/work-units/WU-01KY8YQ9413F5QV6MWM86NJHR1.yaml",
+            {
+              "acceptance_criteria": [
+                "AC-001",
+                "AC-002",
+                "AC-003",
+                "AC-004"
+              ],
+              "allowed_paths": [
+                "src/mac/authority.py",
+                "src/mac/cli.py",
+                "src/mac/git.py",
+                "src/mac/migration.py",
+                "src/mac/repository.py",
+                "src/mac/schema_validation.py",
+                "src/mac/scope.py",
+                "tests/test_event_store.py",
+                "tests/test_examples_v6.py",
+                "tests/test_migration_and_services.py",
+                "tests/test_repair_round4.py",
+                "tests/test_repair_round5_platform.py",
+                "tests/test_schema_validation.py",
+                "tests/test_scope_amendment_and_workflow.py",
+                "tests/operations/test_release_artifacts.py",
+                "examples/v6/**"
+              ],
+              "depends_on": [],
+              "expected_result": "tasks/TASK-01KY8XTC5CMEQPH338PFS46MHD-full-regression-closure-successor/results/RESULT-01KY8YQ9413F5QV6MWM86NJHR2.json",
+              "id": "WU-01KY8YQ9413F5QV6MWM86NJHR1",
+              "owner": "tests",
+              "schema_version": 1,
+              "status": "ready",
+              "task_id": "TASK-01KY8XTC5CMEQPH338PFS46MHD-full-regression-closure-successor",
+              "title": "Close the full regression suite"
+            }
+          ]
+        ],
+        "minimum_independence": "L2",
+        "operation": "work_unit.ready",
+        "payload": {
+          "work_unit": {
+            "acceptance_criteria": [
+              "AC-001",
+              "AC-002",
+              "AC-003",
+              "AC-004"
+            ],
+            "allowed_paths": [
+              "src/mac/authority.py",
+              "src/mac/cli.py",
+              "src/mac/git.py",
+              "src/mac/migration.py",
+              "src/mac/repository.py",
+              "src/mac/schema_validation.py",
+              "src/mac/scope.py",
+              "tests/test_event_store.py",
+              "tests/test_examples_v6.py",
+              "tests/test_migration_and_services.py",
+              "tests/test_repair_round4.py",
+              "tests/test_repair_round5_platform.py",
+              "tests/test_schema_validation.py",
+              "tests/test_scope_amendment_and_workflow.py",
+              "tests/operations/test_release_artifacts.py",
+              "examples/v6/**"
+            ],
+            "depends_on": [],
+            "expected_result": "tasks/TASK-01KY8XTC5CMEQPH338PFS46MHD-full-regression-closure-successor/results/RESULT-01KY8YQ9413F5QV6MWM86NJHR2.json",
+            "id": "WU-01KY8YQ9413F5QV6MWM86NJHR1",
+            "owner": "tests",
+            "schema_version": 1,
+            "status": "ready",
+            "task_id": "TASK-01KY8XTC5CMEQPH338PFS46MHD-full-regression-closure-successor",
+            "title": "Close the full regression suite"
+          },
+          "work_unit_id": "WU-01KY8YQ9413F5QV6MWM86NJHR1"
+        },
+        "replace_existing": [
+          "tasks/TASK-01KY8XTC5CMEQPH338PFS46MHD-full-regression-closure-successor/work-units/WU-01KY8YQ9413F5QV6MWM86NJHR1.yaml"
+        ],
+        "replay_digest": "sha256:7b32ec8808c01e76c423f6688acadb6c794a302e0ef46c794e6f0304e293f1d5",
+        "run_id": null,
+        "schema_version": 1,
+        "task_id": "TASK-01KY8XTC5CMEQPH338PFS46MHD-full-regression-closure-successor"
+      },
+      "binding_digest": "sha256:71b4a5e3d8dc29f5f8e774c1b74e863a27937fa2d7bc33ea647ce25fc1f15098",
+      "broker_digest": "sha256:cb0a95435879df453c010c458256356c6413083b217053e89cbdebdeea7d20a4",
+      "expected_revision": 3,
+      "expires_at": "2026-07-24T02:56:48.216024Z",
+      "idempotency_key": "github-sigstore-execution:work-unit-ready:30061555528:1",
+      "independence_level": "L2",
+      "intent_digest": "sha256:c2becc5dfacbb94db9f7f3c06fb884b663a9e3821b18413f7f97f77586928ce8",
+      "issued_at": "2026-07-24T02:26:08.789385Z",
+      "issuer": "https://token.actions.githubusercontent.com",
+      "key_id": "sha256:f6d99c60b088c87f640c5f385142949b7c12cb0b22607cd416c25890ff0116de",
+      "minimum_independence": "L2",
+      "operation": "work_unit.ready",
+      "ownership_digest": "sha256:291efd0cb181d3cc9b6577111be30ced1d44965b84836ae2d6e16c696b8ec50e",
+      "policy_digest": "sha256:ba3639b86091734159c865fd65aeea4e5a583b532231206ab7676b53e954ce43",
+      "replay_digest": "sha256:7b32ec8808c01e76c423f6688acadb6c794a302e0ef46c794e6f0304e293f1d5",
+      "repository_identity": "github:repository-id:1290429577",
+      "request_digest": "sha256:c7b3d7066a073442d5759b28b363a729a822e177c1bb1aff0a74e7d12106c2f3",
+      "signature_algorithm": "sigstore-keyless",
+      "signed_envelope": {
+        "bundle": {
+          "dsseEnvelope": {
+            "payload": "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJuYW1lIjoic3ViamVjdC5qc29uIiwiZGlnZXN0Ijp7InNoYTI1NiI6ImM3YjNkNzA2NmEwNzM0NDJkNTc1OWIyOGIzNjNhNzI5YTgyMmUxNzdjMWJiMWFmZjBhNzRlN2QxMjEwNmMyZjMifX1dLCJwcmVkaWNhdGVUeXBlIjoiaHR0cHM6Ly9naXRodWIuY29tL0l2ZXNDaGVuSFgvbXVsdGktYWdlbnQtY29sbGFiL2F0dGVzdGF0aW9ucy9tdXRhdGlvbi1hdXRob3JpdHkvdjEiLCJwcmVkaWNhdGUiOnsiYWN0b3JfaWQiOiJnb3Zlcm5hbmNlLW93bmVyIiwiYWN0b3Jfa2luZCI6Imh1bWFuIiwiYWxsb3dlZCI6dHJ1ZSwiYXV0aGVudGljYXRlZCI6dHJ1ZSwiYmluZGluZ19kaWdlc3QiOiJzaGEyNTY6NzFiNGE1ZTNkOGRjMjlmNWY4ZTc3NGMxYjc0ZTg2M2EyNzkzN2ZhMmQ3YmMzM2VhNjQ3Y2UyNWZjMWYxNTA5OCIsImVudmlyb25tZW50IjoiZ292ZXJuYW5jZS1hdXRob3JpdHkiLCJleHBpcmVzX2F0IjoiMjAyNi0wNy0yNFQwMjo1Njo0OC4yMTYwMjRaIiwiaW5kZXBlbmRlbmNlX2xldmVsIjoiTDIiLCJpc3N1ZWRfYXQiOiIyMDI2LTA3LTI0VDAyOjI2OjA4Ljc4OTM4NVoiLCJpc3N1ZXIiOiJodHRwczovL3Rva2VuLmFjdGlvbnMuZ2l0aHVidXNlcmNvbnRlbnQuY29tIiwicmVxdWVzdF9kaWdlc3QiOiJzaGEyNTY6YzdiM2Q3MDY2YTA3MzQ0MmQ1NzU5YjI4YjM2M2E3MjlhODIyZTE3N2MxYmIxYWZmMGE3NGU3ZDEyMTA2YzJmMyIsInNjaGVtYV92ZXJzaW9uIjoxfX0=",
+            "payloadType": "application/vnd.in-toto+json",
+            "signatures": [
+              {
+                "sig": "MEUCIQDB/aAGyvy1CKiXne2wLmQENWQf24x8jg+53jcoiGWd8QIgVTUJDz/VXaTXVTP80+gxtX0eGX94cEF+cqxP1QdiOO4="
+              }
+            ]
+          },
+          "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+          "verificationMaterial": {
+            "certificate": {
+              "rawBytes": "MIIIQjCCB8igAwIBAgIUcWwA0PcnnokqokX+F8aR6iHpKW0wCgYIKoZIzj0EAwMwNzEVMBMGA1UEChMMc2lnc3RvcmUuZGV2MR4wHAYDVQQDExVzaWdzdG9yZS1pbnRlcm1lZGlhdGUwHhcNMjYwNzI0MDIyNjQ4WhcNMjYwNzI0MDIzNjQ4WjAAMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEyyddkOnW/dVnGt/n4Zhq9LC4sMR5D3jWHITkLyoUYW5aCC82J0sG7WXqGoqmJg9IahsLwZ2sKzM19+qwVY1oEKOCBucwggbjMA4GA1UdDwEB/wQEAwIHgDATBgNVHSUEDDAKBggrBgEFBQcDAzAdBgNVHQ4EFgQUqfPjMweEXmKQqJhvoSbpSJ8jXLEwHwYDVR0jBBgwFoAU39Ppz1YkEZb5qNjpKFWixi4YZD8wgZQGA1UdEQEB/wSBiTCBhoaBg2h0dHBzOi8vZ2l0aHViLmNvbS9JdmVzQ2hlbkhYL211bHRpLWFnZW50LWNvbGxhYi8uZ2l0aHViL3dvcmtmbG93cy9nb3Zlcm5hbmNlLXByLnltbEByZWZzL2hlYWRzL2NvZGV4L2dvdmVybmFuY2UtYXV0aG9yaXR5LXNpZ3N0b3JlMDkGCisGAQQBg78wAQEEK2h0dHBzOi8vdG9rZW4uYWN0aW9ucy5naXRodWJ1c2VyY29udGVudC5jb20wHwYKKwYBBAGDvzABAgQRd29ya2Zsb3dfZGlzcGF0Y2gwNgYKKwYBBAGDvzABAwQoYmU2ZjQzMWRiMzQ2MDRiYzQxNmFiOWRhZTA2NGMyNTMwMzE1OTIxMDAbBgorBgEEAYO/MAEEBA1Hb3Zlcm5hbmNlIFBSMCsGCisGAQQBg78wAQUEHUl2ZXNDaGVuSFgvbXVsdGktYWdlbnQtY29sbGFiMDwGCisGAQQBg78wAQYELnJlZnMvaGVhZHMvY29kZXgvZ292ZXJuYW5jZS1hdXRob3JpdHktc2lnc3RvcmUwOwYKKwYBBAGDvzABCAQtDCtodHRwczovL3Rva2VuLmFjdGlvbnMuZ2l0aHVidXNlcmNvbnRlbnQuY29tMIGVBgorBgEEAYO/MAEJBIGGDIGDaHR0cHM6Ly9naXRodWIuY29tL0l2ZXNDaGVuSFgvbXVsdGktYWdlbnQtY29sbGFiLy5naXRodWIvd29ya2Zsb3dzL2dvdmVybmFuY2UtcHIueW1sQHJlZnMvaGVhZHMvY29kZXgvZ292ZXJuYW5jZS1hdXRob3JpdHktc2lnc3RvcmUwOAYKKwYBBAGDvzABCgQqDChiZTZmNDMxZGIzNDYwNGJjNDE2YWI5ZGFlMDY0YzI1MzAzMTU5MjEwMB0GCisGAQQBg78wAQsEDwwNZ2l0aHViLWhvc3RlZDBABgorBgEEAYO/MAEMBDIMMGh0dHBzOi8vZ2l0aHViLmNvbS9JdmVzQ2hlbkhYL211bHRpLWFnZW50LWNvbGxhYjA4BgorBgEEAYO/MAENBCoMKGJlNmY0MzFkYjM0NjA0YmM0MTZhYjlkYWUwNjRjMjUzMDMxNTkyMTAwPgYKKwYBBAGDvzABDgQwDC5yZWZzL2hlYWRzL2NvZGV4L2dvdmVybmFuY2UtYXV0aG9yaXR5LXNpZ3N0b3JlMBoGCisGAQQBg78wAQ8EDAwKMTI5MDQyOTU3NzAtBgorBgEEAYO/MAEQBB8MHWh0dHBzOi8vZ2l0aHViLmNvbS9JdmVzQ2hlbkhYMBkGCisGAQQBg78wAREECwwJMTY2MzE3MTM4MIGVBgorBgEEAYO/MAESBIGGDIGDaHR0cHM6Ly9naXRodWIuY29tL0l2ZXNDaGVuSFgvbXVsdGktYWdlbnQtY29sbGFiLy5naXRodWIvd29ya2Zsb3dzL2dvdmVybmFuY2UtcHIueW1sQHJlZnMvaGVhZHMvY29kZXgvZ292ZXJuYW5jZS1hdXRob3JpdHktc2lnc3RvcmUwOAYKKwYBBAGDvzABEwQqDChiZTZmNDMxZGIzNDYwNGJjNDE2YWI5ZGFlMDY0YzI1MzAzMTU5MjEwMCEGCisGAQQBg78wARQEEwwRd29ya2Zsb3dfZGlzcGF0Y2gwZAYKKwYBBAGDvzABFQRWDFRodHRwczovL2dpdGh1Yi5jb20vSXZlc0NoZW5IWC9tdWx0aS1hZ2VudC1jb2xsYWIvYWN0aW9ucy9ydW5zLzMwMDYxNTU1NTI4L2F0dGVtcHRzLzEwFgYKKwYBBAGDvzABFgQIDAZwdWJsaWMwJAYKKwYBBAGDvzABFwQWDBRnb3Zlcm5hbmNlLWF1dGhvcml0eTBTBgorBgEEAYO/MAEYBEUMQ3JlcG86SXZlc0NoZW5IWC9tdWx0aS1hZ2VudC1jb2xsYWI6ZW52aXJvbm1lbnQ6Z292ZXJuYW5jZS1hdXRob3JpdHkwgYoGCisGAQQB1nkCBAIEfAR6AHgAdgDdPTBqxscRMmMZHhyZZzcCokpeuN48rf+HinKALynujgAAAZ+R8mDQAAAEAwBHMEUCIQDR/3Pv6S41kPdbTbGgNKlPDGXfV0dSxo13TTMUSG6mUQIgFgkiIIyQ/oguShQjKGincQITBOQBP66yfb3mRoJjOxUwCgYIKoZIzj0EAwMDaAAwZQIwHLD+XDdtBFLARuoNBawMVufeHgTG+GXfmxYfLt3fdqDEjKU24JjLAkd/EcmOE/qYAjEAi0cjj/opSfkss3RfH1aVhgITwg9WYYFhM03f1K2IqqRYRGfDjCuN0J8YQvxgvbPI"
+            },
+            "timestampVerificationData": {},
+            "tlogEntries": [
+              {
+                "canonicalizedBody": "eyJhcGlWZXJzaW9uIjoiMC4wLjEiLCJraW5kIjoiZHNzZSIsInNwZWMiOnsiZW52ZWxvcGVIYXNoIjp7ImFsZ29yaXRobSI6InNoYTI1NiIsInZhbHVlIjoiYzY1MjVkNmUzNzBhZWJhZDNhZTQyYzkyMWYwYzRjN2ZkMjc4ZDE0NmM4MmVhMTkwMTZjYmJmY2QyNWQ4N2IwYSJ9LCJwYXlsb2FkSGFzaCI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJ2YWx1ZSI6ImYyMjMxOWNkYzRhZTlhYzhjYTFjZDE2ZjJlMmEyMjg1ZGJmMjU5M2Q4MzRiNDE2MmU2NDM0OGQzMjY1ZGZkZDkifSwic2lnbmF0dXJlcyI6W3sic2lnbmF0dXJlIjoiTUVVQ0lRREIvYUFHeXZ5MUNLaVhuZTJ3TG1RRU5XUWYyNHg4amcrNTNqY29pR1dkOFFJZ1ZUVUpEei9WWGFUWFZUUDgwK2d4dFgwZUdYOTRjRUYrY3F4UDFRZGlPTzQ9IiwidmVyaWZpZXIiOiJMUzB0TFMxQ1JVZEpUaUJEUlZKVVNVWkpRMEZVUlMwdExTMHRDazFKU1VsUmFrTkRRamhwWjBGM1NVSkJaMGxWWTFkM1FUQlFZMjV1YjJ0eGIydFlLMFk0WVZJMmFVaHdTMWN3ZDBObldVbExiMXBKZW1vd1JVRjNUWGNLVG5wRlZrMUNUVWRCTVZWRlEyaE5UV015Ykc1ak0xSjJZMjFWZFZwSFZqSk5ValIzU0VGWlJGWlJVVVJGZUZaNllWZGtlbVJIT1hsYVV6RndZbTVTYkFwamJURnNXa2RzYUdSSFZYZElhR05PVFdwWmQwNTZTVEJOUkVsNVRtcFJORmRvWTA1TmFsbDNUbnBKTUUxRVNYcE9hbEUwVjJwQlFVMUdhM2RGZDFsSUNrdHZXa2w2YWpCRFFWRlpTVXR2V2tsNmFqQkVRVkZqUkZGblFVVjVlV1JrYTA5dVZ5OWtWbTVIZEM5dU5GcG9jVGxNUXpSelRWSTFSRE5xVjBoSlZHc0tUSGx2VlZsWE5XRkRRemd5U2pCelJ6ZFhXSEZIYjNGdFNtYzVTV0ZvYzB4M1dqSnpTM3BOTVRrcmNYZFdXVEZ2UlV0UFEwSjFZM2RuWjJKcVRVRTBSd3BCTVZWa1JIZEZRaTkzVVVWQmQwbElaMFJCVkVKblRsWklVMVZGUkVSQlMwSm5aM0pDWjBWR1FsRmpSRUY2UVdSQ1owNVdTRkUwUlVablVWVnhabEJxQ2sxM1pVVlliVXRSY1Vwb2RtOVRZbkJUU2pocVdFeEZkMGgzV1VSV1VqQnFRa0puZDBadlFWVXpPVkJ3ZWpGWmEwVmFZalZ4VG1wd1MwWlhhWGhwTkZrS1drUTRkMmRhVVVkQk1WVmtSVkZGUWk5M1UwSnBWRU5DYUc5aFFtY3lhREJrU0VKNlQyazRkbG95YkRCaFNGWnBURzFPZG1KVE9VcGtiVlo2VVRKb2JBcGlhMmhaVERJeE1XSklVbkJNVjBadVdsYzFNRXhYVG5aaVIzaG9XV2s0ZFZveWJEQmhTRlpwVEROa2RtTnRkRzFpUnprelkzazVibUl6V214amJUVm9DbUp0VG14TVdFSjVURzVzZEdKRlFubGFWMXA2VERKb2JGbFhVbnBNTWs1MldrZFdORXd5Wkhaa2JWWjVZbTFHZFZreVZYUlpXRll3WVVjNWVXRllValVLVEZoT2NGb3pUakJpTTBwc1RVUnJSME5wYzBkQlVWRkNaemM0ZDBGUlJVVkxNbWd3WkVoQ2VrOXBPSFprUnpseVdsYzBkVmxYVGpCaFZ6bDFZM2sxYmdwaFdGSnZaRmRLTVdNeVZubFpNamwxWkVkV2RXUkROV3BpTWpCM1NIZFpTMHQzV1VKQ1FVZEVkbnBCUWtGblVWSmtNamw1WVRKYWMySXpaR1phUjJ4NkNtTkhSakJaTW1kM1RtZFpTMHQzV1VKQ1FVZEVkbnBCUWtGM1VXOVpiVlV5V21wUmVrMVhVbWxOZWxFeVRVUlNhVmw2VVhoT2JVWnBUMWRTYUZwVVFUSUtUa2ROZVU1VVRYZE5la1V4VDFSSmVFMUVRV0pDWjI5eVFtZEZSVUZaVHk5TlFVVkZRa0V4U0dJeldteGpiVFZvWW0xT2JFbEdRbE5OUTNOSFEybHpSd3BCVVZGQ1p6YzRkMEZSVlVWSVZXd3lXbGhPUkdGSFZuVlRSbWQyWWxoV2MyUkhhM1JaVjJSc1ltNVJkRmt5T1hOaVIwWnBUVVIzUjBOcGMwZEJVVkZDQ21jM09IZEJVVmxGVEc1S2JGcHVUWFpoUjFab1draE5kbGt5T1d0YVdHZDJXakk1TWxwWVNuVlpWelZxV2xNeGFHUllVbTlpTTBwd1pFaHJkR015Ykc0S1l6TlNkbU50VlhkUGQxbExTM2RaUWtKQlIwUjJla0ZDUTBGUmRFUkRkRzlrU0ZKM1kzcHZka3d6VW5aaE1sWjFURzFHYW1SSGJIWmliazExV2pKc01BcGhTRlpwWkZoT2JHTnRUblppYmxKc1ltNVJkVmt5T1hSTlNVZFdRbWR2Y2tKblJVVkJXVTh2VFVGRlNrSkpSMGRFU1VkRVlVaFNNR05JVFRaTWVUbHVDbUZZVW05a1YwbDFXVEk1ZEV3d2JESmFXRTVFWVVkV2RWTkdaM1ppV0ZaelpFZHJkRmxYWkd4aWJsRjBXVEk1YzJKSFJtbE1lVFZ1WVZoU2IyUlhTWFlLWkRJNWVXRXlXbk5pTTJSNlRESmtkbVJ0Vm5saWJVWjFXVEpWZEdOSVNYVmxWekZ6VVVoS2JGcHVUWFpoUjFab1draE5kbGt5T1d0YVdHZDJXakk1TWdwYVdFcDFXVmMxYWxwVE1XaGtXRkp2WWpOS2NHUklhM1JqTW14dVl6TlNkbU50VlhkUFFWbExTM2RaUWtKQlIwUjJla0ZDUTJkUmNVUkRhR2xhVkZwdENrNUVUWGhhUjBsNlRrUlpkMDVIU21wT1JFVXlXVmRKTlZwSFJteE5SRmt3V1hwSk1VMTZRWHBOVkZVMVRXcEZkMDFDTUVkRGFYTkhRVkZSUW1jM09IY0tRVkZ6UlVSM2QwNWFNbXd3WVVoV2FVeFhhSFpqTTFKc1drUkNRVUpuYjNKQ1owVkZRVmxQTDAxQlJVMUNSRWxOVFVkb01HUklRbnBQYVRoMldqSnNNQXBoU0ZacFRHMU9kbUpUT1Vwa2JWWjZVVEpvYkdKcmFGbE1NakV4WWtoU2NFeFhSbTVhVnpVd1RGZE9kbUpIZUdoWmFrRTBRbWR2Y2tKblJVVkJXVTh2Q2sxQlJVNUNRMjlOUzBkS2JFNXRXVEJOZWtacldXcE5NRTVxUVRCWmJVMHdUVlJhYUZscWJHdFpWMVYzVG1wU2FrMXFWWHBOUkUxNFRsUnJlVTFVUVhjS1VHZFpTMHQzV1VKQ1FVZEVkbnBCUWtSblVYZEVRelY1V2xkYWVrd3lhR3haVjFKNlRESk9kbHBIVmpSTU1tUjJaRzFXZVdKdFJuVlpNbFYwV1ZoV01BcGhSemw1WVZoU05VeFlUbkJhTTA0d1lqTktiRTFDYjBkRGFYTkhRVkZSUW1jM09IZEJVVGhGUkVGM1MwMVVTVFZOUkZGNVQxUlZNMDU2UVhSQ1oyOXlDa0puUlVWQldVOHZUVUZGVVVKQ09FMUlWMmd3WkVoQ2VrOXBPSFphTW13d1lVaFdhVXh0VG5aaVV6bEtaRzFXZWxFeWFHeGlhMmhaVFVKclIwTnBjMGNLUVZGUlFtYzNPSGRCVWtWRlEzZDNTazFVV1RKTmVrVXpUVlJOTkUxSlIxWkNaMjl5UW1kRlJVRlpUeTlOUVVWVFFrbEhSMFJKUjBSaFNGSXdZMGhOTmdwTWVUbHVZVmhTYjJSWFNYVlpNamwwVERCc01scFlUa1JoUjFaMVUwWm5kbUpZVm5Oa1IydDBXVmRrYkdKdVVYUlpNamx6WWtkR2FVeDVOVzVoV0ZKdkNtUlhTWFprTWpsNVlUSmFjMkl6WkhwTU1tUjJaRzFXZVdKdFJuVlpNbFYwWTBoSmRXVlhNWE5SU0Vwc1dtNU5kbUZIVm1oYVNFMTJXVEk1YTFwWVozWUtXakk1TWxwWVNuVlpWelZxV2xNeGFHUllVbTlpTTBwd1pFaHJkR015Ykc1ak0xSjJZMjFWZDA5QldVdExkMWxDUWtGSFJIWjZRVUpGZDFGeFJFTm9hUXBhVkZwdFRrUk5lRnBIU1hwT1JGbDNUa2RLYWs1RVJUSlpWMGsxV2tkR2JFMUVXVEJaZWtreFRYcEJlazFVVlRWTmFrVjNUVU5GUjBOcGMwZEJVVkZDQ21jM09IZEJVbEZGUlhkM1VtUXlPWGxoTWxwellqTmtabHBIYkhwalIwWXdXVEpuZDFwQldVdExkMWxDUWtGSFJIWjZRVUpHVVZKWFJFWlNiMlJJVW5jS1kzcHZka3d5WkhCa1IyZ3hXV2sxYW1JeU1IWlRXRnBzWXpCT2IxcFhOVWxYUXpsMFpGZDRNR0ZUTVdoYU1sWjFaRU14YW1JeWVITlpWMGwyV1ZkT01BcGhWemwxWTNrNWVXUlhOWHBNZWsxM1RVUlplRTVVVlRGT1ZFazBUREpHTUdSSFZuUmpTRko2VEhwRmQwWm5XVXRMZDFsQ1FrRkhSSFo2UVVKR1oxRkpDa1JCV25ka1YwcHpZVmROZDBwQldVdExkMWxDUWtGSFJIWjZRVUpHZDFGWFJFSlNibUl6V214amJUVm9ZbTFPYkV4WFJqRmtSMmgyWTIxc01HVlVRbFFLUW1kdmNrSm5SVVZCV1U4dlRVRkZXVUpGVlUxUk0wcHNZMGM0TmxOWVdteGpNRTV2V2xjMVNWZERPWFJrVjNnd1lWTXhhRm95Vm5Wa1F6RnFZako0Y3dwWlYwazJXbGMxTW1GWVNuWmliVEZzWW01Uk5sb3lPVEphV0VwMVdWYzFhbHBUTVdoa1dGSnZZak5LY0dSSWEzZG5XVzlIUTJselIwRlJVVUl4Ym10RENrSkJTVVZtUVZJMlFVaG5RV1JuUkdSUVZFSnhlSE5qVWsxdFRWcElhSGxhV25walEyOXJjR1YxVGpRNGNtWXJTR2x1UzBGTWVXNTFhbWRCUVVGYUsxSUtPRzFFVVVGQlFVVkJkMEpJVFVWVlEwbFJSRkl2TTFCMk5sTTBNV3RRWkdKVVlrZG5Ua3RzVUVSSFdHWldNR1JUZUc4eE0xUlVUVlZUUnpadFZWRkpad3BHWjJ0cFNVbDVVUzl2WjNWVGFGRnFTMGRwYm1OUlNWUkNUMUZDVURZMmVXWmlNMjFTYjBwcVQzaFZkME5uV1VsTGIxcEplbW93UlVGM1RVUmhRVUYzQ2xwUlNYZElURVFyV0VSa2RFSkdURUZTZFc5T1FtRjNUVloxWm1WSVoxUkhLMGRZWm0xNFdXWk1kRE5tWkhGRVJXcExWVEkwU21wTVFXdGtMMFZqYlU4S1JTOXhXVUZxUlVGcE1HTnFhaTl2Y0ZObWEzTnpNMUptU0RGaFZtaG5TVlIzWnpsWFdWbEdhRTB3TTJZeFN6SkpjWEZTV1ZKSFprUnFRM1ZPTUVvNFdRcFJkbmhuZG1KUVNRb3RMUzB0TFVWT1JDQkRSVkpVU1VaSlEwRlVSUzB0TFMwdENnPT0ifV19fQ==",
+                "inclusionPromise": {
+                  "signedEntryTimestamp": "MEYCIQC+tt34/w6pqChFnm5mALOpb2wfemESoNBSBSpPBsnRugIhALoTmn+cCM3pO3i8SCgc3MI1J9ub1hfHS5pIYSU9515q"
+                },
+                "inclusionProof": {
+                  "checkpoint": {
+                    "envelope": "rekor.sigstore.dev - 1193050959916656506\n2108507728\nFACcyhouYg7RlnM0FPad1VIrLzn7f5jbac5CRFTdeDo=\n\n— rekor.sigstore.dev wNI9ajBFAiEAzpcJseAy3NlSVPUYUcQ1O5z0jKv7wBGSHb0yVzjp+zcCIEpWRD3I/30JKVkkEty2fvGLvg3IQf4/mJ6F3xHVDCf1\n"
+                  },
+                  "hashes": [
+                    "phj+GNeNVPgBmu2C/bpyP40+B3RXndMfVtG5BAi8oHg=",
+                    "Fc95rLMvi+2VWBHQjAc35/Do+GiUp5lUh2KWBNgi09I=",
+                    "dEnJJhhm1MJjn72ZSouOR9HBJUA7/IAfnPky91jf+lM=",
+                    "N4b2c7wBG9bOz5lCN/gvxQZpALzfjbkOWU0oQ+YV+g0=",
+                    "88l8C34oK3per1OqzEuw2xXQvIA+XeW1aOZMU2UvvH4=",
+                    "d2kwOQnphcHC0mWn5zMul5WRl5wGNvKMmZy4kRDXmUc=",
+                    "rLC5KycssMq0DS+uA/meav4PbwKJoPJY5tevVpoD5gU=",
+                    "L+FKI1JUCZczMtVfgf+QYgiSFXQquvqgbid6dzrMBq4=",
+                    "MnxgEOtrgKoaGJ6mGnjhOOC8h8TLZ+Sifr2kYQdlOog=",
+                    "t83xWAhFganv0QWROpt6AetV4TuIjQFx9qgG/J62h+o=",
+                    "PKNQeIGlVeaJPBzA6+BCX3x/uZYUyHQv5A/w9Gc+yY4=",
+                    "00Ta0RDYNNrxGpbY+3futHvcDM4mpncQFFPC55UGibM=",
+                    "8MNGniVe54WhMo/PdSCPRRgjE9kRiVIOPzTqUs66cBc=",
+                    "0ufnCXU4HtJ3zUxcT5z2oh322GwTiAtx5LbzOrZ6uRY=",
+                    "onQqLyMK76y89fNpfjmzqWnFCutX3JHPB8HvWUS9lLk=",
+                    "n3FrhrLV+aX3gf/a4yempn9Y+XjQCkkJAiMuDNnVN1k=",
+                    "GxT6+CEXxY8Ak/besnRW/IK3DhneHQ5X5rIcw8L01DQ=",
+                    "Rq/A2aTC9e54ldNjcpsJ26rX/h8JlN6ZHxgw7yEa6C0=",
+                    "+/VZ56MsIPxMiyLAodzKXo5TEWdQp36z89qLhpzloAo=",
+                    "daxmZaajRpZV+JxHiOYZhJBiSKN5ucqjh2WnGbHhirw=",
+                    "DOCeoSMovIvLExkhIvisow9AuNXgeWs4ECkyR6EcqYU="
+                  ],
+                  "logIndex": "2108507682",
+                  "rootHash": "FACcyhouYg7RlnM0FPad1VIrLzn7f5jbac5CRFTdeDo=",
+                  "treeSize": "2108507728"
+                },
+                "integratedTime": "1784860010",
+                "kindVersion": {
+                  "kind": "dsse",
+                  "version": "0.0.1"
+                },
+                "logId": {
+                  "keyId": "wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0="
+                },
+                "logIndex": "2230411944"
+              }
+            ]
+          }
+        },
+        "predicate": {
+          "actor_id": "governance-owner",
+          "actor_kind": "human",
+          "allowed": true,
+          "authenticated": true,
+          "binding_digest": "sha256:71b4a5e3d8dc29f5f8e774c1b74e863a27937fa2d7bc33ea647ce25fc1f15098",
+          "environment": "governance-authority",
+          "expires_at": "2026-07-24T02:56:48.216024Z",
+          "independence_level": "L2",
+          "issued_at": "2026-07-24T02:26:08.789385Z",
+          "issuer": "https://token.actions.githubusercontent.com",
+          "request_digest": "sha256:c7b3d7066a073442d5759b28b363a729a822e177c1bb1aff0a74e7d12106c2f3",
+          "schema_version": 1
+        },
+        "subject": {
+          "actor_claim": {
+            "id": "governance-owner",
+            "kind": "human"
+          },
+          "audience": "mac-mutation-gateway/v1",
+          "expected_revision": 3,
+          "idempotency_key": "github-sigstore-execution:work-unit-ready:30061555528:1",
+          "intent_digest": "sha256:c2becc5dfacbb94db9f7f3c06fb884b663a9e3821b18413f7f97f77586928ce8",
+          "operation": "work_unit.ready",
+          "ownership_digest": "sha256:291efd0cb181d3cc9b6577111be30ced1d44965b84836ae2d6e16c696b8ec50e",
+          "policy_digest": "sha256:ba3639b86091734159c865fd65aeea4e5a583b532231206ab7676b53e954ce43",
+          "repository_identity": "github:repository-id:1290429577",
+          "schema_version": 1,
+          "task_id": "TASK-01KY8XTC5CMEQPH338PFS46MHD-full-regression-closure-successor"
+        },
+        "verification_policy": {
+          "deny_self_hosted_runners": true,
+          "environment": "governance-authority",
+          "oidc_issuer": "https://token.actions.githubusercontent.com",
+          "predicate_type": "https://github.com/IvesChenHX/multi-agent-collab/attestations/mutation-authority/v1",
+          "repository": "IvesChenHX/multi-agent-collab",
+          "repository_identity": "github:repository-id:1290429577",
+          "schema_version": 2,
+          "signer_workflow": "IvesChenHX/multi-agent-collab/.github/workflows/governance-pr.yml",
+          "source_digest": "be6f431db34604bc416ab9dae064c25303159210",
+          "source_ref": "refs/heads/codex/governance-authority-sigstore",
+          "verifier_manifest": "sha256:59a47cba2ee2f3497dc9dc3f36db010d738f394bb3935ce7801ec92ed235cfce"
+        }
+      },
+      "store_contract_version": 3,
+      "task_id": "TASK-01KY8XTC5CMEQPH338PFS46MHD-full-regression-closure-successor",
+      "trust_digest": "sha256:e2582579f3bf349037c72fff28ad32036d33998056291eab227fda8ae75e1a01"
+    },
+    "work_unit": {
+      "acceptance_criteria": [
+        "AC-001",
+        "AC-002",
+        "AC-003",
+        "AC-004"
+      ],
+      "allowed_paths": [
+        "src/mac/authority.py",
+        "src/mac/cli.py",
+        "src/mac/git.py",
+        "src/mac/migration.py",
+        "src/mac/repository.py",
+        "src/mac/schema_validation.py",
+        "src/mac/scope.py",
+        "tests/test_event_store.py",
+        "tests/test_examples_v6.py",
+        "tests/test_migration_and_services.py",
+        "tests/test_repair_round4.py",
+        "tests/test_repair_round5_platform.py",
+        "tests/test_schema_validation.py",
+        "tests/test_scope_amendment_and_workflow.py",
+        "tests/operations/test_release_artifacts.py",
+        "examples/v6/**"
+      ],
+      "depends_on": [],
+      "expected_result": "tasks/TASK-01KY8XTC5CMEQPH338PFS46MHD-full-regression-closure-successor/results/RESULT-01KY8YQ9413F5QV6MWM86NJHR2.json",
+      "id": "WU-01KY8YQ9413F5QV6MWM86NJHR1",
+      "owner": "tests",
+      "schema_version": 1,
+      "status": "ready",
+      "task_id": "TASK-01KY8XTC5CMEQPH338PFS46MHD-full-regression-closure-successor",
+      "title": "Close the full regression suite"
+    },
+    "work_unit_id": "WU-01KY8YQ9413F5QV6MWM86NJHR1"
+  },
+  "run_id": null,
+  "schema_version": 1,
+  "task_id": "TASK-01KY8XTC5CMEQPH338PFS46MHD-full-regression-closure-successor"
+}

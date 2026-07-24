@@ -1,0 +1,71 @@
+{
+  "assumptions": [
+    "Linux and privileged Windows CI will exercise the real directory and file symlink fixtures during Pilot."
+  ],
+  "blockers": [],
+  "changed_files": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/governance-pr.yml",
+    ".github/workflows/release.yml",
+    "pyproject.toml",
+    "scripts/release/check_schema_lock.py",
+    "src/mac/doctor.py",
+    "src/mac/report.py",
+    "src/mac/schema_validation.py",
+    "tests/adapters/test_plain_terminal.py",
+    "tests/operations/test_doctor.py",
+    "tests/operations/test_governance_pr.py",
+    "tests/operations/test_release_artifacts.py",
+    "tests/reporting/test_audit_bundle.py",
+    "tests/test_schema_validation.py"
+  ],
+  "commands": [
+    {
+      "argv": [
+        "pytest",
+        "devex-targeted"
+      ],
+      "exit_code": 0,
+      "summary": "42 passed, 2 skipped"
+    },
+    {
+      "argv": [
+        "python",
+        "scripts/release/check_schema_lock.py"
+      ],
+      "exit_code": 0,
+      "summary": "schema bundle matches lock"
+    },
+    {
+      "argv": [
+        "python",
+        "-m",
+        "build",
+        "--no-isolation"
+      ],
+      "exit_code": 0,
+      "summary": "wheel and sdist post-build checks passed"
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "summary": "clean; CRLF notices only"
+    }
+  ],
+  "id": "RESULT-01KXXHTR2PNYB2M57BQTRFXC2B",
+  "new_risks": [
+    "Two real symlink fixtures are skipped on this Windows host because symlink creation is unavailable."
+  ],
+  "outcome": "succeeded",
+  "run_id": "RUN-01KXXHVTRV1J0RFJZC931C47V2",
+  "schema_version": 1,
+  "scope_amendment_request": null,
+  "submitted_at": "2026-07-19T16:50:00Z",
+  "summary": "Hardened Doctor repair plans, audit bundle trust and resource limits, canonical schema locking, build hooks, and CI/release gates; closed pre-review resource and symlink findings.",
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+  "work_unit_id": "WU-01KXXHTR2PNYB2M57BQTRFXC2A"
+}

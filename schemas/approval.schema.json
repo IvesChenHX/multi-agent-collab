@@ -12,6 +12,7 @@
     "actor",
     "decision",
     "subject_ref",
+    "independence_level",
     "recorded_at"
   ],
   "properties": {

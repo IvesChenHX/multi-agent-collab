@@ -1,18 +1,18 @@
 schema_version: 6
 id: TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth
-title: 增加退款权限校验
+title: Add refund authorization checks
 mode: high_risk
 state: reviewing
-revision: 5
+revision: 14
 created_at: 2026-07-17T10:00:00Z
-updated_at: 2026-07-17T11:30:00Z
-objective: 未授权用户不得执行退款，授权用户行为保持兼容。
+updated_at: 2026-07-17T11:25:00Z
+objective: Unauthorized users cannot issue refunds, while existing authorized behavior remains compatible.
 acceptance_criteria:
   - id: AC-001
-    text: 未授权用户调用退款接口返回明确的权限错误且不产生资金变更。
+    text: An unauthorized refund request returns a permission error and creates no funds movement.
     required: true
   - id: AC-002
-    text: 已授权用户的既有退款流程继续通过。
+    text: Existing refund flows for authorized users continue to pass.
     required: true
 policy_ref:
   source_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

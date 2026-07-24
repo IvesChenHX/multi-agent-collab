@@ -1,0 +1,19 @@
+{
+  "actor": {
+    "id": "platform-impl-r6",
+    "kind": "agent"
+  },
+  "exit_code": 0,
+  "finished_at": "2026-07-19T17:32:16Z",
+  "id": "RUN-01KXXNFJP8QRTACVMQJ10M2TX6",
+  "independence_level": "L0",
+  "runtime": {
+    "execution_context_id": "integration-cli-20260719",
+    "profile": "local-multi"
+  },
+  "schema_version": 1,
+  "started_at": "2026-07-19T17:06:18.952169Z",
+  "status": "succeeded",
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+  "work_unit_id": "WU-01KXXHV2CF6FRH4Z108JB3N4PA"
+}

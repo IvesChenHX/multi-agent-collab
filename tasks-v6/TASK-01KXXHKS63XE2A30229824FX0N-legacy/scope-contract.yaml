@@ -1,0 +1,24 @@
+schema_version: 1
+id: SCOPE-01KXXHKS63XE2A30229824FX0N
+task_id: TASK-01KXXHKS63XE2A30229824FX0N-legacy
+version: 1
+status: approved
+proposed_by: migration-automation
+approved_by:
+- migration-automation
+allowed_paths:
+- legacy-unverifiable/**
+denied_paths: []
+allowed_operations:
+- read
+owners:
+- legacy-unassigned
+risk_tags:
+- legacy_unverifiable
+required_gates: []
+network_access: none
+secret_access: []
+amendment_policy:
+  max_amendments: 0
+  max_paths_per_amendment: 1
+  require_independent_approval_for: []

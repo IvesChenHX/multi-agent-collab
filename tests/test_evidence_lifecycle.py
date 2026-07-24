@@ -10,6 +10,7 @@ from mac.evidence import (
     invalidate_evidence,
     invalidate_for_changes,
     promote_evidence,
+    WorkspaceEquivalenceProof,
 )
 
 
@@ -41,12 +42,31 @@ def test_invalidation_is_append_only_and_change_matrix_is_selective() -> None:
 
 
 def test_workspace_evidence_promotion_requires_exact_verified_workspace() -> None:
-    promoted = promote_evidence(item(), current_workspace_subject=WORKSPACE, target_commit_subject={"type": "commit", "commit_sha": "b" * 40, "tree_sha": "c" * 40}, workspace_equivalent=True)
+    target = {"type": "commit", "commit_sha": "b" * 40, "tree_sha": "c" * 40}
+    checks = {
+        "source_subject_bound": True,
+        "target_commit_resolved": True,
+        "effective_tree_matches": True,
+        "index_matches": True,
+        "untracked_empty": True,
+        "special_paths_match": True,
+        "lfs_verified": True,
+    }
+    proof = WorkspaceEquivalenceProof.verified(
+        source_workspace_subject=WORKSPACE,
+        observed_workspace_subject=WORKSPACE,
+        target_commit_subject=target,
+        checks=checks,
+        verifier="test-git-adapter",
+    )
+    promoted = promote_evidence(item(), current_workspace_subject=WORKSPACE, target_commit_subject=target, equivalence_proof=proof)
     assert promoted.evidence["subject"]["type"] == "commit"
     assert promoted.evidence["id"] != item()["id"]
     assert promoted.event_payload["source_evidence_id"] == item()["id"]
     with pytest.raises(ValueError):
-        promote_evidence(item(), current_workspace_subject={**WORKSPACE, "head_commit": "d" * 40}, target_commit_subject={"type": "commit"}, workspace_equivalent=True)
+        promote_evidence(item(), current_workspace_subject=WORKSPACE, target_commit_subject=target, workspace_equivalent=True)
+    with pytest.raises(ValueError, match="observed workspace"):
+        promote_evidence(item(), current_workspace_subject={**WORKSPACE, "head_commit": "d" * 40}, target_commit_subject=target, equivalence_proof=proof)
 
 
 def test_gate_coverage_uses_only_current_valid_evidence() -> None:

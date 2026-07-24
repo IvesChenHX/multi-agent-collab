@@ -1,0 +1,85 @@
+{
+  "actor": {
+    "id": "migration-automation",
+    "kind": "automation"
+  },
+  "event_id": "EVT-01KXXHKS63XE2A30229824FX0N",
+  "event_type": "legacy_imported",
+  "expected_revision": -1,
+  "idempotency_key": "authorityless-v6-import:TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready:sha256:0ff1e4d9d93a6bec402610914b7053a0f69b92de397c1ce90b2b12df232fc6a7",
+  "new_revision": 0,
+  "occurred_at": "2026-07-22T14:26:10.690780Z",
+  "payload": {
+    "integrity": "metadata_only",
+    "legacy_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+    "legacy_status": "executing",
+    "source_digest": "sha256:0ff1e4d9d93a6bec402610914b7053a0f69b92de397c1ce90b2b12df232fc6a7",
+    "source_path": "tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+    "task": {
+      "acceptance_criteria": [
+        {
+          "id": "AC-001",
+          "required": false,
+          "text": "Preserve source metadata and classify historical verification as unverifiable."
+        }
+      ],
+      "active_controller": null,
+      "created_at": "2026-07-22T14:26:10.690780Z",
+      "id": "TASK-01KXXHKS63XE2A30229824FX0N-legacy",
+      "legacy_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+      "legacy_integrity": "metadata_only",
+      "mode": "standard",
+      "objective": "Preserve authorityless v6 metadata without claiming historical verification.",
+      "ownership_ref": {
+        "combined_digest": "sha256:8322c80c33ba3a9dc3ca556c1730f7ab31f600127b015dc694646e96d4309ada",
+        "files": [
+          {
+            "digest": "sha256:4310b82a349bb47e87b2355d9b7ef1220a84ae6ea4d15b70c55b6564a72c7e31",
+            "path": ".agents/ownership.yaml"
+          }
+        ],
+        "source_commit": "4bcc6bb27302b6c7ba6944ad7ceea3bbede96ffd"
+      },
+      "policy_ref": {
+        "combined_digest": "sha256:3096c41375683cb941d611affac8f130392048b6044430e3e043d91249336e1f",
+        "files": [
+          {
+            "digest": "sha256:562f78b04e020a2e2f315c355150bb3f9ddcf506f4f21a94b901f66eae5c0432",
+            "path": ".agents/config.yaml"
+          },
+          {
+            "digest": "sha256:3534a269993883136842880a8236a4c168f815739c03b431a3864def65e4dbaf",
+            "path": ".agents/workflows/evidence-driven-development.yaml"
+          },
+          {
+            "digest": "sha256:67c277a9d9da74f01ee7558a8190148b17b22720e9c6db310128b266c448a506",
+            "path": "AGENTS.md"
+          }
+        ],
+        "source_commit": "4bcc6bb27302b6c7ba6944ad7ceea3bbede96ffd"
+      },
+      "relationships": {
+        "parent_task": null,
+        "superseded_by": null,
+        "supersedes": []
+      },
+      "required_gates": [],
+      "revision": 0,
+      "runtime_profile": "legacy-import",
+      "schema_version": 6,
+      "scope_contract_ref": "tasks-v6/TASK-01KXXHKS63XE2A30229824FX0N-legacy/scope-contract.yaml",
+      "state": "failed",
+      "terminal": {
+        "closed_at": "2026-07-22T14:26:10.690780Z",
+        "closed_by": "migration-automation",
+        "summary": "Authorityless v6 history retained as unverifiable metadata."
+      },
+      "title": "Authorityless v6 history: v6 Alpha 收口与 Pilot-ready",
+      "updated_at": "2026-07-22T14:26:10.690780Z"
+    },
+    "verification_status": "unverifiable"
+  },
+  "run_id": null,
+  "schema_version": 1,
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-legacy"
+}

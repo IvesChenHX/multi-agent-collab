@@ -1,0 +1,20 @@
+{
+  "actor": {
+    "id": "repo-owner",
+    "kind": "human"
+  },
+  "event_id": "EVT-01KXXHSBQSJ0PPAY9KA1GG3GQJ",
+  "event_type": "state_transitioned",
+  "expected_revision": 8,
+  "idempotency_key": "alpha-task-ready",
+  "new_revision": 9,
+  "occurred_at": "2026-07-19T16:01:45.209180Z",
+  "payload": {
+    "from": "triage",
+    "to": "ready",
+    "transition_id": "triage_to_ready"
+  },
+  "run_id": null,
+  "schema_version": 1,
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready"
+}

@@ -1,7 +1,7 @@
 schema_version: 1
 id: WU-01K0W4Z36K3W5C2R0A3M8N9P7S
 task_id: TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth
-title: 实现退款接口权限校验并补充测试
+title: Implement refund authorization checks and tests
 status: completed
 owner: backend
 executor_role: backend-implementer

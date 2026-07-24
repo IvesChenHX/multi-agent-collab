@@ -23,6 +23,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v6.0.2
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Set up locked Python environment
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -32,9 +33,13 @@ jobs:
           enable-cache: true
       - name: Synchronize dependencies
         run: uv sync --locked --extra test
+      - name: Verify locked schema bundle
+        run: uv run --frozen python scripts/release/check_schema_lock.py
       - name: Validate repository
-        run: uv run --frozen mac validate --json
+        run: uv run --frozen python scripts/ci/governance_pr.py --github-trusted-validate --json
       - name: Run test suite
-        run: uv run --frozen pytest
+        run: uv run --frozen python -m pytest
+      - name: Verify executable schema lock
+        run: python scripts/release/verify_schema_lock.py
       - name: Build wheel and source distribution
         run: uv build

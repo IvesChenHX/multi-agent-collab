@@ -61,6 +61,16 @@ def test_plain_terminal_builds_self_contained_packet_without_process_control(tmp
     assert not hasattr(adapter, "cancel")
 
 
+def test_plain_terminal_uses_the_frozen_combined_policy_digest(runtime_inputs):
+    task, work_unit, scope = runtime_inputs
+    task["policy_ref"]["digest"] = "sha256:" + "b" * 64
+
+    packet = PlainTerminalAdapter().prepare(task, work_unit, scope)
+
+    assert packet.policy_digest == task["policy_ref"]["combined_digest"]
+    assert task["policy_ref"]["digest"] not in packet.to_markdown()
+
+
 def test_plain_terminal_profile_is_conservative():
     profile = PlainTerminalAdapter().capabilities()
     capabilities = profile["capabilities"]

@@ -1,0 +1,13 @@
+{
+  "classification": "metadata_only",
+  "kind": "authorityless_v6_migration",
+  "migrated_task_id": "TASK-01KXXHKS63XE2A30229824FX0N-legacy",
+  "migrated_task_path": "tasks-v6/TASK-01KXXHKS63XE2A30229824FX0N-legacy",
+  "reason": "EVENT_AUTHORITY_MISSING",
+  "recorded_at": "2026-07-22T14:26:10.690780Z",
+  "schema_version": 1,
+  "source_digest": "sha256:0ff1e4d9d93a6bec402610914b7053a0f69b92de397c1ce90b2b12df232fc6a7",
+  "source_path": "tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+  "source_task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+  "verification_status": "unverifiable"
+}

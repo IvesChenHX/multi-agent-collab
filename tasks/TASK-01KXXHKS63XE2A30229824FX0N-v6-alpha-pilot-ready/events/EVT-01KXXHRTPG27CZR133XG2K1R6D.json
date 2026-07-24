@@ -1,0 +1,33 @@
+{
+  "actor": {
+    "id": "devex-owner",
+    "kind": "human"
+  },
+  "event_id": "EVT-01KXXHRTPG27CZR133XG2K1R6D",
+  "event_type": "scope_approved",
+  "expected_revision": 6,
+  "idempotency_key": "alpha-scope-approval-devex",
+  "new_revision": 7,
+  "occurred_at": "2026-07-19T16:01:27.760264Z",
+  "payload": {
+    "approval": {
+      "actor": {
+        "id": "devex-owner",
+        "kind": "human"
+      },
+      "decision": "approved",
+      "id": "APR-01KXXHRTBGE89M91V08P64V2WJ",
+      "independence_level": "L2",
+      "kind": "scope",
+      "recorded_at": "2026-07-19T16:01:27.408575Z",
+      "schema_version": 1,
+      "subject_ref": "tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/scope-contract.yaml",
+      "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready"
+    },
+    "approval_id": "APR-01KXXHRTBGE89M91V08P64V2WJ",
+    "approval_kind": "scope"
+  },
+  "run_id": null,
+  "schema_version": 1,
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready"
+}

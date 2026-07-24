@@ -1,0 +1,45 @@
+{
+  "actor": {
+    "id": "security-owner",
+    "kind": "human"
+  },
+  "event_id": "EVT-01KXXHTER5PZ2EE8H5C9X6NJCK",
+  "event_type": "work_unit_created",
+  "expected_revision": 10,
+  "idempotency_key": "alpha-wu-edge-create",
+  "new_revision": 11,
+  "occurred_at": "2026-07-19T16:02:21.061495Z",
+  "payload": {
+    "work_unit": {
+      "acceptance_criteria": [],
+      "allowed_paths": [
+        "src/mac/security.py",
+        "src/mac/io.py",
+        "src/mac/ownership.py",
+        "src/mac/scope.py",
+        "src/mac/git.py",
+        "src/mac/migration.py",
+        "migration/migrate_v5.py",
+        "examples/v6/.github/workflows/multi-agent-governance.yml",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/**",
+        "tests/test_scope_and_git.py",
+        "tests/test_migration_and_services.py",
+        "tests/test_examples_v6.py",
+        "tests/security/test_input_and_result_security.py",
+        "tests/security/test_scope_threat_corpus.py"
+      ],
+      "depends_on": [],
+      "expected_result": "tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/results/RESULT-01KXXHTEMXPCT29MAV3AFAMWFJ.json",
+      "id": "WU-01KXXHTEMXPCT29MAV3AFAMWFH",
+      "owner": "security",
+      "schema_version": 1,
+      "status": "pending",
+      "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+      "title": "Path/YAML/Git 安全、迁移与权威示例"
+    },
+    "work_unit_id": "WU-01KXXHTEMXPCT29MAV3AFAMWFH"
+  },
+  "run_id": null,
+  "schema_version": 1,
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready"
+}

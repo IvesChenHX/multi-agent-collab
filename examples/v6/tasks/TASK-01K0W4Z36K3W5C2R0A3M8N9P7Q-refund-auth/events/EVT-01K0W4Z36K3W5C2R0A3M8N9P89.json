@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "event_id": "EVT-01K0W4Z36K3W5C2R0A3M8N9P89",
+  "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+  "event_type": "result_submitted",
+  "occurred_at": "2026-07-17T11:01:00Z",
+  "actor": {"id": "agent-backend-01", "kind": "agent", "display_name": "Backend Implementer"},
+  "run_id": "RUN-01K0W4Z36K3W5C2R0A3M8N9P7T",
+  "expected_revision": 7,
+  "new_revision": 8,
+  "idempotency_key": "example-8",
+  "payload": {
+    "result_id": "RESULT-01K0W4Z36K3W5C2R0A3M8N9P7W",
+    "result": {
+      "schema_version": 1,
+      "id": "RESULT-01K0W4Z36K3W5C2R0A3M8N9P7W",
+      "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+      "work_unit_id": "WU-01K0W4Z36K3W5C2R0A3M8N9P7S",
+      "run_id": "RUN-01K0W4Z36K3W5C2R0A3M8N9P7T",
+      "outcome": "succeeded",
+      "summary": "Added permission checks at the refund service boundary with authorized and unauthorized tests.",
+      "changed_files": ["backend/payments/refund_service.py", "tests/payments/test_refund_permissions.py"],
+      "commands": [
+        {
+          "argv": ["pytest", "tests/payments/test_refund_permissions.py"],
+          "exit_code": 0,
+          "summary": "8 passed"
+        }
+      ],
+      "new_risks": [],
+      "assumptions": ["The permission service return contract remains stable within this scope."],
+      "blockers": [],
+      "scope_amendment_request": null,
+      "raw_log_ref": {
+        "path": "tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/private/test.log",
+        "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      },
+      "submitted_at": "2026-07-17T11:00:00Z"
+    },
+    "work_unit": {
+      "schema_version": 1,
+      "id": "WU-01K0W4Z36K3W5C2R0A3M8N9P7S",
+      "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+      "title": "Implement refund authorization checks and tests",
+      "status": "completed",
+      "owner": "backend",
+      "executor_role": "backend-implementer",
+      "allowed_paths": ["backend/payments/**", "tests/payments/**"],
+      "depends_on": [],
+      "acceptance_criteria": ["AC-001", "AC-002"],
+      "expected_result": "tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/results/RESULT-01K0W4Z36K3W5C2R0A3M8N9P7W.json"
+    }
+  }
+}

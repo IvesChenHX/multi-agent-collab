@@ -81,3 +81,14 @@ def test_block_close_finding_cannot_be_converted_to_waiver() -> None:
 
     assert not decision.ok
     assert "RISK_FINDING_NOT_WAIVABLE" in decision.codes
+
+
+def test_confirmed_security_or_data_finding_is_never_waivable() -> None:
+    for category in ("security", "data"):
+        finding = waiver_allowed_finding()
+        finding.update({"category": category, "confidence": "confirmed", "severity": "minor"})
+
+        decision = validate(valid_acceptance(), finding)
+
+        assert not decision.ok
+        assert "RISK_CATEGORY_NON_WAIVABLE" in decision.codes

@@ -1,0 +1,17 @@
+{
+  "blocking_effect": "block_close",
+  "category": "policy",
+  "confidence": "confirmed",
+  "evidence_refs": [],
+  "id": "FND-01KXXSZW2YA52WNP90D2SVJ368",
+  "invalidates": [],
+  "opened_at": "2026-07-19T18:25:07.166672Z",
+  "owner": "governance",
+  "resolved_at": null,
+  "risk": "Local repairs are validated, but recording a formal Result, approval, commit-bound Evidence, or L2 review without an external authenticated verifier would permit self-attested authority and violate the high-risk independence gate.",
+  "schema_version": 1,
+  "severity": "major",
+  "status": "open",
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+  "title": "Trusted runtime verifier unavailable for formal repair intake"
+}

@@ -9,6 +9,7 @@ completion.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -93,15 +94,16 @@ def _acceptance_lines(task: Mapping[str, Any], work_unit: Mapping[str, Any]) -> 
     return tuple(line for line in lines if line)
 
 
-def _policy_digest(task: Mapping[str, Any], explicit: str | None) -> str:
-    if explicit:
-        return explicit
+def _policy_reference(task: Mapping[str, Any], explicit: str | None) -> dict[str, Any]:
     policy_ref = task.get("policy_ref")
-    if isinstance(policy_ref, Mapping):
-        digest = policy_ref.get("combined_digest")
-        if isinstance(digest, str):
-            return digest
-    raise ValueError("task policy_ref.combined_digest is required")
+    if not isinstance(policy_ref, Mapping):
+        raise ValueError("task policy_ref is required")
+    digest = policy_ref.get("combined_digest")
+    if not isinstance(digest, str) or not digest.startswith("sha256:"):
+        raise ValueError("task policy_ref.combined_digest is required")
+    if explicit is not None and explicit != digest:
+        raise ValueError("explicit policy digest does not match the frozen task policy")
+    return deepcopy(dict(policy_ref))
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +121,7 @@ class HandoffPacket:
     acceptance_criteria: tuple[str, ...]
     allowed_paths: tuple[str, ...]
     denied_paths: tuple[str, ...]
+    policy_ref: dict[str, Any]
     policy_digest: str
     decisions_and_contracts: tuple[str, ...]
     open_findings: tuple[str, ...]
@@ -135,6 +138,15 @@ class HandoffPacket:
                 return f"- {empty}"
             return "\n".join(f"- {value}" for value in values)
 
+        policy_sources = []
+        for item in self.policy_ref.get("files", ()):
+            if isinstance(item, Mapping):
+                path = str(item.get("path", "")).strip()
+                digest = str(item.get("digest", "")).strip()
+                if path and digest:
+                    policy_sources.append(f"`{path}` (`{digest}`)")
+        source_commit = str(self.policy_ref.get("source_commit", "not recorded"))
+
         return (
             "# MAC v6 Runtime Handoff\n\n"
             "> This packet is an execution input, not approval or completion evidence.\n"
@@ -146,8 +158,11 @@ class HandoffPacket:
             f"- Work unit: `{self.work_unit_id}` (`{self.work_unit_status}`)\n"
             f"- Run: `{self.run_id or 'register before result submission'}`\n"
             f"- Policy digest: `{self.policy_digest}`\n"
+            f"- Policy source commit: `{source_commit}`\n"
             f"- Expected result: `{self.result_path}`\n"
             f"- Result schema: `{self.result_schema}`\n\n"
+            "### Frozen policy sources\n\n"
+            f"{bullets(tuple(policy_sources))}\n\n"
             "### Approved paths\n\n"
             f"{bullets(tuple(f'`{value}`' for value in self.allowed_paths))}\n\n"
             "### Denied paths\n\n"
@@ -257,6 +272,7 @@ class PlainTerminalAdapter:
             "Do not declare scope, evidence, review, risk, or Close gates satisfied.",
         )
         restrictions = defaults + _string_list(runtime_restrictions)
+        policy_ref = _policy_reference(task_data, policy_digest)
         return HandoffPacket(
             task_id=task_id,
             task_title=str(_field(task_data, "title", task_id)),
@@ -269,7 +285,8 @@ class PlainTerminalAdapter:
             acceptance_criteria=_acceptance_lines(task_data, unit_data),
             allowed_paths=allowed,
             denied_paths=denied,
-            policy_digest=_policy_digest(task_data, policy_digest),
+            policy_ref=policy_ref,
+            policy_digest=str(policy_ref["combined_digest"]),
             decisions_and_contracts=_string_list(decisions_and_contracts),
             open_findings=_string_list(open_findings),
             invalidated_evidence=_string_list(invalidated_evidence),

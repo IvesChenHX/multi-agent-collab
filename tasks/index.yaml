@@ -1,6 +1,6 @@
 # 项目级任务实例台账。任务模式和状态转换规则不在此重复定义。
 schema_version: 1
-next_task_number: 6
+next_task_number: 7
 
 tasks:
   - id: TASK-0001-example
@@ -37,3 +37,10 @@ tasks:
     status: complete
     summary: 建立项目级任务台账，并把终态、摘要和归档时间纳入 Close 门禁。
     archived_at: 2026-07-16T16:00:06+08:00
+
+  - id: TASK-0006-v6-governance-core
+    title: 严格落地 v6 治理内核设计包
+    kind: task
+    status: waiting_input
+    summary: 按 v6 设计包实现治理内核、Schema、CLI、状态存储、Scope、Evidence、运行时交接、迁移、CI 与发布门禁，不扩展或删减产品边界。
+    archived_at: null

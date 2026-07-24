@@ -1,0 +1,30 @@
+acceptance_criteria:
+- AC-001
+- AC-002
+- AC-003
+- AC-004
+allowed_paths:
+- src/mac/authority.py
+- src/mac/cli.py
+- src/mac/git.py
+- src/mac/migration.py
+- src/mac/repository.py
+- src/mac/schema_validation.py
+- src/mac/scope.py
+- tests/test_event_store.py
+- tests/test_examples_v6.py
+- tests/test_migration_and_services.py
+- tests/test_repair_round4.py
+- tests/test_repair_round5_platform.py
+- tests/test_schema_validation.py
+- tests/test_scope_amendment_and_workflow.py
+- tests/operations/test_release_artifacts.py
+- examples/v6/**
+depends_on: []
+expected_result: tasks/TASK-01KY8XTC5CMEQPH338PFS46MHD-full-regression-closure-successor/results/RESULT-01KY8YQ9413F5QV6MWM86NJHR2.json
+id: WU-01KY8YQ9413F5QV6MWM86NJHR1
+owner: tests
+schema_version: 1
+status: running
+task_id: TASK-01KY8XTC5CMEQPH338PFS46MHD-full-regression-closure-successor
+title: Close the full regression suite

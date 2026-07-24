@@ -7,7 +7,20 @@ from dataclasses import dataclass
 from typing import Any
 
 import yaml
-from yaml.tokens import AliasToken
+from yaml.constructor import ConstructorError
+from yaml.nodes import MappingNode
+from yaml.tokens import (
+    AliasToken,
+    AnchorToken,
+    BlockEndToken,
+    BlockMappingStartToken,
+    BlockSequenceStartToken,
+    FlowMappingEndToken,
+    FlowMappingStartToken,
+    FlowSequenceEndToken,
+    FlowSequenceStartToken,
+    TagToken,
+)
 
 from .errors import MacIssue
 from .errors import ExitCode, MacError
@@ -20,14 +33,69 @@ _SECRET_PATTERNS = [
 _SENSITIVE_KEYS = {"password", "passwd", "secret", "token", "api_key", "apikey", "authorization", "private_key", "raw_log"}
 
 
-def parse_yaml_safely(source: str | bytes, *, max_bytes: int = 1_048_576) -> dict[str, Any]:
+class _RestrictedSafeLoader(yaml.SafeLoader):
+    """SafeLoader variant that refuses duplicate mapping keys."""
+
+    def construct_mapping(self, node: MappingNode, deep: bool = False) -> dict[Any, Any]:
+        if not isinstance(node, MappingNode):
+            raise ConstructorError(None, None, "expected a mapping node", node.start_mark)
+        result: dict[Any, Any] = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                duplicate = key in result
+            except TypeError as exc:
+                raise ConstructorError(
+                    "while constructing a mapping", node.start_mark, "found an unhashable key", key_node.start_mark,
+                ) from exc
+            if duplicate:
+                raise MacError(
+                    "YAML_DUPLICATE_KEY",
+                    f"duplicate YAML mapping key: {key!r}",
+                    exit_code=ExitCode.SECURITY,
+                )
+            result[key] = self.construct_object(value_node, deep=deep)
+        return result
+
+
+def parse_yaml_safely(
+    source: str | bytes, *, max_bytes: int = 1_048_576, max_depth: int = 64,
+) -> dict[str, Any]:
     raw = source if isinstance(source, bytes) else source.encode("utf-8")
     if len(raw) > max_bytes:
         raise MacError("INPUT_TOO_LARGE", "YAML input exceeds configured byte limit", exit_code=ExitCode.SECURITY)
-    text = raw.decode("utf-8")
-    if any(isinstance(token, AliasToken) for token in yaml.scan(text)):
-        raise MacError("YAML_ALIAS_FORBIDDEN", "YAML aliases are forbidden", exit_code=ExitCode.SECURITY)
-    value = yaml.safe_load(text)
+    if max_depth < 1:
+        raise ValueError("max_depth must be positive")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise MacError("YAML_ENCODING_INVALID", "YAML input must be valid UTF-8", exit_code=ExitCode.VALIDATION) from exc
+    depth = 0
+    opening = (BlockMappingStartToken, BlockSequenceStartToken, FlowMappingStartToken, FlowSequenceStartToken)
+    closing = (BlockEndToken, FlowMappingEndToken, FlowSequenceEndToken)
+    try:
+        for token in yaml.scan(text):
+            if isinstance(token, (AliasToken, AnchorToken)):
+                raise MacError(
+                    "YAML_ALIAS_FORBIDDEN", "YAML anchors and aliases are forbidden", exit_code=ExitCode.SECURITY,
+                )
+            if isinstance(token, TagToken):
+                raise MacError("YAML_TAG_FORBIDDEN", "explicit YAML tags are forbidden", exit_code=ExitCode.SECURITY)
+            if isinstance(token, opening):
+                depth += 1
+                if depth > max_depth:
+                    raise MacError(
+                        "YAML_DEPTH_EXCEEDED",
+                        "YAML nesting exceeds configured depth limit",
+                        exit_code=ExitCode.SECURITY,
+                    )
+            elif isinstance(token, closing):
+                depth -= 1
+        value = yaml.load(text, Loader=_RestrictedSafeLoader)
+    except MacError:
+        raise
+    except yaml.YAMLError as exc:
+        raise MacError("YAML_INVALID", "YAML input is invalid", exit_code=ExitCode.VALIDATION) from exc
     if not isinstance(value, dict):
         raise MacError("YAML_OBJECT_REQUIRED", "YAML document must be an object", exit_code=ExitCode.VALIDATION)
     return value
@@ -40,13 +108,31 @@ def _entropy(value: str) -> float:
     return -sum((count / len(value)) * math.log2(count / len(value)) for count in counts.values())
 
 
-def contains_secret(text: str) -> bool:
+def contains_secret(text: str, *, include_entropy: bool = True) -> bool:
     if any(pattern.search(text) for pattern in _SECRET_PATTERNS):
         return True
+    if not include_entropy:
+        return False
     for token in re.findall(r"[A-Za-z0-9+/=_-]{32,}", text):
         if not token.startswith(("sha256", "TASK-", "EVT-", "RUN-", "EVD-", "SCOPE-", "WU-", "RESULT-", "FND-", "RISK-", "APR-", "LEASE-")) and _entropy(token) >= 4.2:
             return True
     return False
+
+
+def _is_repository_path_field(path: str) -> bool:
+    return path.startswith("changed_files.") or path == "raw_log_ref.path"
+
+
+def _is_path_like_argv(path: str, value: str) -> bool:
+    parts = path.split(".")
+    return (
+        len(parts) == 4
+        and parts[0] == "commands"
+        and parts[1].isdigit()
+        and parts[2] == "argv"
+        and parts[3].isdigit()
+        and ("/" in value or "\\" in value)
+    )
 
 
 def validate_result_security(result: dict[str, Any]) -> list[MacIssue]:
@@ -66,8 +152,12 @@ def validate_result_security(result: dict[str, Any]) -> list[MacIssue]:
         elif isinstance(value, list):
             for index, item in enumerate(value):
                 walk(item, f"{path}.{index}".strip("."))
-        elif isinstance(value, str) and contains_secret(value):
-            issues.append(MacIssue("SECRET_DETECTED", "result contains a probable secret", path=path, field=path))
+        elif isinstance(value, str):
+            include_entropy = not (
+                _is_repository_path_field(path) or _is_path_like_argv(path, value)
+            )
+            if contains_secret(value, include_entropy=include_entropy):
+                issues.append(MacIssue("SECRET_DETECTED", "result contains a probable secret", path=path, field=path))
     walk(result)
     return issues
 

@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from email.message import Message
 from pathlib import Path
+import tomllib
 import zipfile
 
+import pytest
+
 from scripts.release.check_release_version import check, project_version
+from scripts.release.check_schema_lock import check_repository_schema_lock
 from scripts.release.generate_hashes import digest_file, generate as generate_hashes
 from scripts.release.generate_sbom import generate as generate_sbom
 
@@ -56,3 +60,46 @@ def test_hash_manifest_is_sorted_and_does_not_hash_itself(tmp_path):
     assert manifest.read_text(encoding="utf-8") == first
     assert first.splitlines()[0].endswith("  a.tar.gz")
     assert "SHA256SUMS" not in first
+
+
+def test_release_schema_check_accepts_crlf_checkout_and_rejects_semantic_drift(tmp_path):
+    source_root = Path(__file__).parents[2]
+    schemas = tmp_path / "schemas"
+    lock_dir = tmp_path / ".agents"
+    schemas.mkdir()
+    lock_dir.mkdir()
+    for source in sorted((source_root / "schemas").glob("*.json")):
+        canonical = source.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        (schemas / source.name).write_bytes(canonical.replace(b"\n", b"\r\n"))
+    (lock_dir / "schemas.lock.json").write_bytes(
+        (source_root / ".agents/schemas.lock.json").read_bytes()
+    )
+
+    check_repository_schema_lock(tmp_path)
+    schema = schemas / "task.schema.json"
+    schema.write_bytes(schema.read_bytes() + b" ")
+
+    with pytest.raises(ValueError, match="digest mismatch"):
+        check_repository_schema_lock(tmp_path)
+
+
+def test_schema_lock_release_hook_is_wired_into_build_and_all_ci_workflows():
+    root = Path(__file__).parents[2]
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    hook = pyproject["tool"]["hatch"]["build"]["hooks"]["custom"]
+
+    assert hook["path"] == "scripts/release/check_schema_lock.py"
+    for relative in (
+        ".github/workflows/ci.yml",
+        ".github/workflows/governance-pr.yml",
+        ".github/workflows/release.yml",
+    ):
+        assert "scripts/release/check_schema_lock.py" in (root / relative).read_text(encoding="utf-8")
+
+
+def test_cross_platform_ci_uses_module_pytest_entrypoint():
+    root = Path(__file__).parents[2]
+    workflow = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert "run: uv run --frozen python -m pytest" in workflow
+    assert "run: uv run --frozen pytest" not in workflow

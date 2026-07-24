@@ -13,11 +13,35 @@ def test_scope_amendment_is_versioned_budgeted_and_sensitive_approval_is_explici
     contract = {"id": "SCOPE-01K0W4Z36K3W5C2R0A3M8N9P80", "version": 1, "status": "approved", "allowed_paths": ["src/**"], "risk_tags": [], "amendment_policy": {"max_amendments": 1, "max_paths_per_amendment": 2, "require_independent_approval_for": ["auth_security"]}}
     amended = amend_scope(contract, add_paths=["tests/**"], actor="a", approvers=["b"])
     assert amended["version"] == 2 and amended["allowed_paths"] == ["src/**", "tests/**"]
+    assert amended["allowed_operations"] == ["read", "write"]
     with pytest.raises(ValueError, match="budget exhausted"):
         amend_scope(amended, add_paths=["docs/**"], actor="a", approvers=["b"])
     sensitive = amend_scope(contract, add_paths=["auth/**"], actor="a", approvers=["b"], added_risk_tags=["auth_security"])
     assert sensitive["status"] == "proposed" and sensitive["approved_by"] == []
     assert amend_scope(contract, add_paths=["auth/**"], actor="a", approvers=["b"], added_risk_tags=["auth_security"], independent_approval=True)["status"] == "proposed"
+
+
+def test_v6_scope_without_valid_operations_fails_closed() -> None:
+    contract = {
+        "schema_version": 1,
+        "id": "SCOPE-01K0W4Z36K3W5C2R0A3M8N9P80",
+        "version": 1,
+        "status": "approved",
+        "allowed_paths": ["src/**"],
+        "risk_tags": [],
+        "amendment_policy": {"max_amendments": 1, "max_paths_per_amendment": 2},
+    }
+
+    for invalid in (contract, {**contract, "allowed_operations": "write"}):
+        result = check_changes([Change("modify", "src/app.py")], invalid)
+        assert {issue.code for issue in result.issues} == {"SCOPE_OPERATION_DENIED"}
+        with pytest.raises(ValueError, match="unsupported operation"):
+            amend_scope(
+                invalid,
+                add_paths=["tests/**"],
+                actor="a",
+                approvers=["b"],
+            )
 
 
 def test_scope_reports_submodule_unassigned_owner_and_pattern_negation() -> None:

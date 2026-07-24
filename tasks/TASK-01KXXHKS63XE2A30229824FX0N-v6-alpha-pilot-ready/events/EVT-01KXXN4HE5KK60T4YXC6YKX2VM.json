@@ -1,0 +1,135 @@
+{
+  "actor": {
+    "id": "edge-impl-r6",
+    "kind": "agent"
+  },
+  "event_id": "EVT-01KXXN4HE5KK60T4YXC6YKX2VM",
+  "event_type": "result_submitted",
+  "expected_revision": 21,
+  "idempotency_key": "result-edge-wu-v1",
+  "new_revision": 22,
+  "occurred_at": "2026-07-19T17:00:17.221489Z",
+  "payload": {
+    "digest": "sha256:01a5fac5073d446a551515e53d42e9c0376cbd4cc5e12c70b18f4b6f583044bf",
+    "intake_proof": null,
+    "outcome": "succeeded",
+    "result": {
+      "assumptions": [
+        "Real Git LFS and symlink environments will be exercised by external cross-platform CI during Pilot."
+      ],
+      "blockers": [],
+      "changed_files": [
+        "examples/v6/.github/workflows/multi-agent-governance.yml",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/approvals/APR-01K0W4Z36K3W5C2R0A3M8N9P80.json",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/events/EVT-01K0W4Z36K3W5C2R0A3M8N9P81.json",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/events/EVT-01K0W4Z36K3W5C2R0A3M8N9P83.json",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/events/EVT-01K0W4Z36K3W5C2R0A3M8N9P86.json",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/events/EVT-01K0W4Z36K3W5C2R0A3M8N9P87.json",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/events/EVT-01K0W4Z36K3W5C2R0A3M8N9P88.json",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/events/EVT-01K0W4Z36K3W5C2R0A3M8N9P89.json",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/events/EVT-01K0W4Z36K3W5C2R0A3M8N9P8A.json",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/events/EVT-01K0W4Z36K3W5C2R0A3M8N9P8B.json",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/events/EVT-01K0W4Z36K3W5C2R0A3M8N9P8C.json",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/events/EVT-01K0W4Z36K3W5C2R0A3M8N9P8D.json",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/events/EVT-01K0W4Z36K3W5C2R0A3M8N9P8E.json",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/events/EVT-01K0W4Z36K3W5C2R0A3M8N9P8F.json",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/findings/FND-01K0W4Z36K3W5C2R0A3M8N9P7Z.json",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/results/RESULT-01K0W4Z36K3W5C2R0A3M8N9P7W.json",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/task.yaml",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/work-units/WU-01K0W4Z36K3W5C2R0A3M8N9P7S.yaml",
+        "src/mac/git.py",
+        "src/mac/migration.py",
+        "src/mac/ownership.py",
+        "src/mac/scope.py",
+        "src/mac/security.py",
+        "tests/security/test_input_and_result_security.py",
+        "tests/test_examples_v6.py",
+        "tests/test_migration_and_services.py",
+        "tests/test_scope_and_git.py"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "pytest",
+            "edge-targeted"
+          ],
+          "exit_code": 0,
+          "summary": "49 passed, 1 skipped"
+        },
+        {
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "exit_code": 0,
+          "summary": "clean; CRLF notices only"
+        }
+      ],
+      "id": "RESULT-01KXXHTEMXPCT29MAV3AFAMWFJ",
+      "new_risks": [
+        "A real Windows directory-symlink fixture requires elevated symlink capability.",
+        "Canonical three-line Git LFS v1 pointers are supported; extension pointers fail closed pending an explicit compatibility decision."
+      ],
+      "outcome": "succeeded",
+      "run_id": "RUN-01KXXHVSJXA7X1PRGWJBKP35BC",
+      "schema_version": 1,
+      "scope_amendment_request": null,
+      "submitted_at": "2026-07-19T16:48:00Z",
+      "summary": "Hardened YAML, ownership/scope paths, Git/LFS evidence, v5 migration, and the replayable v6 example; closed pre-review traversal and TOCTOU findings.",
+      "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+      "work_unit_id": "WU-01KXXHTEMXPCT29MAV3AFAMWFH"
+    },
+    "result_id": "RESULT-01KXXHTEMXPCT29MAV3AFAMWFJ",
+    "run": {
+      "actor": {
+        "id": "edge-implementer",
+        "kind": "agent"
+      },
+      "exit_code": 0,
+      "finished_at": "2026-07-19T16:48:00Z",
+      "id": "RUN-01KXXHVSJXA7X1PRGWJBKP35BC",
+      "independence_level": "L0",
+      "runtime": {
+        "execution_context_id": "edge-blocker-impl-20260719",
+        "profile": "local-multi"
+      },
+      "schema_version": 1,
+      "started_at": "2026-07-19T16:03:04.925122Z",
+      "status": "succeeded",
+      "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+      "work_unit_id": "WU-01KXXHTEMXPCT29MAV3AFAMWFH"
+    },
+    "work_unit": {
+      "acceptance_criteria": [],
+      "allowed_paths": [
+        "src/mac/security.py",
+        "src/mac/io.py",
+        "src/mac/ownership.py",
+        "src/mac/scope.py",
+        "src/mac/git.py",
+        "src/mac/migration.py",
+        "migration/migrate_v5.py",
+        "examples/v6/.github/workflows/multi-agent-governance.yml",
+        "examples/v6/tasks/TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth/**",
+        "tests/test_scope_and_git.py",
+        "tests/test_migration_and_services.py",
+        "tests/test_examples_v6.py",
+        "tests/security/test_input_and_result_security.py",
+        "tests/security/test_scope_threat_corpus.py"
+      ],
+      "depends_on": [],
+      "expected_result": "tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/results/RESULT-01KXXHTEMXPCT29MAV3AFAMWFJ.json",
+      "id": "WU-01KXXHTEMXPCT29MAV3AFAMWFH",
+      "owner": "security",
+      "schema_version": 1,
+      "status": "completed",
+      "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+      "title": "Path/YAML/Git 安全、迁移与权威示例"
+    },
+    "work_unit_id": "WU-01KXXHTEMXPCT29MAV3AFAMWFH"
+  },
+  "run_id": "RUN-01KXXHVSJXA7X1PRGWJBKP35BC",
+  "schema_version": 1,
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready"
+}

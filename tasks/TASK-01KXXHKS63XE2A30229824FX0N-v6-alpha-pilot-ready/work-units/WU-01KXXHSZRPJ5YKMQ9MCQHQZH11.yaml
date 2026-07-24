@@ -1,0 +1,37 @@
+schema_version: 1
+id: WU-01KXXHSZRPJ5YKMQ9MCQHQZH11
+task_id: TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready
+title: Frozen Policy、Task Journal 与 Evidence/Close
+status: completed
+owner: platform
+allowed_paths:
+- src/mac/policy.py
+- src/mac/state_machine.py
+- src/mac/events.py
+- src/mac/authority.py
+- src/mac/evidence.py
+- src/mac/repository.py
+- src/mac/result.py
+- src/mac/application/governance.py
+- src/mac/application/close.py
+- src/mac/application/task_service.py
+- src/mac/application/evidence_service.py
+- src/mac/ports/system.py
+- src/mac/ports/task_repository.py
+- src/mac/ports/git_repository.py
+- src/mac/adapters/filesystem/repository.py
+- tests/test_policy.py
+- tests/test_state_machine.py
+- tests/test_event_store.py
+- tests/test_event_projection_variants.py
+- tests/test_evidence_lifecycle.py
+- tests/test_result_intake.py
+- tests/security/test_authority_commands.py
+- tests/security/test_close_fail_closed.py
+- tests/security/test_event_revision_security.py
+- tests/security/test_evidence_tampering.py
+- tests/review/test_independence.py
+- tests/risk/test_risk_acceptance.py
+depends_on: []
+acceptance_criteria: []
+expected_result: tasks/TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready/results/RESULT-01KXXHSZRPJ5YKMQ9MCQHQZH12.json

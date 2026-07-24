@@ -1,0 +1,77 @@
+{
+  "assumptions": [
+    "The integration Work Unit will wire CLI baseline, authority, and structured proof inputs without weakening the core fail-closed seams."
+  ],
+  "blockers": [],
+  "changed_files": [
+    "src/mac/application/close.py",
+    "src/mac/application/evidence_service.py",
+    "src/mac/application/governance.py",
+    "src/mac/application/task_service.py",
+    "src/mac/authority.py",
+    "src/mac/events.py",
+    "src/mac/evidence.py",
+    "src/mac/policy.py",
+    "src/mac/ports/git_repository.py",
+    "src/mac/repository.py",
+    "src/mac/result.py",
+    "src/mac/state_machine.py",
+    "tests/review/test_independence.py",
+    "tests/risk/test_risk_acceptance.py",
+    "tests/security/test_authority_commands.py",
+    "tests/security/test_close_fail_closed.py",
+    "tests/test_event_store.py",
+    "tests/test_evidence_lifecycle.py",
+    "tests/test_policy.py",
+    "tests/test_result_intake.py",
+    "tests/test_state_machine.py"
+  ],
+  "commands": [
+    {
+      "argv": [
+        "pytest",
+        "core-targeted"
+      ],
+      "exit_code": 0,
+      "summary": "65 passed"
+    },
+    {
+      "argv": [
+        "pytest",
+        "lifecycle-close"
+      ],
+      "exit_code": 0,
+      "summary": "7 passed"
+    },
+    {
+      "argv": [
+        "pytest",
+        "source-commit-security"
+      ],
+      "exit_code": 0,
+      "summary": "4 passed"
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "summary": "clean; CRLF notices only"
+    }
+  ],
+  "id": "RESULT-01KXXHSZRPJ5YKMQ9MCQHQZH12",
+  "new_risks": [
+    "Native read-only L2 reviewer provenance remains an external runtime capability.",
+    "Schema hardening fields require a separate governance task."
+  ],
+  "outcome": "succeeded",
+  "run_id": "RUN-01KXXHVRGKP9ZR7N4BGZGXG4CC",
+  "schema_version": 1,
+  "scope_amendment_request": null,
+  "submitted_at": "2026-07-19T16:45:00Z",
+  "summary": "Hardened frozen policy, event journal, authority, Result/Evidence intake, review independence, risk acceptance, and Close evaluation.",
+  "task_id": "TASK-01KXXHKS63XE2A30229824FX0N-v6-alpha-pilot-ready",
+  "work_unit_id": "WU-01KXXHSZRPJ5YKMQ9MCQHQZH11"
+}

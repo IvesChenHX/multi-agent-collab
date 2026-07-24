@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "event_id": "EVT-01K0W4Z36K3W5C2R0A3M8N9P8E",
+  "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+  "event_type": "run_finished",
+  "occurred_at": "2026-07-17T11:25:00Z",
+  "actor": {"id": "human-security-reviewer", "kind": "human", "display_name": "Security Reviewer"},
+  "run_id": "RUN-01K0W4Z36K3W5C2R0A3M8N9P7V",
+  "expected_revision": 12,
+  "new_revision": 13,
+  "idempotency_key": "example-13",
+  "payload": {
+    "run_id": "RUN-01K0W4Z36K3W5C2R0A3M8N9P7V",
+    "run": {
+      "schema_version": 1,
+      "id": "RUN-01K0W4Z36K3W5C2R0A3M8N9P7V",
+      "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+      "work_unit_id": "review",
+      "status": "succeeded",
+      "actor": {"id": "human-security-reviewer", "kind": "human", "display_name": "Security Reviewer"},
+      "runtime": {
+        "profile": "local-single",
+        "provider": "manual",
+        "model": "none",
+        "execution_context_id": "ctx-review-001",
+        "worktree": "../worktrees/refund-review",
+        "branch": "review/refund-auth"
+      },
+      "independence_level": "L3",
+      "independence_attestation": {
+        "read_only": true,
+        "commit_participation": []
+      },
+      "started_at": "2026-07-17T11:10:00Z",
+      "finished_at": "2026-07-17T11:25:00Z",
+      "exit_code": 0,
+      "limits": {"timeout_seconds": 3600, "max_output_bytes": 10485760}
+    },
+    "finding": {
+      "schema_version": 1,
+      "id": "FND-01K0W4Z36K3W5C2R0A3M8N9P7Z",
+      "task_id": "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth",
+      "severity": "minor",
+      "category": "maintainability",
+      "blocking_effect": "advisory",
+      "confidence": "high",
+      "status": "resolved",
+      "title": "Test name did not state the unauthorized scenario clearly",
+      "risk": "Future failures would be harder to identify.",
+      "owner": "tests",
+      "location": {
+        "path": "tests/payments/test_refund_permissions.py",
+        "line_start": 12,
+        "line_end": 20
+      },
+      "evidence_refs": ["EVD-01K0W4Z36K3W5C2R0A3M8N9P7Y"],
+      "invalidates": [],
+      "root_cause_key": "test-name-clarity",
+      "opened_at": "2026-07-17T11:15:00Z",
+      "resolved_at": "2026-07-17T11:22:00Z"
+    }
+  }
+}

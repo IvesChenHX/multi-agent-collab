@@ -5,7 +5,7 @@ from copy import deepcopy
 import pytest
 
 from mac.errors import MacError
-from mac.events import replay_events
+from mac.events import replay_events, replay_scope_snapshots
 
 
 def initial() -> dict[str, object]:
@@ -59,3 +59,56 @@ def test_duplicate_event_id_and_divergent_idempotency_are_corruption() -> None:
     with pytest.raises(MacError) as captured:
         replay_events([initial(), divergent])
     assert captured.value.code == "EVENT_IDEMPOTENCY_CONFLICT"
+
+
+def test_scope_snapshots_replay_current_and_version_history() -> None:
+    task_id = "TASK-1"
+    scope_v1 = {"id": "SCOPE-1", "task_id": task_id, "version": 1, "status": "proposed"}
+    approved_v1 = {**scope_v1, "status": "approved"}
+    scope_v2 = {**approved_v1, "version": 2, "status": "proposed"}
+    approved_v2 = {**scope_v2, "status": "approved"}
+    events = [
+        initial(),
+        event(1, "scope_proposed", {"scope": scope_v1}),
+        event(2, "scope_approved", {"approval": {"id": "APR-1"}}),
+        event(3, "scope_approved", {"scope": approved_v1}),
+        event(4, "scope_proposed", {"scope": scope_v2}),
+        event(5, "scope_approved", {"scope": approved_v2}),
+    ]
+
+    current, history = replay_scope_snapshots(events)
+
+    assert current == approved_v2
+    assert history == {1: approved_v1}
+
+
+def test_scope_snapshot_replays_from_task_creation_event() -> None:
+    scope = {"id": "SCOPE-1", "task_id": "TASK-1", "version": 1, "status": "proposed"}
+    created = deepcopy(initial())
+    created["payload"]["scope"] = scope
+
+    current, history = replay_scope_snapshots([created])
+
+    assert current == scope
+    assert history == {}
+
+
+def test_scope_replay_rejects_version_rollback_and_identity_change() -> None:
+    scope_v2 = {"id": "SCOPE-1", "task_id": "TASK-1", "version": 2, "status": "approved"}
+    rolled_back = {**scope_v2, "version": 1}
+    with pytest.raises(MacError) as rollback:
+        replay_scope_snapshots([
+            initial(),
+            event(1, "scope_proposed", {"scope": scope_v2}),
+            event(2, "scope_approved", {"scope": rolled_back}),
+        ])
+    assert rollback.value.code == "EVENT_SCOPE_VERSION_ROLLBACK"
+
+    changed_id = {**scope_v2, "id": "SCOPE-2"}
+    with pytest.raises(MacError) as identity:
+        replay_scope_snapshots([
+            initial(),
+            event(1, "scope_proposed", {"scope": scope_v2}),
+            event(2, "scope_approved", {"scope": changed_id}),
+        ])
+    assert identity.value.code == "EVENT_SCOPE_ID_CHANGED"
