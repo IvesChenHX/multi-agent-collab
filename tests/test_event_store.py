@@ -769,6 +769,11 @@ def test_event_stream_computes_repository_identity_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv(
+        repository_module.AUTHORITY_REPOSITORY_IDENTITY_ENV,
+        "github:repository-id:1290429577",
+    )
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
     repository, created = create_governed_task(tmp_path)
     task_id = str(created["task"]["id"])
     original = repository_module._repository_identity

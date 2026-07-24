@@ -4195,10 +4195,13 @@ def _validate_loaded_event_stream(
         if len(promoted_identities) == 1
         else None
     )
+    observed_repository_identity = (
+        repository_identity or _repository_identity(repo)
+    )
     verified_repository_identity = (
         repository_identity
         or promoted_identity
-        or _repository_identity(repo)
+        or observed_repository_identity
     )
     for index, event in enumerate(events):
         event_id = str(event.get("event_id", ""))
