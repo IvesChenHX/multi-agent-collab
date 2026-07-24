@@ -1,0 +1,19 @@
+{
+  "actor": {
+    "id": "governance-owner",
+    "kind": "human"
+  },
+  "exit_code": null,
+  "finished_at": null,
+  "id": "RUN-01KY8ZGJ7PJ4RFDJGTMYN0HRJ0",
+  "independence_level": "L0",
+  "runtime": {
+    "execution_context_id": "github-actions-30061881572-1",
+    "profile": "local-multi"
+  },
+  "schema_version": 1,
+  "started_at": "2026-07-24T02:32:38.317376Z",
+  "status": "running",
+  "task_id": "TASK-01KY8XTC5CMEQPH338PFS46MHD-full-regression-closure-successor",
+  "work_unit_id": "WU-01KY8YQ9413F5QV6MWM86NJHR1"
+}
