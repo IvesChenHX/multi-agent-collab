@@ -86,6 +86,19 @@ def _actor(actor: str, kind: str = "human") -> dict[str, str]:
     return {"id": actor, "kind": kind}
 
 
+def _require_authorized_cancellation(
+    context: TransitionContext, task_id: str, action: str,
+) -> None:
+    if context.authorized_cancellation:
+        return
+    raise MacError(
+        "ACTOR_SCOPE_UNAUTHORIZED",
+        f"only an actor authorized by the approved Scope may {action} this Task",
+        exit_code=ExitCode.SECURITY,
+        task_id=task_id,
+    )
+
+
 def _required_independence(
     task: dict[str, Any],
     scope: dict[str, Any],
@@ -404,6 +417,7 @@ def task_transition(task_id: str, target: str, expected_revision: int = typer.Op
 @task_app.command("cancel")
 def task_cancel(task_id: str, expected_revision: int = typer.Option(...), idempotency_key: str = typer.Option(...), actor: str = typer.Option("cli-user"), repo: Path = typer.Option(Path(".")), json_output: bool = typer.Option(False, "--json")) -> None:
     context = resolve_transition_context(repo, task_id, "cancelled", _actor(actor))
+    _require_authorized_cancellation(context, task_id, "cancel")
     _, projection = _gateway_transition(repo, task_id, "cancelled", context, actor=actor, operation="task.cancel", transition_fact=None, replay_intent={}, expected_revision=expected_revision, idempotency_key=idempotency_key); _emit({"ok": True, "task": projection}, json_output)
 
 
@@ -414,6 +428,15 @@ def task_supersede(task_id: str, successor: str = typer.Option(..., "--successor
     if successor == task_id:
         raise MacError("SUCCESSOR_TASK_SELF_REFERENCE", "a task cannot supersede itself", exit_code=ExitCode.VALIDATION, task_id=task_id)
     context = resolve_transition_context(repo, task_id, "superseded", _actor(actor), successor_task_id=successor)
+    _require_authorized_cancellation(context, task_id, "supersede")
+    if context.successor_task_id is None:
+        _repository(repo).load_task(successor)
+        raise MacError(
+            "TASK_NOT_FOUND",
+            f"successor task {successor} does not exist",
+            exit_code=ExitCode.VALIDATION,
+            task_id=task_id,
+        )
     _, projection = _gateway_transition(repo, task_id, "superseded", context, actor=actor, operation="task.supersede", transition_fact=None, replay_intent={"successor": successor}, expected_revision=expected_revision, idempotency_key=idempotency_key); _emit({"ok": True, "task": projection}, json_output)
 
 

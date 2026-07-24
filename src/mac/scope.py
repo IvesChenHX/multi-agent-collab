@@ -152,12 +152,7 @@ def check_changes(
     deny_spec = GitIgnoreSpec.from_lines(contract.get("denied_paths", []))
     resolver = OwnershipResolver(ownership) if ownership else None
     contract_owners = set(str(value) for value in contract.get("owners", []))
-    raw_allowed_operations = contract.get("allowed_operations")
-    allowed_operations = (
-        {str(value) for value in raw_allowed_operations}
-        if isinstance(raw_allowed_operations, list)
-        else {"read", "write"}
-    )
+    allowed_operations = set(_declared_operations(contract))
     allowed: list[str] = []
     normalized_changes: list[Change] = []
     root = repo_root.resolve() if repo_root else None
@@ -248,6 +243,18 @@ def check_paths(changed_paths: list[str], contract: dict[str, Any], *, repo_root
     return check_changes([Change("modify", path) for path in changed_paths], contract, repo_root=repo_root)
 
 
+def _declared_operations(contract: dict[str, Any]) -> list[str]:
+    raw = contract.get("allowed_operations")
+    if isinstance(raw, list):
+        return [str(value) for value in raw]
+    # Pre-v6 in-memory contracts had neither schema_version nor an operations
+    # field and historically implied read/write. A persisted v6 contract is
+    # schema-versioned, so a missing or malformed field must fail closed.
+    if "schema_version" not in contract and "allowed_operations" not in contract:
+        return ["read", "write"]
+    return []
+
+
 def amend_scope(
     contract: dict[str, Any], *, add_paths: list[str], actor: str, approvers: list[str],
     added_risk_tags: list[str] | None = None, independent_approval: bool = False,
@@ -263,8 +270,9 @@ def amend_scope(
     if pattern_issues:
         raise ValueError(pattern_issues[0].message)
     risk_tags = set(str(value) for value in contract.get("risk_tags", [])) | set(added_risk_tags or [])
+    existing_operations = _declared_operations(contract)
     operations = list(dict.fromkeys([
-        *[str(value) for value in contract.get("allowed_operations", [])],
+        *[str(value) for value in existing_operations],
         *[str(value) for value in (add_operations or [])],
     ]))
     supported_operations = {

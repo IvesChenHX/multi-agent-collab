@@ -75,6 +75,19 @@ def _initialized_repo(root: Path) -> None:
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "init"], check=True)
 
 
+def _enable_native_evidence_executor(root: Path) -> None:
+    profile_path = root / ".agents/runtime-profiles/local-single.yaml"
+    profile = load_data(profile_path)
+    profile["capabilities"]["network_control"] = "native"
+    profile["capabilities"]["worktree"] = "native"
+    atomic_write_yaml(profile_path, profile)
+    subprocess.run(["git", "-C", str(root), "add", str(profile_path)], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-qm", "enable native evidence executor"],
+        check=True,
+    )
+
+
 def _task(root: Path) -> str:
     created = TaskService(root).create(
         title="round 4",
@@ -142,6 +155,7 @@ def test_cli_propagates_stable_business_exit_codes_without_tracebacks(tmp_path: 
     repo = tmp_path / "repo"
     repo.mkdir()
     _initialized_repo(repo)
+    _enable_native_evidence_executor(repo)
     task_id = _task(repo)
 
     invalid_transition = _run_cli(
@@ -324,14 +338,14 @@ def test_cancel_and_supersede_require_scope_owner_and_existing_successor(tmp_pat
     )["task"]["id"]
 
     with pytest.raises(MacError) as unauthorized:
-        task_cancel(task_id, 1, "mallory-cancel", "mallory", tmp_path, True)
+        task_cancel(task_id, 2, "mallory-cancel", "mallory", tmp_path, True)
     assert unauthorized.value.code == "ACTOR_SCOPE_UNAUTHORIZED"
 
     with pytest.raises(MacError) as missing:
         task_supersede(
             task_id,
             "TASK-01K0W4Z36K3W5C2R0A3M8N9P7R",
-            1,
+            2,
             "missing-successor",
             "backend-owner",
             tmp_path,
@@ -342,7 +356,7 @@ def test_cancel_and_supersede_require_scope_owner_and_existing_successor(tmp_pat
     task_supersede(
         task_id,
         str(successor),
-        1,
+        2,
         "valid-successor",
         "backend-owner",
         tmp_path,

@@ -15,22 +15,35 @@ import pytest
 import yaml
 
 from mac.application.task_service import TaskService
-from mac.cli import init_command, scope_approve
+from mac.cli import (
+    init_command,
+    run_register,
+    scope_approve,
+    task_transition,
+    work_unit_new,
+    work_unit_ready,
+)
 from mac.errors import MacError
 from mac.events import replay_events
 from mac.git import GitRepository
 from mac.io import load_data
-from mac.migration import convert_v5, scan_v5
+from mac.migration import convert_v5, scan_authorityless_v6, scan_v5
 from mac.policy import compile_policy
 from mac.repository import FilesystemTaskRepository, validate_repository
-from mac.schema_validation import SchemaSet, install_schema_bundle
+from mac.schema_validation import SchemaSet, install_schema_bundle, schema_lock_issues
 import mac.schema_validation as schema_validation
 from mac.scope import Change, check_changes
 from mac.security import parse_yaml_safely
+from tests.security.test_authority_commands import configure_test_authority
 
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_TASK_ID = "TASK-01K0W4Z36K3W5C2R0A3M8N9P7Q-refund-auth"
+
+
+@pytest.fixture(autouse=True)
+def _host_authority_broker(monkeypatch: pytest.MonkeyPatch) -> None:
+    configure_test_authority(monkeypatch)
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -67,6 +80,17 @@ def _initialized_v6_repo(root: Path) -> None:
 
     atomic_write_yaml(ownership_path, ownership)
     _commit_all(root, "init")
+
+
+def _enable_native_evidence_executor(root: Path) -> None:
+    from mac.io import atomic_write_yaml
+
+    profile_path = root / ".agents/runtime-profiles/local-single.yaml"
+    profile = load_data(profile_path)
+    profile["capabilities"]["network_control"] = "native"
+    profile["capabilities"]["worktree"] = "native"
+    atomic_write_yaml(profile_path, profile)
+    _commit_all(root, "enable native evidence executor")
 
 
 def _temporary_executable_schema_bundle(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -110,7 +134,7 @@ def _write_v5_repo(root: Path) -> dict[str, object]:
     return entry
 
 
-def test_authoritative_examples_validate_and_replay_without_modification() -> None:
+def test_authorityless_examples_match_package_and_replay_as_unverifiable_metadata() -> None:
     example = ROOT / "examples/v6"
     package_example = ROOT / "multi-agent-collab-v6-design-package/examples/v6"
     for packaged in sorted(path for path in package_example.rglob("*") if path.is_file()):
@@ -118,10 +142,15 @@ def test_authoritative_examples_validate_and_replay_without_modification() -> No
         assert (example / relative).read_bytes() == packaged.read_bytes()
 
     errors = [issue for issue in validate_repository(example) if issue.severity == "error"]
-    assert errors == []
-    repository = FilesystemTaskRepository(example)
-    assert repository.projection_drift(EXAMPLE_TASK_ID) == []
-    assert repository._replayed_state(EXAMPLE_TASK_ID)[0] == repository.load_task(EXAMPLE_TASK_ID)
+    assert {issue.code for issue in errors} == {"EVENT_AUTHORITY_MISSING"}
+    scanned = scan_authorityless_v6(example, EXAMPLE_TASK_ID)
+    assert scanned["eligible"] is True
+    assert scanned["classification"] == "metadata_only"
+    assert scanned["verification_status"] == "unverifiable"
+
+    task_dir = example / "tasks" / EXAMPLE_TASK_ID
+    events = [load_data(path) for path in sorted((task_dir / "events").glob("*.json"))]
+    assert replay_events(events) == load_data(task_dir / "task.yaml")
 
 
 def test_compile_policy_falls_back_to_locked_executable_schemas_without_a_repo_bundle(
@@ -139,7 +168,7 @@ def test_compile_policy_falls_back_to_locked_executable_schemas_without_a_repo_b
     assert compiled.config["project"] == "schema-fallback"
 
 
-def test_compile_policy_rejects_a_stale_repo_lock_before_loading_local_schemas(
+def test_repository_schema_lock_rejects_stale_local_schemas_before_loading_them(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = tmp_path / "repo"
@@ -148,13 +177,9 @@ def test_compile_policy_rejects_a_stale_repo_lock_before_loading_local_schemas(
     _temporary_executable_schema_bundle(executable, monkeypatch)
     (repo / "schemas/config.schema.json").write_text("{", encoding="utf-8")
 
-    with pytest.raises(MacError) as caught:
-        compile_policy(repo)
+    issues = schema_lock_issues(repo)
 
-    assert caught.value.code == "POLICY_COMPILE_FAILED"
-    assert {issue["code"] for issue in caught.value.issue.details["issues"]} == {
-        "SCHEMA_LOCK_MISMATCH"
-    }
+    assert {issue.code for issue in issues} == {"SCHEMA_LOCK_MISMATCH"}
 
 
 def test_v5_converter_outputs_schema_valid_replayable_task_and_scope(tmp_path: Path) -> None:
@@ -193,7 +218,11 @@ def test_v5_scan_records_each_source_entity_reference_and_rollback_check(tmp_pat
         "digest": _sha(entry),
     }
     assert any(source["kind"] == "task_detail" for source in task["sources"])
-    assert {item["reference"] for item in report["reference_checks"] if not item["exists"]} == {
+    assert {
+        f"{item['kind']}:{item['reference']}"
+        for item in report["reference_checks"]
+        if not item["exists"]
+    } == {
         "role:missing-role",
         "workflow:missing-flow",
     }
@@ -294,6 +323,7 @@ def test_portable_run_binding_survives_worktree_and_head_changes(tmp_path: Path)
 
 def test_command_evidence_rejects_a_command_that_mutates_the_bound_workspace(tmp_path: Path) -> None:
     _initialized_v6_repo(tmp_path)
+    _enable_native_evidence_executor(tmp_path)
     created = TaskService(tmp_path).create(
         title="evidence subject",
         mode="standard",
@@ -307,11 +337,32 @@ def test_command_evidence_rejects_a_command_that_mutates_the_bound_workspace(tmp
         idempotency_key="create-evidence-task",
     )
     task_id = str(created["task"]["id"])
+    scope_approve(
+        task_id,
+        expected_revision=0,
+        idempotency_key="approve-evidence-task",
+        actor="backend-owner",
+        independence_level="L1",
+        repo=tmp_path,
+        json_output=True,
+    )
+    task_transition(
+        task_id=task_id,
+        target="ready",
+        expected_revision=1,
+        idempotency_key="ready-evidence-task",
+        actor="controller",
+        condition=[],
+        fact_id=None,
+        reason=None,
+        repo=tmp_path,
+        json_output=True,
+    )
     env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
     command = subprocess.run(
         [
             sys.executable, "-m", "mac.cli", "evidence", "record", task_id,
-            "--claim", "targeted_tests", "--expected-revision", "0",
+            "--claim", "targeted_tests", "--expected-revision", "2",
             "--idempotency-key", "mutating-command", "--repo", str(tmp_path), "--json", "--",
             sys.executable, "-c",
             "from pathlib import Path; Path('src').mkdir(exist_ok=True); Path('src/mutated.py').write_text('x')",
@@ -325,18 +376,11 @@ def test_command_evidence_rejects_a_command_that_mutates_the_bound_workspace(tmp
     assert "EVIDENCE_COMMAND_CHANGED_WORKSPACE" in command.stderr
     task_dir = tmp_path / "tasks" / task_id
     assert not list((task_dir / "evidence").glob("*.json"))
-    assert len(list((task_dir / "events").glob("*.json"))) == 1
+    assert len(list((task_dir / "events").glob("*.json"))) == 3
 
 
 def test_task_scope_creation_is_atomic_when_projection_write_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _git_repo(tmp_path)
-    (tmp_path / "AGENTS.md").write_text("# policy\n", encoding="utf-8")
-    (tmp_path / ".agents/workflows").mkdir(parents=True)
-    (tmp_path / ".agents/workflows/evidence-driven-development.yaml").write_text("name: flow\n", encoding="utf-8")
-    (tmp_path / ".agents").mkdir(exist_ok=True)
-    (tmp_path / ".agents/config.yaml").write_text("schema_version: 6\n", encoding="utf-8")
-    (tmp_path / ".agents/ownership.yaml").write_text("schema_version: 6\n", encoding="utf-8")
-    _commit_all(tmp_path, "policy")
+    _initialized_v6_repo(tmp_path)
 
     import mac.repository as repository_module
 
@@ -460,48 +504,87 @@ def test_result_submission_uses_effective_diff_and_binds_task_work_unit_and_owne
         task_id, expected_revision=0, idempotency_key="approve-result-task",
         actor="backend-owner", independence_level="L1", repo=tmp_path, json_output=True,
     )
+    task_transition(
+        task_id=task_id,
+        target="ready",
+        expected_revision=1,
+        idempotency_key="ready-result-task",
+        actor="controller",
+        condition=[],
+        fact_id=None,
+        reason=None,
+        repo=tmp_path,
+        json_output=True,
+    )
+    work_unit_new(
+        task_id,
+        title="work",
+        owner="backend",
+        allow=["src/**"],
+        depends_on=[],
+        expected_revision=2,
+        idempotency_key="create-result-work-unit",
+        actor="controller",
+        repo=tmp_path,
+        json_output=True,
+    )
     repository = FilesystemTaskRepository(tmp_path)
     task_dir = repository.task_dir(task_id)
-    work_unit_id = "WU-01K0W4Z36K3W5C2R0A3M8N9P7S"
-    run_id = "RUN-01K0W4Z36K3W5C2R0A3M8N9P7T"
-    work_unit = {
-        "schema_version": 1, "id": work_unit_id, "task_id": task_id, "title": "work",
-        "status": "running", "owner": "backend", "allowed_paths": ["src/**"],
-        "depends_on": [], "expected_result": f"tasks/{task_id}/results/RESULT-01K0W4Z36K3W5C2R0A3M8N9P7W.json",
-    }
-    run = {
-        "schema_version": 1, "id": run_id, "task_id": task_id, "work_unit_id": work_unit_id,
-        "status": "running", "actor": {"id": "executor", "kind": "agent"},
-        "runtime": {"profile": "local-single", "execution_context_id": "ctx-result"},
-        "independence_level": "L0", "started_at": "2026-07-17T00:00:00Z",
-        "finished_at": None, "exit_code": None,
-    }
-    repository.append_event(
-        task_id, "run_started", {"run_id": run_id, "work_unit_id": work_unit_id, "work_unit": work_unit},
-        actor={"id": "executor", "kind": "agent"}, expected_revision=1,
-        idempotency_key="start-result-run", run_id=run_id,
-        materializations=[
-            (task_dir / "work-units" / f"{work_unit_id}.yaml", work_unit),
-            (task_dir / "runs" / f"{run_id}.json", run),
-        ],
+    work_unit_path = next((task_dir / "work-units").glob("*.yaml"))
+    work_unit = load_data(work_unit_path)
+    work_unit_id = str(work_unit["id"])
+    work_unit_ready(
+        task_id,
+        work_unit_id,
+        expected_revision=3,
+        idempotency_key="ready-result-work-unit",
+        actor="controller",
+        repo=tmp_path,
+        json_output=True,
     )
+    run_register(
+        task_id,
+        work_unit_id=work_unit_id,
+        profile="local-single",
+        context_id="ctx-result",
+        provider=None,
+        model=None,
+        worktree=None,
+        branch=None,
+        actor="executor",
+        actor_kind="agent",
+        independence_level="L0",
+        expected_revision=4,
+        idempotency_key="start-result-run",
+        repo=tmp_path,
+        json_output=True,
+    )
+    run = load_data(next((task_dir / "runs").glob("*.json")))
+    run_id = str(run["id"])
+    result_id = Path(str(work_unit["expected_result"])).stem
     source = tmp_path / "src/app.py"
     source.parent.mkdir()
     source.write_text("intermediate\n", encoding="utf-8")
     _commit_all(tmp_path, "intermediate implementation")
     source.unlink()
     result = {
-        "schema_version": 1, "id": "RESULT-01K0W4Z36K3W5C2R0A3M8N9P7W", "task_id": task_id,
+        "schema_version": 1, "id": result_id, "task_id": task_id,
         "work_unit_id": work_unit_id, "run_id": run_id, "outcome": "succeeded",
         "summary": "effective workspace equals base", "changed_files": [],
         "commands": [{"argv": ["pytest"], "exit_code": 0}], "submitted_at": "2026-07-17T00:01:00Z",
     }
     from mac.result import ResultService
 
-    assert ResultService(tmp_path).submit(
-        task_id, result, expected_revision=2, idempotency_key="submit-effective-result",
+    submitted = ResultService(tmp_path).submit(
+        task_id, result, expected_revision=5, idempotency_key="submit-effective-result",
         actor={"id": "executor", "kind": "agent"},
-    ) == result
+    )
+    assert {
+        key: value for key, value in submitted.items() if key != "submitted_at"
+    } == {
+        key: value for key, value in result.items() if key != "submitted_at"
+    }
+    assert submitted["submitted_at"] != result["submitted_at"]
 
 
 @pytest.mark.parametrize(
@@ -535,7 +618,7 @@ def test_yaml_rejects_duplicate_keys_and_excessive_nesting() -> None:
         nested = "node:\n" + "\n".join("  " + line for line in nested.splitlines()) + "\n"
     with pytest.raises(MacError) as complex_input:
         parse_yaml_safely(nested, max_depth=8)
-    assert complex_input.value.code == "YAML_COMPLEXITY_LIMIT"
+    assert complex_input.value.code == "YAML_DEPTH_EXCEEDED"
 
 
 def test_lfs_pointer_subject_does_not_require_optional_local_object(tmp_path: Path) -> None:

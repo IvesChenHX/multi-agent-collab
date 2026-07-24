@@ -272,6 +272,39 @@ class GitRepository:
         task_id: str | None = None,
         include_workspace: bool = True,
     ) -> list[Change]:
+        if base and include_workspace and head == "HEAD":
+            raw = self._as_bytes(
+                self._run(
+                    "diff", "--name-status", "-z", "--find-renames", base,
+                )
+            )
+            changes = self._parse_name_status(raw, refs=(base, "HEAD"))
+            untracked_raw = self._as_bytes(
+                self._run("ls-files", "--others", "--exclude-standard", "-z")
+            )
+            changes.extend(
+                Change(
+                    "add",
+                    normalize_repo_path(os.fsdecode(raw_path)),
+                    submodule=self._inside_nested_repository(
+                        normalize_repo_path(os.fsdecode(raw_path))
+                    ),
+                    display_path=os.fsdecode(raw_path),
+                )
+                for raw_path in untracked_raw.split(b"\0")
+                if raw_path
+            )
+            if task_id:
+                changes = [
+                    change
+                    for change in changes
+                    if not is_task_governance_metadata(change.path, task_id)
+                    or bool(
+                        change.old_path
+                        and not is_task_governance_metadata(change.old_path, task_id)
+                    )
+                ]
+            return sorted(changes, key=lambda item: (item.path, item.old_path or ""))
         committed = self.diff_changes(base, head) if base else []
         current = self.workspace_changes(task_id=task_id) if include_workspace else []
         combined: dict[tuple[str | None, str, str | None, str | None], Change] = {}
@@ -317,8 +350,8 @@ class GitRepository:
         path_args = ("--", *pathspecs) if pathspecs else ()
         index = self._as_bytes(self._run("ls-files", "--stage", "-z", *path_args))
         index_entries = self._index_entries(index)
-        lfs = self._lfs_manifest_from_entries(index_entries)
-        diff = self._as_bytes(self._run("diff", "--binary", *path_args)) + self._as_bytes(self._run("diff", "--cached", "--binary", *path_args))
+        lfs = self._lfs_manifest_from_entries(index_entries, require_local_object=False)
+        diff = self._as_bytes(self._run("diff", "--binary", *path_args))
         manifest: list[bytes] = []
         untracked = self._as_bytes(self._run("ls-files", "--others", "--exclude-standard", "-z"))
         for raw_path in untracked.split(b"\0"):
@@ -347,7 +380,10 @@ class GitRepository:
                 continue
             index_rows.append(mode + b" " + object_id + b" 0\t" + path + b"\0")
             filtered_entries.append((mode, object_id, path))
-        return _digest([b"".join(index_rows), self._lfs_manifest_from_entries(filtered_entries)])
+        return _digest([
+            b"".join(index_rows),
+            self._lfs_manifest_from_entries(filtered_entries, require_local_object=True),
+        ])
 
     def review_diff_digest(
         self,
@@ -416,17 +452,12 @@ class GitRepository:
             and source.get("type") == "workspace"
             and all(isinstance(source.get(name), str) and source.get(name) for name in required_source_fields)
         )
-        expected_source_diff: str | None = None
         if source_bound:
             try:
                 source_head = str(self._run(
                     "rev-parse", f"{source['head_commit']}^{{commit}}", text=True,
                 )).strip()
                 source_bound = source_head == source["head_commit"]
-                if source_bound:
-                    expected_source_diff = self._expected_source_diff_digest(
-                        source_head, target["commit_sha"], task_id,
-                    )
             except MacError:
                 source_bound = False
         source_index_matches = source_bound and source.get("index_digest") == target_index_digest
@@ -438,8 +469,7 @@ class GitRepository:
         )
         source_tree_matches = (
             source_index_matches
-            and expected_source_diff is not None
-            and source.get("worktree_diff_digest") == expected_source_diff
+            and source.get("worktree_diff_digest") == clean_diff_digest
         )
         observed_tree_matches = (
             observed.get("head_commit") == target["commit_sha"]
@@ -478,6 +508,7 @@ class GitRepository:
             return False
         return (
             source_workspace_subject.get("index_digest") == self._commit_index_digest(commit, task_id)
+            and source_workspace_subject.get("worktree_diff_digest") == _digest([b""])
             and source_workspace_subject.get("untracked_manifest_digest") == _digest([])
         )
 
@@ -632,7 +663,9 @@ class GitRepository:
         return hasher.digest()
 
     def _lfs_manifest(self, ref: str = "HEAD") -> bytes:
-        return self._lfs_manifest_from_entries(self._tree_entries(ref))
+        return self._lfs_manifest_from_entries(
+            self._tree_entries(ref), require_local_object=True,
+        )
 
     def _batch_object_metadata(self, object_ids: list[bytes]) -> dict[bytes, tuple[bytes, int]]:
         if not object_ids:
@@ -693,7 +726,12 @@ class GitRepository:
             raise MacError("GIT_OBJECT_INVALID", "Git batch response has trailing data", exit_code=ExitCode.CORRUPTION)
         return result
 
-    def _lfs_manifest_from_entries(self, entries: Iterable[tuple[bytes, bytes, bytes]]) -> bytes:
+    def _lfs_manifest_from_entries(
+        self,
+        entries: Iterable[tuple[bytes, bytes, bytes]],
+        *,
+        require_local_object: bool,
+    ) -> bytes:
         manifest: list[bytes] = []
         object_root: Path | None = None
         regular_entries = [
@@ -728,18 +766,31 @@ class GitRepository:
             if object_root is None:
                 object_root = self._git_common_dir() / "lfs" / "objects"
             object_path = object_root / oid[:2] / oid[2:4] / oid
-            if object_path.is_symlink() or not object_path.is_file():
-                raise MacError("GIT_LFS_OBJECT_MISSING", f"LFS object is unavailable for {relative}", exit_code=ExitCode.CORRUPTION, path=relative)
-            hasher = hashlib.sha256()
-            actual_size = 0
-            with object_path.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    actual_size += len(chunk)
-                    hasher.update(chunk)
-            if actual_size != expected_size or hasher.hexdigest() != oid:
+            if object_path.exists() or object_path.is_symlink():
+                if object_path.is_symlink() or not object_path.is_file():
+                    raise MacError(
+                        "GIT_LFS_OBJECT_TAMPERED",
+                        f"LFS object path is unsafe for {relative}",
+                        exit_code=ExitCode.CORRUPTION,
+                        path=relative,
+                    )
+                hasher = hashlib.sha256()
+                actual_size = 0
+                with object_path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        actual_size += len(chunk)
+                        hasher.update(chunk)
+                if actual_size != expected_size or hasher.hexdigest() != oid:
+                    raise MacError(
+                        "GIT_LFS_OBJECT_TAMPERED", f"LFS object does not match pointer: {relative}",
+                        exit_code=ExitCode.CORRUPTION, path=relative,
+                    )
+            elif require_local_object:
                 raise MacError(
-                    "GIT_LFS_OBJECT_TAMPERED", f"LFS object does not match pointer: {relative}",
-                    exit_code=ExitCode.CORRUPTION, path=relative,
+                    "GIT_LFS_OBJECT_MISSING",
+                    f"LFS object is unavailable for {relative}",
+                    exit_code=ExitCode.CORRUPTION,
+                    path=relative,
                 )
             manifest.append(relative.encode("utf-8") + b"\0" + oid.encode("ascii") + b"\0" + str(expected_size).encode())
         return b"".join(sorted(manifest))

@@ -4594,10 +4594,12 @@ def _stored_mutation_result(
 
 
 class FilesystemTaskRepository:
-    def __init__(self, repo: Path) -> None:
+    def __init__(self, repo: Path, *, schema_set: SchemaSet | None = None, repository_identity: str | None = None) -> None:
         self.repo = repo.resolve()
         self.tasks_root = self.repo / "tasks"
         self._frozen_policy_cache: dict[str, Any] = {}
+        self._verified_repository_identity = repository_identity
+        self._schema_set = schema_set if type(schema_set) is SchemaSet else None
 
     def task_dir(self, task_id: str) -> Path:
         if "/" in task_id or "\\" in task_id or task_id in {"", ".", ".."}:
@@ -4626,9 +4628,17 @@ class FilesystemTaskRepository:
         return candidate
 
     def list_events(self, task_id: str) -> list[dict[str, Any]]:
+        records = [
+            (path, load_data(path))
+            for path in sorted((self.task_dir(task_id) / "events").glob("EVT-*.json"))
+        ]
+        return self._validate_event_records(task_id, records)
+
+    def _validate_event_records(
+        self, task_id: str, records: Iterable[tuple[Path, Mapping[str, Any]]],
+    ) -> list[dict[str, Any]]:
         loaded: list[dict[str, Any]] = []
-        for path in sorted((self.task_dir(task_id) / "events").glob("EVT-*.json")):
-            event = load_data(path)
+        for path, event in records:
             if not isinstance(event, dict):
                 raise MacError(
                     "EVENT_SCHEMA_INVALID",
@@ -4653,7 +4663,9 @@ class FilesystemTaskRepository:
             self.repo,
             task_id,
             loaded,
+            schema_set=self._schema_set,
             frozen_policy_cache=self._frozen_policy_cache,
+            repository_identity=self._verified_repository_identity,
         )
 
     def find_idempotency(self, key: str) -> tuple[str, dict[str, Any]] | None:
@@ -5644,6 +5656,7 @@ class FilesystemTaskRepository:
                 compiled.config,
             )
             git = GitRepository(self.repo)
+            bound_workspace_subject = git.workspace_subject(task_id=command.task_id)
             if command.commit and not git.workspace_equivalent_to_commit("HEAD", task_id=command.task_id):
                 raise MacError(
                     "EVIDENCE_COMMIT_WORKSPACE_DIRTY",
@@ -5688,10 +5701,10 @@ class FilesystemTaskRepository:
                     task_id=command.task_id,
                 )
             _validate_executable_policy_snapshot(self.repo, task, task_id=command.task_id)
-            if command.commit and not git.workspace_equivalent_to_commit("HEAD", task_id=command.task_id):
+            if git.workspace_subject(task_id=command.task_id) != bound_workspace_subject:
                 raise MacError(
                     "EVIDENCE_COMMAND_CHANGED_WORKSPACE",
-                    "command changed the workspace; commit evidence cannot bind HEAD",
+                    "command changed the workspace bound for Evidence",
                     exit_code=ExitCode.EVIDENCE,
                     task_id=command.task_id,
                 )
@@ -5774,7 +5787,7 @@ class FilesystemTaskRepository:
                 "status": "succeeded" if completed.returncode == 0 else "failed",
                 "actor": actor,
                 "runtime": {"profile": "local-command", "execution_context_id": run_id},
-                "independence_level": verified.independence_level,
+                "independence_level": "L0",
                 "started_at": started,
                 "finished_at": finished,
                 "exit_code": completed.returncode,
@@ -6350,21 +6363,36 @@ def _legacy_task_warning(record: dict[str, Any]) -> MacIssue:
     )
 
 
-def validate_task_invariants(repo: Path, task_dir: Path) -> list[MacIssue]:
+def validate_task_invariants(
+    repo: Path,
+    task_dir: Path,
+    *,
+    repository: FilesystemTaskRepository | None = None,
+    task: Mapping[str, Any] | None = None,
+    scope: Mapping[str, Any] | None = None,
+    entities: Mapping[str, list[dict[str, Any]]] | None = None,
+    event_records: list[tuple[Path, dict[str, Any]]] | None = None,
+) -> list[MacIssue]:
     issues: list[MacIssue] = []
     relative = task_dir.resolve().relative_to(repo.resolve()).as_posix()
-    try:
-        task = load_data(task_dir / "task.yaml")
-        scope = load_data(task_dir / "scope-contract.yaml")
-    except Exception:
-        return issues
+    if task is None or scope is None:
+        try:
+            task = load_data(task_dir / "task.yaml")
+            scope = load_data(task_dir / "scope-contract.yaml")
+        except Exception:
+            return issues
     if scope.get("task_id") != task.get("id"):
         issues.append(MacIssue("TASK_SCOPE_ID_MISMATCH", "scope task_id does not match task id", f"{relative}/scope-contract.yaml"))
     canonical = f"{relative}/scope-contract.yaml"
     if task.get("scope_contract_ref") != canonical:
         issues.append(MacIssue("TASK_SCOPE_REF_MISMATCH", "scope_contract_ref is not canonical", f"{relative}/task.yaml"))
     try:
-        events = FilesystemTaskRepository(repo).list_events(task_dir.name)
+        task_repository = repository or FilesystemTaskRepository(repo)
+        events = (
+            task_repository.list_events(task_dir.name)
+            if event_records is None
+            else task_repository._validate_event_records(task_dir.name, event_records)
+        )
     except MacError as exc:
         issues.append(MacIssue(
             exc.code,
@@ -6393,17 +6421,24 @@ def validate_task_invariants(repo: Path, task_dir: Path) -> list[MacIssue]:
         terminal_events = [event for event in events if event.get("event_type") in {"state_transitioned", "task_completed", "task_cancelled", "task_superseded", "legacy_imported"} and (event.get("payload") or {}).get("to", (event.get("payload") or {}).get("state", ((event.get("payload") or {}).get("task") or {}).get("state", state))) == state]
         if not terminal_events:
             issues.append(MacIssue("TASK_CLOSE_EVENT_MISSING", "terminal task has no matching close event", f"{relative}/events"))
-    runs = {str(value.get("id")): value for path in sorted((task_dir / "runs").glob("*.json")) if (value := load_data(path))}
-    work_units = {str(value.get("id")): value for path in sorted((task_dir / "work-units").glob("*.yaml")) if (value := load_data(path))}
-    results = [load_data(path) for path in sorted((task_dir / "results").glob("*.json"))]
-    evidence = [load_data(path) for path in sorted((task_dir / "evidence").glob("*.json"))]
-    findings = [load_data(path) for path in sorted((task_dir / "findings").glob("*.json"))]
+    def entity_values(directory: str, pattern: str) -> list[dict[str, Any]]:
+        if entities is not None:
+            return list(entities.get(directory, []))
+        return [load_data(path) for path in sorted((task_dir / directory).glob(pattern))]
+
+    runs = {str(value.get("id")): value for value in entity_values("runs", "*.json")}
+    work_units = {str(value.get("id")): value for value in entity_values("work-units", "*.yaml")}
+    results = entity_values("results", "*.json")
+    evidence = entity_values("evidence", "*.json")
+    findings = entity_values("findings", "*.json")
+    approvals = entity_values("approvals", "*.json")
+    risk_acceptances = entity_values("risk-acceptances", "*.json")
     for directory_name, values in (
         ("runs", list(runs.values())), ("work-units", list(work_units.values())),
         ("results", results),
         ("evidence", evidence), ("findings", findings),
-        ("approvals", [load_data(path) for path in sorted((task_dir / "approvals").glob("*.json"))]),
-        ("risk-acceptances", [load_data(path) for path in sorted((task_dir / "risk-acceptances").glob("*.json"))]),
+        ("approvals", approvals),
+        ("risk-acceptances", risk_acceptances),
     ):
         for value in values:
             if value.get("task_id") != task.get("id"):
@@ -6494,6 +6529,26 @@ def _validate_glob(schema_set: SchemaSet, root: Path, pattern: str, schema: str,
     return issues
 
 
+def _load_and_validate(
+    schema_set: SchemaSet, path: Path, schema: str, repo: Path,
+) -> tuple[dict[str, Any] | None, list[MacIssue]]:
+    if hasattr(schema_set, "load_and_validate_file"):
+        return schema_set.load_and_validate_file(path, schema, root=repo)
+    issues = schema_set.validate_file(path, schema, root=repo)
+    try:
+        return load_data(path), issues
+    except Exception:
+        return None, issues
+
+
+def _load_repository_file(path: Path, repo: Path) -> tuple[Any | None, list[MacIssue]]:
+    relative = path.resolve().relative_to(repo.resolve()).as_posix()
+    try:
+        return load_data(path), []
+    except Exception as exc:
+        return None, [MacIssue("PARSE_ERROR", str(exc), relative)]
+
+
 def validate_repository(repo: Path, schema_set: SchemaSet | None = None) -> list[MacIssue]:
     repo = repo.resolve()
     schemas = schema_set or SchemaSet()
@@ -6528,19 +6583,58 @@ def validate_repository(repo: Path, schema_set: SchemaSet | None = None) -> list
         issues.append(MacIssue("DEFAULT_PROFILE_MISSING", str(profile), config_path.relative_to(repo).as_posix()))
     legacy_records = {str(item["task_id"]): item for item in _legacy_task_records(repo)}
     v6_task_ids: set[str] = set()
+    repository: FilesystemTaskRepository | None = None
     for task_dir in discover_task_dirs(repo):
         if task_dir.name in legacy_records and not _has_v6_task_entries(task_dir):
             continue
+        if repository is None:
+            repository = FilesystemTaskRepository(
+                repo,
+                schema_set=schemas,
+                repository_identity=_repository_identity(repo),
+            )
         v6_task_ids.add(task_dir.name)
+        task_issues: list[MacIssue] = []
+        loaded: dict[str, dict[str, Any]] = {}
+        entities: dict[str, list[dict[str, Any]]] = {}
+        event_records: list[tuple[Path, dict[str, Any]]] = []
         for filename, schema in SCHEMA_MAP.items():
             path = task_dir / filename
             if path.is_file():
-                issues.extend(schemas.validate_file(path, schema, root=repo))
+                value, file_issues = _load_and_validate(schemas, path, schema, repo)
+                task_issues.extend(file_issues)
+                if value is not None:
+                    loaded[filename] = value
             else:
-                issues.append(MacIssue("TASK_FILE_MISSING", f"{filename} is required", path.relative_to(repo).as_posix()))
+                task_issues.append(MacIssue("TASK_FILE_MISSING", f"{filename} is required", path.relative_to(repo).as_posix()))
         for pattern, schema in PATTERN_SCHEMAS.items():
-            issues.extend(_validate_glob(schemas, task_dir, pattern, schema, repo))
-        issues.extend(validate_task_invariants(repo, task_dir))
+            directory = pattern.partition("/")[0]
+            values = entities.setdefault(directory, [])
+            for path in sorted(task_dir.glob(pattern)):
+                if not path.is_file():
+                    continue
+                # Stored Events are validated by the trusted event-stream boundary
+                # below. Loading them here avoids parsing twice without trusting a
+                # caller-provided schema adapter or validating the same Event twice.
+                if directory == "events":
+                    value, file_issues = _load_repository_file(path, repo)
+                else:
+                    value, file_issues = _load_and_validate(schemas, path, schema, repo)
+                task_issues.extend(file_issues)
+                if value is not None:
+                    values.append(value)
+                    if directory == "events":
+                        event_records.append((path, value))
+        task_issues.extend(validate_task_invariants(
+            repo,
+            task_dir,
+            repository=repository,
+            task=loaded.get("task.yaml"),
+            scope=loaded.get("scope-contract.yaml"),
+            entities=entities,
+            event_records=event_records,
+        ))
+        issues.extend(task_issues)
     for task_id, record in legacy_records.items():
         if task_id not in v6_task_ids:
             issues.append(_legacy_task_warning(record))

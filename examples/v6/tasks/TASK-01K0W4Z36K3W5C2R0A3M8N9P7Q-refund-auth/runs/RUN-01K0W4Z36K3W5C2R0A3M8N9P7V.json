@@ -18,6 +18,10 @@
     "branch": "review/refund-auth"
   },
   "independence_level": "L3",
+  "independence_attestation": {
+    "read_only": true,
+    "commit_participation": []
+  },
   "started_at": "2026-07-17T11:10:00Z",
   "finished_at": "2026-07-17T11:25:00Z",
   "exit_code": 0,

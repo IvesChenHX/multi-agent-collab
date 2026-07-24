@@ -345,10 +345,15 @@ class SchemaSet:
             issues.append(MacIssue("SCHEMA_INVALID", error.message, path, field))
         return issues
 
-    def validate_file(self, path: Path, schema_name: str, *, root: Path) -> list[MacIssue]:
+    def load_and_validate_file(
+        self, path: Path, schema_name: str, *, root: Path,
+    ) -> tuple[dict[str, Any] | None, list[MacIssue]]:
         relative = path.resolve().relative_to(root.resolve()).as_posix()
         try:
             data = load_data(path)
         except Exception as exc:  # diagnostics aggregate parser errors by design
-            return [MacIssue("PARSE_ERROR", str(exc), relative)]
-        return self.validate(data, schema_name, path=relative)
+            return None, [MacIssue("PARSE_ERROR", str(exc), relative)]
+        return data, self.validate(data, schema_name, path=relative)
+
+    def validate_file(self, path: Path, schema_name: str, *, root: Path) -> list[MacIssue]:
+        return self.load_and_validate_file(path, schema_name, root=root)[1]

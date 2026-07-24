@@ -95,3 +95,11 @@ def test_schema_lock_release_hook_is_wired_into_build_and_all_ci_workflows():
         ".github/workflows/release.yml",
     ):
         assert "scripts/release/check_schema_lock.py" in (root / relative).read_text(encoding="utf-8")
+
+
+def test_cross_platform_ci_uses_module_pytest_entrypoint():
+    root = Path(__file__).parents[2]
+    workflow = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert "run: uv run --frozen python -m pytest" in workflow
+    assert "run: uv run --frozen pytest" not in workflow
