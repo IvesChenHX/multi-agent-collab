@@ -4,12 +4,14 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -258,6 +260,29 @@ def test_workspace_subject_separates_index_from_unstaged_diff_and_promotion_reje
     assert git.workspace_equivalent_to_commit(
         "HEAD", source_workspace_subject=staged_subject
     )
+
+
+def test_workspace_content_identity_prefers_windows_birth_time_over_ctime() -> None:
+    first = SimpleNamespace(
+        st_size=7,
+        st_mtime_ns=11,
+        st_ctime_ns=13,
+        st_birthtime_ns=17,
+        st_file_attributes=0x80,
+        st_mode=stat.S_IFREG | 0o644,
+    )
+    same_file_from_another_windows_stat_seam = SimpleNamespace(
+        st_size=7,
+        st_mtime_ns=11,
+        st_ctime_ns=19,
+        st_birthtime_ns=17,
+        st_file_attributes=0x80,
+        st_mode=stat.S_IFREG | 0o644,
+    )
+
+    assert GitRepository._content_identity(
+        first
+    ) == GitRepository._content_identity(same_file_from_another_windows_stat_seam)
 
 
 def test_portable_run_binding_survives_worktree_and_head_changes(tmp_path: Path) -> None:

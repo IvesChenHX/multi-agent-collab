@@ -4200,8 +4200,14 @@ def _validate_loaded_event_stream(
     )
     verified_repository_identity = (
         repository_identity
-        or promoted_identity
-        or observed_repository_identity
+        or (
+            observed_repository_identity
+            if re.fullmatch(
+                r"github:repository-id:[1-9][0-9]{0,19}",
+                observed_repository_identity,
+            )
+            else promoted_identity or observed_repository_identity
+        )
     )
     for index, event in enumerate(events):
         event_id = str(event.get("event_id", ""))

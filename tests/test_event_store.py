@@ -789,6 +789,50 @@ def test_event_stream_computes_repository_identity_once(
     assert calls == 1
 
 
+def test_event_stream_rejects_a_different_trusted_github_repository_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        repository_module.AUTHORITY_REPOSITORY_IDENTITY_ENV,
+        "github:repository-id:1290429577",
+    )
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    repository, created = create_governed_task(tmp_path)
+    task_id = str(created["task"]["id"])
+    monkeypatch.setenv(
+        repository_module.AUTHORITY_REPOSITORY_IDENTITY_ENV,
+        "github:repository-id:1290429578",
+    )
+
+    with pytest.raises(MacError) as captured:
+        repository.list_events(task_id)
+
+    assert captured.value.code == "EVENT_AUTHORITY_TAMPERED"
+
+
+def test_event_stream_prefers_an_explicit_verified_repository_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        repository_module.AUTHORITY_REPOSITORY_IDENTITY_ENV,
+        "github:repository-id:1290429577",
+    )
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    _, created = create_governed_task(tmp_path)
+    task_id = str(created["task"]["id"])
+    repository = FilesystemTaskRepository(
+        tmp_path,
+        repository_identity="repo:explicit-verified-identity",
+    )
+
+    with pytest.raises(MacError) as captured:
+        repository.list_events(task_id)
+
+    assert captured.value.code == "EVENT_AUTHORITY_TAMPERED"
+
+
 def _scope_proposal_command(
     repository: FilesystemTaskRepository,
     task_id: str,

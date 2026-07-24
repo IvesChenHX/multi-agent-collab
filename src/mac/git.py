@@ -584,10 +584,13 @@ class GitRepository:
 
     @staticmethod
     def _content_identity(metadata: os.stat_result) -> tuple[int, int | None, int | None, int]:
+        change_time = getattr(metadata, "st_ctime_ns", None)
+        if getattr(metadata, "st_file_attributes", None) is not None:
+            change_time = getattr(metadata, "st_birthtime_ns", change_time)
         return (
             int(metadata.st_size),
             getattr(metadata, "st_mtime_ns", None),
-            getattr(metadata, "st_ctime_ns", None),
+            change_time,
             stat.S_IMODE(metadata.st_mode),
         )
 
